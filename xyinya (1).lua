@@ -106,16 +106,47 @@ function Visuals.Init(UI, Core, notify)
 
     local CoreGui = game:GetService("CoreGui")
     local RobloxGui = CoreGui:WaitForChild("RobloxGui")
-    
+
     local function findBaseFrame()
-        for _, child in ipairs(RobloxGui:GetDescendants()) do
-            if child:IsA("Frame") and child.Name == "Base" then
-                return child
+    -- Сначала ищем в RobloxGui
+    for _, child in ipairs(RobloxGui:GetDescendants()) do
+        if child:IsA("Frame") and child.Name == "Base" then
+            return child
+        end
+    end
+    
+    -- Если не нашли в RobloxGui, ищем во всем CoreGui
+    for _, screenGui in ipairs(CoreGui:GetDescendants()) do
+        if screenGui:IsA("ScreenGui") then
+            -- Ищем фрейм Notifications в этом ScreenGui
+            local hasNotifications = false
+            for _, child in ipairs(screenGui:GetDescendants()) do
+                if child:IsA("Frame") and child.Name == "Notifications" then
+                    hasNotifications = true
+                    break
+                end
+            end
+            
+            -- Если нашли Notifications, ищем Base в том же ScreenGui
+            if hasNotifications then
+                for _, child in ipairs(screenGui:GetDescendants()) do
+                    if child:IsA("Frame") and child.Name == "Base" then
+                        return child
+                    end
+                end
             end
         end
-        return nil
     end
-
+    
+    -- Если все еще не нашли, ищем любой фрейм с именем Base
+    for _, child in ipairs(CoreGui:GetDescendants()) do
+        if child:IsA("Frame") and child.Name == "Base" then
+            return child
+        end
+    end
+    
+    return nil
+end
     local baseFrame = findBaseFrame()
     
     local function emulateRightControl()
