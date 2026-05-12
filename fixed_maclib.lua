@@ -1,13 +1,67 @@
 local MacLib = { 
+	Options = {}, 
+	Folder = "Maclib",
+
 	CustomElements = {},
-	Options = {}, 
-	Options = {}, 
-	Folder = "Maclib", 
+	Builder = {},
+ 
 	GetService = function(service)
 		return cloneref and cloneref(game:GetService(service)) or game:GetService(service)
 	end
 }
 
+
+--// Builder API
+function MacLib.Builder.CreateFrame(properties)
+	local frame = Instance.new("Frame")
+	frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	frame.BorderSizePixel = 0
+	for k, v in pairs(properties or {}) do frame[k] = v end
+	return frame
+end
+
+function MacLib.Builder.CreateTextLabel(properties)
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Font = Enum.Font.GothamMedium
+	label.TextColor3 = Color3.fromRGB(220, 220, 220)
+	label.TextSize = 14
+	for k, v in pairs(properties or {}) do label[k] = v end
+	return label
+end
+
+function MacLib.Builder.CreateImage(properties)
+	local image = Instance.new("ImageLabel")
+	image.BackgroundTransparency = 1
+	for k, v in pairs(properties or {}) do image[k] = v end
+	return image
+end
+
+function MacLib.Builder.CreateButton(properties)
+	local btn = Instance.new("TextButton")
+	btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	btn.BorderSizePixel = 0
+	btn.Font = Enum.Font.Gotham
+	btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	btn.TextSize = 14
+	for k, v in pairs(properties or {}) do btn[k] = v end
+	return btn
+end
+
+function MacLib.Builder.AddCorner(parent, radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius or 6)
+	corner.Parent = parent
+	return corner
+end
+
+function MacLib.Builder.AddStroke(parent, color, thickness)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = color or Color3.fromRGB(60, 60, 60)
+	stroke.Thickness = thickness or 1
+	stroke.Parent = parent
+	return stroke
+end
 
 function MacLib:RegisterElement(Name, BuildFunction)
 	MacLib.CustomElements[Name] = BuildFunction
