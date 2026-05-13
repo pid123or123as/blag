@@ -132,14 +132,11 @@ function MacLib:Window(Settings)
 		if not _autoScale then return end
 		local vp = workspace.CurrentCamera.ViewportSize
 		if vp.X <= 0 or vp.Y <= 0 then return end
-		local _mob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-		local padX = _mob and 16 or 60
-		local padY = _mob and 16 or 60
-		local scaleX = vp.X / (_designW + padX)
-		local scaleY = vp.Y / (_designH + padY)
+		local scaleX = vp.X / (_designW + 60)
+		local scaleY = vp.Y / (_designH + 60)
 		local scale  = math.min(scaleX, scaleY)
-		local minScale = _mob and 0.38 or 0.45
-		baseUIScale.Scale = math.clamp(scale, minScale, 1.0)
+		-- Не уменьшаем больше чем до 0.45, не увеличиваем больше 1.0
+		baseUIScale.Scale = math.clamp(scale, 0.45, 1.0)
 	end
 
 	local function _applyAutoScaleAndNotif()
@@ -796,33 +793,23 @@ function MacLib:Window(Settings)
 	local hideIconBtn = Instance.new("ImageButton")
 	hideIconBtn.Name = "HideIconBtn"
 	hideIconBtn.Image = "rbxassetid://125716871945612"
-	hideIconBtn.ImageTransparency = 0.5
+	hideIconBtn.ImageTransparency = 0.35
 	hideIconBtn.AnchorPoint = Vector2.new(0, 0.5)
 	hideIconBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 	hideIconBtn.BackgroundTransparency = 1
 	hideIconBtn.BorderSizePixel = 0
-	hideIconBtn.Position = UDim2.new(0, 20, 0.5, 0)
-	hideIconBtn.Size = UDim2.fromOffset(18, 18)
+	hideIconBtn.Position = UDim2.new(0, -5, 0.5, 0)
+	hideIconBtn.Size = UDim2.fromOffset(22, 22)
 	local _isMobileHide = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 	hideIconBtn.Visible = _isMobileHide and (not Settings.DragStyle or Settings.DragStyle == 1)
-	hideIconBtn.ZIndex = 5
-	hideIconBtn.AutoButtonColor = false
+	hideIconBtn.ZIndex = 10
+	hideIconBtn.AutoButtonColor = true
 	hideIconBtn.Parent = elements
 
-	hideIconBtn.MouseEnter:Connect(function()
-		Tween(hideIconBtn, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {ImageTransparency = 0.2}):Play()
-	end)
-	hideIconBtn.MouseLeave:Connect(function()
-		Tween(hideIconBtn, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {ImageTransparency = 0.5}):Play()
-	end)
-	hideIconBtn.MouseButton1Click:Connect(function()
-		Tween(hideIconBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {ImageTransparency = 0.05}):Play()
-		task.delay(0.1, function()
-			Tween(hideIconBtn, TweenInfo.new(0.12, Enum.EasingStyle.Sine), {ImageTransparency = 0.5}):Play()
-		end)
+	hideIconBtn.Activated:Connect(function()
 		local ns = not WindowFunctions:GetState()
 		WindowFunctions:SetState(ns)
-		updateToggleBtnIcon(ns)
+		if updateToggleBtnIcon then updateToggleBtnIcon(ns) end
 	end)
 
 	local interact = Instance.new("TextButton")
@@ -846,33 +833,17 @@ function MacLib:Window(Settings)
 		moveIcon.Visible = false
 		hideIconBtn.Visible = false
 
-		local iosHint = Instance.new("TextLabel")
-		iosHint.Name = "iOSHint"
-		iosHint.Text = "swipe ↓ to hide  •  tap to toggle"
-		iosHint.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json")
-		iosHint.TextSize = 9
-		iosHint.TextColor3 = Color3.fromRGB(255, 255, 255)
-		iosHint.TextTransparency = 0.85
-		iosHint.BackgroundTransparency = 1
-		iosHint.Size = UDim2.fromOffset(200, 14)
-		iosHint.AnchorPoint = Vector2.new(0.5, 1)
-		iosHint.Position = UDim2.new(0.5, 0, 1, -18)
-		iosHint.ZIndex = 10
-		iosHint.Parent = base
-
 		local iosBar = Instance.new("Frame")
 		iosBar.Name = "iOSBar"
 		iosBar.AnchorPoint = Vector2.new(0.5, 1)
 		iosBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-		iosBar.BackgroundTransparency = 0.55
+		iosBar.BackgroundTransparency = 0.6
 		iosBar.BorderSizePixel = 0
-		iosBar.Position = UDim2.new(0.5, 0, 1, -6)
-		iosBar.Size = UDim2.fromOffset(134, 5)
-		iosBar.ZIndex = 12
+		iosBar.Position = UDim2.new(0.5, 0, 1, -8)
+		iosBar.Size = UDim2.fromOffset(120, 5)
+		iosBar.ZIndex = 10
 		iosBar.Parent = base
-		local _iosCorner = Instance.new("UICorner")
-		_iosCorner.CornerRadius = UDim.new(1, 0)
-		_iosCorner.Parent = iosBar
+		Instance.new("UICorner", iosBar).CornerRadius = UDim.new(1, 0)
 
 		-- Интерактивная зона — шире и выше полоски
 		local iosInteract = Instance.new("TextButton")
@@ -880,24 +851,22 @@ function MacLib:Window(Settings)
 		iosInteract.BackgroundTransparency = 1
 		iosInteract.AnchorPoint = Vector2.new(0.5, 1)
 		iosInteract.Position = UDim2.new(0.5, 0, 1, 0)
-		iosInteract.Size = UDim2.fromOffset(260, 52)
+		iosInteract.Size = UDim2.fromOffset(220, 40)
 		iosInteract.ZIndex = 11
 		iosInteract.Parent = base
 
 		-- Пульсация при ховере
 		iosInteract.MouseEnter:Connect(function()
 			Tween(iosBar, TweenInfo.new(0.15, Enum.EasingStyle.Sine), {
-				BackgroundTransparency = 0.2,
-				Size = UDim2.fromOffset(154, 6)
+				BackgroundTransparency = 0.3,
+				Size = UDim2.fromOffset(140, 6)
 			}):Play()
-			Tween(iosHint, TweenInfo.new(0.15, Enum.EasingStyle.Sine), {TextTransparency = 0.5}):Play()
 		end)
 		iosInteract.MouseLeave:Connect(function()
 			Tween(iosBar, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {
-				BackgroundTransparency = 0.55,
-				Size = UDim2.fromOffset(134, 5)
+				BackgroundTransparency = 0.6,
+				Size = UDim2.fromOffset(120, 5)
 			}):Play()
-			Tween(iosHint, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {TextTransparency = 0.85}):Play()
 		end)
 
 		-- Тач: свайп вниз → скрыть, свайп вверх → показать, тап → toggle
@@ -909,8 +878,8 @@ function MacLib:Window(Settings)
 				_iosTouchStartY = inp.Position.Y
 				-- Анимация нажатия
 				Tween(iosBar, TweenInfo.new(0.08, Enum.EasingStyle.Sine), {
-					BackgroundTransparency = 0.05,
-					Size = UDim2.fromOffset(110, 5)
+					BackgroundTransparency = 0.1,
+					Size = UDim2.fromOffset(100, 5)
 				}):Play()
 			end
 		end)
@@ -918,8 +887,8 @@ function MacLib:Window(Settings)
 			if (inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1) and _iosTouchStart then
 				local dy = inp.Position.Y - _iosTouchStartY
 				Tween(iosBar, TweenInfo.new(0.15, Enum.EasingStyle.Sine), {
-					BackgroundTransparency = 0.55,
-					Size = UDim2.fromOffset(134, 5)
+					BackgroundTransparency = 0.6,
+					Size = UDim2.fromOffset(120, 5)
 				}):Play()
 				if math.abs(dy) > 30 then
 					-- Свайп
@@ -2211,7 +2180,7 @@ function MacLib:Window(Settings)
 					sliderHead.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					sliderHead.BorderSizePixel = 0
 					sliderHead.Position = UDim2.fromScale(1, 0.5)
-					sliderHead.Size = isMobile and UDim2.fromOffset(26, 26) or UDim2.fromOffset(12, 12)
+					sliderHead.Size = isMobile and UDim2.fromOffset(20, 20) or UDim2.fromOffset(12, 12)
 					sliderHead.Parent = sliderBar
 
 					sliderBar.Parent = sliderElements
@@ -2543,7 +2512,6 @@ function MacLib:Window(Settings)
 
 				function SectionFunctions:Keybind(Settings, Flag)
 					local KeybindFunctions = { Settings = Settings, IgnoreConfig = false, Class = "Keybind" }
-					local _isMobileKB = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 					local keybind = Instance.new("Frame")
 					keybind.Name = "Keybind"
 					keybind.AutomaticSize = Enum.AutomaticSize.Y
@@ -2639,6 +2607,7 @@ function MacLib:Window(Settings)
 
 					binderBox.FocusLost:Connect(function()
 						focused = false
+						if updatePlusText then updatePlusText() end
 					end)
 
 					UserInputService.InputBegan:Connect(function(inp)
@@ -2661,6 +2630,7 @@ function MacLib:Window(Settings)
 									binded = input.UserInputType
 									binderBox.Text = input.UserInputType.Name
 								end
+								if updatePlusText then updatePlusText() end
 
 								if KeybindFunctions.Settings.onBinded then
 									KeybindFunctions.Settings.onBinded(binded)
@@ -2698,11 +2668,13 @@ function MacLib:Window(Settings)
 						binded = Key
 						reset = false
 						binderBox.Text = Key.Name
+						if updatePlusText then updatePlusText() end
 					end
 
 					function KeybindFunctions:Unbind()
 						binded = nil
 						binderBox.Text = ""
+						if updatePlusText then updatePlusText() end
 					end
 
 					function KeybindFunctions:GetBind()
@@ -2724,7 +2696,7 @@ function MacLib:Window(Settings)
 										-- === MOBILE KEYBIND BUTTON ===
 					-- На мобильных: '+' в строке keybind открывает/скрывает плавающую кнопку.
 					-- На ПК: кнопка создаётся, скрыта по умолчанию; SetMobileButtonVisibility(true) покажет.
-					-- (_isMobileKB declared at function top)
+					local _isMobileKB = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
 					-- Floating action button GUI
 					local mobileKeybindGui = GetGui()
@@ -2812,7 +2784,7 @@ function MacLib:Window(Settings)
 						plusBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 						plusBtn.BackgroundTransparency = 0.88
 						plusBtn.BorderSizePixel = 0
-						plusBtn.Size = UDim2.fromOffset(40, 32)
+						plusBtn.Size = UDim2.fromOffset(34, 26)
 						plusBtn.AnchorPoint = Vector2.new(1, 0.5)
 						plusBtn.Position = UDim2.new(1, 0, 0.5, 0)
 						plusBtn.ZIndex = 5
@@ -2835,12 +2807,13 @@ function MacLib:Window(Settings)
 						end
 
 						local function updatePlusText()
-							plusBtn.Text = _mbVisible and "−" or "+"
+							local hasKeybind = binded and typeof(binded) == "EnumItem" and binded ~= Enum.KeyCode.Unknown
+							plusBtn.Text = (_mbVisible or hasKeybind) and "−" or "+"
 						end
 
 						plusBtn.MouseButton1Click:Connect(function()
 							showMobileBtn(not _mbVisible)
-							task.defer(updatePlusText)
+							updatePlusText()
 							-- визуальный фидбек на кнопке
 							Tween(plusBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.6}):Play()
 							task.delay(0.12, function()
@@ -3556,8 +3529,7 @@ function MacLib:Window(Settings)
 					colorCbg.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					colorCbg.BorderSizePixel = 0
 					colorCbg.Position = UDim2.fromScale(1, 0.5)
-					local _cpMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-										colorCbg.Size = _cpMobile and UDim2.fromOffset(36, 36) or UDim2.fromOffset(21, 21)
+					colorCbg.Size = UDim2.fromOffset(21, 21)
 
 					local colorC = Instance.new("Frame")
 					colorC.Name = "Color"
@@ -5412,7 +5384,7 @@ function MacLib:Window(Settings)
 
 		local tweens = {
 			In = Tween(notificationUIScale, TweenInfo.new(0.2, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
-				Scale = (Settings.Scale or 1) * baseUIScale.Scale
+				Scale = Settings.Scale or 1
 			}),
 			Out = Tween(notificationUIScale, TweenInfo.new(0.2, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
 				Scale = 0
@@ -5747,7 +5719,6 @@ function MacLib:Window(Settings)
 		windowState = State
 		base.Visible = State
 		if not State then for _,pt in pairs(parts) do pt.Parent=nil end end
-		pcall(updateToggleBtnIcon, State)
 	end
 
 	function WindowFunctions:GetState()
@@ -6637,17 +6608,6 @@ function MacLib:Demo()
 
 	MacLib:SetFolder("Maclib")
 	tabs.Settings:InsertConfigSection("Left")
-
-	sections.MainSection1:Button({
-		Name = "DragStyle Info (1=иконка, 2=iOS полоска)",
-		Callback = function()
-			Window:Notify({
-				Title = "DragStyle",
-				Description = "DragStyle = 1: кнопка перемещения + скрытия\nDragStyle = 2: iOS-полоска снизу (свайп вниз = скрыть)\nИзмените DragStyle = 2 в Window() для теста.",
-				Lifetime = 6
-			})
-		end
-	})
 
 	Window.onUnloaded(function()
 		print("Unloaded!")
