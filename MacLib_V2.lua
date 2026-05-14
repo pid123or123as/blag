@@ -3208,6 +3208,8 @@ function MacLib:Window(Settings)
 					dropdownFrameUIPadding.Name = "DropdownFrameUIPadding"
 					dropdownFrameUIPadding.PaddingTop = UDim.new(0, 6)
 					dropdownFrameUIPadding.PaddingBottom = UDim.new(0, 14)
+					dropdownFrameUIPadding.PaddingLeft = UDim.new(0, 10)
+					dropdownFrameUIPadding.PaddingRight = UDim.new(0, 10)
 					dropdownFrameUIPadding.Parent = dropdownFrame
 
 					local dropdownFrameUIListLayout = Instance.new("UIListLayout")
@@ -3223,9 +3225,8 @@ function MacLib:Window(Settings)
 					search.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					search.BorderSizePixel = 0
 					search.LayoutOrder = -1
-					-- search: центрирован, симметрично 10px от краёв dropdownFrame
-					search.Size = UDim2.new(1, -20, 0, 30)
-					search.Position = UDim2.new(0, 10, 0, 0)
+					-- search: fills dropdownFrame content (PaddingLeft/Right=10 on dropdownFrame handles centering)
+					search.Size = UDim2.new(1, 0, 0, 30)
 					search.AnchorPoint = Vector2.new(0, 0)
 					search.Parent = dropdownFrame
 					search.Visible = DropdownFunctions.Settings.Search
