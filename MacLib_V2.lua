@@ -368,9 +368,11 @@ function MacLib:Window(Settings)
 	globalSettingsButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
 	globalSettingsButton.BorderSizePixel = 0
 	globalSettingsButton.Position = UDim2.fromScale(1, 0.5)
-	-- FIX3: увеличенная hit-area для мобильных
-	globalSettingsButton.Size = UDim2.fromOffset(36, 36)
-	globalSettingsButton.ImageRectSize = Vector2.new(0, 0)
+	-- FIX3: размер зависит от устройства
+	do
+		local _isMobileGS = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+		globalSettingsButton.Size = _isMobileGS and UDim2.fromOffset(28, 28) or UDim2.fromOffset(16, 16)
+	end
 	globalSettingsButton.Parent = informationHolder
 
 	local function ChangeGlobalSettingsButtonState(State)
@@ -763,8 +765,9 @@ function MacLib:Window(Settings)
 	moveIcon.BorderColor3 = Color3.fromRGB(0, 0, 0)
 	moveIcon.BorderSizePixel = 0
 	moveIcon.Position = UDim2.fromScale(1, 0.5)
-	-- FIX3: увеличенная hit-area для moveIcon
-	moveIcon.Size = UDim2.fromOffset(34, 34)
+	-- FIX3: _isMobileHide нужна до moveIcon и hideIconBtn
+	local _isMobileHide = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	moveIcon.Size = _isMobileHide and UDim2.fromOffset(26, 26) or UDim2.fromOffset(15, 15)
 	moveIcon.Parent = elements
 	moveIcon.Visible = (not Settings.DragStyle or Settings.DragStyle == 1)
 
@@ -775,11 +778,10 @@ function MacLib:Window(Settings)
 	hideIconBtn.ImageTransparency = 0.5
 	hideIconBtn.BackgroundTransparency = 1
 	hideIconBtn.BorderSizePixel = 0
-	-- FIX3+FIX4: увеличенная hit-area, ещё левее от moveIcon
+	-- FIX3+FIX4: умеренная hit-area для мобильных, левее moveIcon
 	hideIconBtn.AnchorPoint = Vector2.new(1, 0.5)
-	hideIconBtn.Position = UDim2.new(1, -42, 0.5, 0)
-	hideIconBtn.Size = UDim2.fromOffset(34, 34)
-	local _isMobileHide = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	hideIconBtn.Position = UDim2.new(1, -46, 0.5, 0)
+	hideIconBtn.Size = UDim2.fromOffset(26, 26)
 	hideIconBtn.Visible = _isMobileHide and (not Settings.DragStyle or Settings.DragStyle == 1)
 	hideIconBtn.ZIndex = 5
 	hideIconBtn.AutoButtonColor = false
@@ -1071,13 +1073,9 @@ function MacLib:Window(Settings)
 	local _macLibGuis = {}
 	local function _registerGui(g) _macLibGuis[#_macLibGuis+1] = g end
 
-	local toggleButtonGui = GetGui()
-	toggleButtonGui.Name = "MacLibToggleButtonGui"
-	toggleButtonGui.DisplayOrder = 2147483648
-	_registerGui(toggleButtonGui)
+	-- FIX2: toggleBtn в том же macLib ScreenGui с максимальным ZIndex → всегда поверх UI
 	local toggleBtn = Instance.new("ImageButton")
 	toggleBtn.Name = "MacLibToggleBtn"
-	-- FIX1: всегда сверху по центру (убрали мобильный вариант снизу)
 	toggleBtn.AnchorPoint = Vector2.new(0.5, 0)
 	toggleBtn.Position    = UDim2.new(0.5, 0, 0, 14)
 	toggleBtn.Size = UDim2.fromOffset(44, 44)
@@ -1086,8 +1084,8 @@ function MacLib:Window(Settings)
 	toggleBtn.BorderSizePixel = 0
 	toggleBtn.Image = ""
 	toggleBtn.AutoButtonColor = false
-	toggleBtn.ZIndex = 10
-	toggleBtn.Parent = toggleButtonGui
+	toggleBtn.ZIndex = 9999
+	toggleBtn.Parent = macLib
 	Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 12)
 	local _tbs = Instance.new("UIStroke")
 	_tbs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
@@ -2845,7 +2843,8 @@ function MacLib:Window(Settings)
 							mbBtnStartPos = mobileKeybindBtn.Position
 							inp.Changed:Connect(function()
 								if inp.UserInputState == Enum.UserInputState.End then
-									mbDragging = false
+									-- FIX5: задержка сброса — Activated срабатывает после End
+									task.delay(0.05, function() mbDragging = false end)
 								end
 							end)
 						end
@@ -2984,9 +2983,9 @@ function MacLib:Window(Settings)
 					dropdownFrame.BorderSizePixel = 0
 					dropdownFrame.ClipsDescendants = true
 					dropdownFrame.ZIndex = 20
-					-- FIX DD: чуть шире для перекрытия рамки dropdown
-					dropdownFrame.Size = UDim2.new(1, 4, 0, 0)
-					dropdownFrame.Position = UDim2.new(0, -2, 0, 38)
+					-- FIX DD: шире для перекрытия рамки dropdown (+20px с каждой стороны)
+					dropdownFrame.Size = UDim2.new(1, 24, 0, 0)
+					dropdownFrame.Position = UDim2.new(0, -12, 0, 38)
 					dropdownFrame.Visible = false
 					dropdownFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 					dropdownFrame.CanvasSize = UDim2.new()
@@ -5276,11 +5275,11 @@ function MacLib:Window(Settings)
 			local _vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
 			local _isMobileNotif = UserInputService.TouchEnabled and _vp.X <= 900
 			if _isMobileNotif then
-				-- FIX6: компактный размер для мобилы
-				local _mobileW = math.min(200, math.floor(_vp.X * 0.55))
+				-- FIX4: ещё компактнее на мобиле
+				local _mobileW = math.min(160, math.floor(_vp.X * 0.42))
 				notification.Size = UDim2.fromOffset(_mobileW, 0)
 				notification.AnchorPoint = Vector2.new(1, 1)
-				notification.Position = UDim2.new(1, -10, 1, -10)
+				notification.Position = UDim2.new(1, -8, 1, -8)
 			else
 				notification.Size = UDim2.fromOffset(Settings.SizeX or 250, 0)
 			end
@@ -5324,7 +5323,10 @@ function MacLib:Window(Settings)
 		notificationTitle.RichText = true
 		notificationTitle.Text = Settings.Title
 		notificationTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-		notificationTitle.TextSize = 13
+		do
+			local _vp2 = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
+			notificationTitle.TextSize = (UserInputService.TouchEnabled and _vp2.X <= 900) and 11 or 13
+		end
 		notificationTitle.TextTransparency = 0.2
 		notificationTitle.TextTruncate = Enum.TextTruncate.SplitWord
 		notificationTitle.TextXAlignment = Enum.TextXAlignment.Left
@@ -5352,7 +5354,10 @@ function MacLib:Window(Settings)
 		)
 		notificationDescription.Text = Settings.Description
 		notificationDescription.TextColor3 = Color3.fromRGB(255, 255, 255)
-		notificationDescription.TextSize = 11
+		do
+			local _vp3 = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
+			notificationDescription.TextSize = (UserInputService.TouchEnabled and _vp3.X <= 900) and 9 or 11
+		end
 		notificationDescription.TextTransparency = 0.5
 		notificationDescription.TextWrapped = true
 		notificationDescription.RichText = true
