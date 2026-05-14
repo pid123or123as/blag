@@ -1108,21 +1108,33 @@ function MacLib:Window(Settings)
 	-- FIX7: делаем updateToggleBtnIcon доступной для SetState через upvalue
 	local _updateToggleBtnIcon
 	local function updateToggleBtnIcon(state)
-		toggleBtnIcon.Image = state and TOGGLE_ICON_CLOSE or TOGGLE_ICON_OPEN
-		Tween(toggleBtn, TweenInfo.new(0.1, Enum.EasingStyle.Sine), {
-			BackgroundColor3 = state and Color3.fromRGB(20,8,8) or Color3.fromRGB(12,12,14)
+		-- FIX4: плавная анимация иконки — fade out → swap → fade in + лёгкое вращение
+		local tweenOut = Tween(toggleBtnIcon, TweenInfo.new(0.1, Enum.EasingStyle.Sine, Enum.EasingDirection.In), {
+			ImageTransparency = 1,
+			Rotation = state and 45 or -45
+		})
+		tweenOut:Play()
+		tweenOut.Completed:Connect(function()
+			toggleBtnIcon.Image = state and TOGGLE_ICON_CLOSE or TOGGLE_ICON_OPEN
+			toggleBtnIcon.Rotation = state and -45 or 45
+			Tween(toggleBtnIcon, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+				ImageTransparency = 0.05,
+				Rotation = 0
+			}):Play()
+		end)
+		Tween(toggleBtn, TweenInfo.new(0.18, Enum.EasingStyle.Sine), {
+			BackgroundColor3 = state and Color3.fromRGB(16, 6, 6) or Color3.fromRGB(12, 12, 14)
 		}):Play()
 	end
 	_updateToggleBtnIcon = updateToggleBtnIcon
+	-- FIX2: используем UIScale для анимации нажатия, Size не трогаем
+	local _toggleBtnScale = Instance.new("UIScale")
+	_toggleBtnScale.Scale = 1
+	_toggleBtnScale.Parent = toggleBtn
 	local function animateToggleBtn()
-		-- плавное нажатие: чуть уменьшается и возвращается
-		Tween(toggleBtn, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-			Size = UDim2.fromOffset(38, 38)
-		}):Play()
-		task.delay(0.12, function()
-			Tween(toggleBtn, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-				Size = UDim2.fromOffset(44, 44)
-			}):Play()
+		Tween(_toggleBtnScale, TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 0.82}):Play()
+		task.delay(0.1, function()
+			Tween(_toggleBtnScale, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
 		end)
 	end
 
@@ -2165,7 +2177,8 @@ function MacLib:Window(Settings)
 					sliderHead.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					sliderHead.BorderSizePixel = 0
 					sliderHead.Position = UDim2.fromScale(1, 0.5)
-					sliderHead.Size = isMobile and UDim2.fromOffset(20, 20) or UDim2.fromOffset(12, 12)
+					-- FIX3: уменьшен ползунок на мобиле до 16px
+				sliderHead.Size = isMobile and UDim2.fromOffset(16, 16) or UDim2.fromOffset(12, 12)
 					sliderHead.Parent = sliderBar
 
 					sliderBar.Parent = sliderElements
@@ -2248,7 +2261,8 @@ function MacLib:Window(Settings)
 					sliderTouchBar.BorderSizePixel = 0
 					sliderTouchBar.AnchorPoint = Vector2.new(0, 0.5)
 					sliderTouchBar.Position = UDim2.new(0, 0, 0.5, 0)
-					sliderTouchBar.Size = UDim2.new(1, 0, 0, 44)
+					-- FIX3: зона тача чуть уже
+					sliderTouchBar.Size = UDim2.new(1, 20, 0, 36)
 					sliderTouchBar.ZIndex = sliderHead.ZIndex + 1
 					sliderTouchBar.Parent = sliderBar
 
@@ -2869,20 +2883,23 @@ function MacLib:Window(Settings)
 							end
 						end
 					end)
+					-- FIX2: UIScale для анимации нажатия — Size не трогаем
+					local _mbScale = Instance.new("UIScale")
+					_mbScale.Scale = 1
+					_mbScale.Parent = mobileKeybindBtn
+					local function _mbPressAnim()
+						Tween(_mbScale, TweenInfo.new(0.09, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 0.78}):Play()
+						task.delay(0.09, function()
+							Tween(_mbScale, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+						end)
+					end
 					mobileKeybindBtn.Activated:Connect(function()
 						if not mbDragging then
 							-- FIX2: callback вызывается всегда независимо от binded
 							if KeybindFunctions.Settings.Callback then
 								task.spawn(KeybindFunctions.Settings.Callback, binded or Enum.KeyCode.Unknown)
 							end
-							Tween(mobileKeybindBtn, TweenInfo.new(0.08, Enum.EasingStyle.Sine), {
-								Size = UDim2.fromOffset(48, 48), ImageTransparency = 0.1
-							}):Play()
-							task.delay(0.1, function()
-								Tween(mobileKeybindBtn, TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-									Size = UDim2.fromOffset(56, 56), ImageTransparency = 0.3
-								}):Play()
-							end)
+							_mbPressAnim()
 						end
 					end)
 
@@ -2983,9 +3000,9 @@ function MacLib:Window(Settings)
 					dropdownFrame.BorderSizePixel = 0
 					dropdownFrame.ClipsDescendants = true
 					dropdownFrame.ZIndex = 20
-					-- FIX DD: шире для перекрытия рамки dropdown (+20px с каждой стороны)
-					dropdownFrame.Size = UDim2.new(1, 24, 0, 0)
-					dropdownFrame.Position = UDim2.new(0, -12, 0, 38)
+					-- FIX1: учитываем PaddingLeft=15/PaddingRight=15 родителя → симметрично выходим на 12px с обеих сторон
+					dropdownFrame.Size = UDim2.new(1, 54, 0, 0)
+					dropdownFrame.Position = UDim2.new(0, -27, 0, 38)
 					dropdownFrame.Visible = false
 					dropdownFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 					dropdownFrame.CanvasSize = UDim2.new()
@@ -3217,7 +3234,7 @@ function MacLib:Window(Settings)
 						if isDropdownOpen then
 							dropdownFrame.Visible = true
 							-- FIX8: размер фрейма точно совпадает с открытой областью
-							dropdownFrame.Size = UDim2.new(1, 0, 0, math.max(frameH, 1))
+							dropdownFrame.Size = UDim2.new(1, 54, 0, math.max(frameH, 1))
 							dropTween.Completed:Connect(function()
 								db = false
 							end)
@@ -3378,7 +3395,7 @@ function MacLib:Window(Settings)
 							local openHeight = math.min(rawH, maxDropHeight + 38)
 							dropdown.Size = UDim2.new(1, 0, 0, openHeight)
 							local frameH2 = math.min(rawH, maxDropHeight)
-							dropdownFrame.Size = UDim2.new(1, 0, 0, math.max(frameH2, 1))
+							dropdownFrame.Size = UDim2.new(1, 54, 0, math.max(frameH2, 1))
 						end
 					end
 
@@ -5425,7 +5442,7 @@ function MacLib:Window(Settings)
 
 		local tweens = {
 			In = Tween(notificationUIScale, TweenInfo.new(0.2, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
-				Scale = Settings.Scale or 1
+				Scale = Settings.Scale or (_notifyScale or 1)
 			}),
 			Out = Tween(notificationUIScale, TweenInfo.new(0.2, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
 				Scale = 0
@@ -6395,6 +6412,103 @@ function MacLib:Window(Settings)
 	ContentProvider:PreloadAsync(assetList)
 	macLib.Enabled = true
 	windowState = true
+
+
+	-- ================================================================
+	-- NEW API METHODS (mobile, notify, toggle, keybind)
+	-- ================================================================
+
+	--- Изменить масштаб Notify (по умолчанию 1)
+	--- Пример: WindowFunctions:SetNotifyScale(0.8)
+	local _notifyScale = 1
+	function WindowFunctions:SetNotifyScale(scale)
+		_notifyScale = scale
+	end
+	function WindowFunctions:GetNotifyScale()
+		return _notifyScale
+	end
+	-- Применяем _notifyScale при создании каждого Notify через patch notificationUIScale
+	-- (notificationUIScale.Scale начинается с 0 и анимируется до _notifyScale в Notify)
+
+	--- Получить/задать размер toggleBtn
+	function WindowFunctions:SetToggleBtnSize(size)
+		toggleBtn.Size = UDim2.fromOffset(size, size)
+	end
+	function WindowFunctions:GetToggleBtnSize()
+		return toggleBtn.Size.X.Offset
+	end
+
+	--- Показать/скрыть toggleBtn
+	function WindowFunctions:SetToggleBtnVisible(state)
+		toggleBtn.Visible = state
+	end
+
+	--- Задать позицию toggleBtn (UDim2)
+	function WindowFunctions:SetToggleBtnPosition(pos)
+		toggleBtn.Position = pos
+	end
+
+	--- Задать иконку toggleBtn вручную (open, close)
+	function WindowFunctions:SetToggleBtnIcons(openIcon, closeIcon)
+		TOGGLE_ICON_OPEN = openIcon
+		TOGGLE_ICON_CLOSE = closeIcon
+		updateToggleBtnIcon(WindowFunctions:GetState())
+	end
+
+	--- Задать размер mobileKeybindBtn по Flag
+	--- Пример: WindowFunctions:SetKeybindBtnSize("MyFlag", 64)
+	function WindowFunctions:SetKeybindBtnSize(flag, size)
+		local btn = MacLib._keybindBtns and MacLib._keybindBtns[flag]
+		if btn then
+			btn.Size = UDim2.fromOffset(size, size)
+		end
+	end
+
+	--- Показать/скрыть mobileKeybindBtn по Flag
+	function WindowFunctions:SetKeybindBtnVisible(flag, state)
+		if MacLib.Options[flag] and MacLib.Options[flag].SetMobileButtonVisibility then
+			MacLib.Options[flag]:SetMobileButtonVisibility(state)
+		end
+	end
+
+	--- Задать иконку mobileKeybindBtn по Flag
+	function WindowFunctions:SetKeybindBtnImage(flag, assetId)
+		if MacLib.Options[flag] and MacLib.Options[flag].SetMobileImage then
+			MacLib.Options[flag]:SetMobileImage(assetId)
+		end
+	end
+
+	--- Получить видимость hideIconBtn (кнопки скрытия в topbar)
+	function WindowFunctions:SetHideBtnVisible(state)
+		hideIconBtn.Visible = state
+	end
+
+	--- Задать иконку hideIconBtn
+	function WindowFunctions:SetHideBtnImage(assetId)
+		hideIconBtn.Image = assetId
+	end
+
+	--- Задать размер базового окна через Vector2
+	function WindowFunctions:SetWindowSize(x, y)
+		base.Size = UDim2.fromOffset(x, y)
+	end
+
+	--- Получить текущий размер базового окна
+	function WindowFunctions:GetWindowSize()
+		return base.AbsoluteSize
+	end
+
+	--- Задать прозрачность Notify-уведомлений
+	--- Пример: WindowFunctions:SetNotifyTransparency(0.15)
+	local _notifyBgTransparency = 0
+	function WindowFunctions:SetNotifyTransparency(t)
+		_notifyBgTransparency = t
+	end
+
+	--- Принудительно обновить иконку toggleBtn (если state изменился снаружи)
+	function WindowFunctions:RefreshToggleIcon()
+		updateToggleBtnIcon(WindowFunctions:GetState())
+	end
 
 	return WindowFunctions
 end
