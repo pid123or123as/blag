@@ -307,6 +307,57 @@ function MacLib:Window(Settings)
 		applyState(button, isEnabled)
 	end
 
+	-- FIX4b: кастомные кнопки в controls (рядом с exit/minimize)
+	-- Возвращается объект с методами :Destroy(), :SetLabel(), :SetColor(), :SetVisible()
+	local function _addWindowControl(ctrlSettings)
+		local btn = Instance.new("TextButton")
+		btn.Name = "CustomControl_" .. (ctrlSettings.Name or "Btn")
+		btn.Text = ctrlSettings.Label or ""
+		btn.TextColor3 = ctrlSettings.TextColor or Color3.fromRGB(255, 255, 255)
+		btn.TextSize = ctrlSettings.TextSize or 14
+		btn.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Bold)
+		btn.TextTransparency = 0.1
+		btn.AutoButtonColor = false
+		btn.BackgroundColor3 = ctrlSettings.Color or Color3.fromRGB(80, 80, 200)
+		btn.BackgroundTransparency = ctrlSettings.Transparency or 0.05
+		btn.BorderSizePixel = 0
+		btn.Size = windowControlSettings.sizes.enabled
+		btn.LayoutOrder = ctrlSettings.LayoutOrder or 10
+
+		-- иконка внутри кнопки (опционально)
+		if ctrlSettings.Image then
+			local img = Instance.new("ImageLabel")
+			img.Name = "Icon"
+			img.Image = ctrlSettings.Image
+			img.BackgroundTransparency = 1
+			img.AnchorPoint = Vector2.new(0.5, 0.5)
+			img.Position = UDim2.fromScale(0.5, 0.5)
+			img.Size = UDim2.fromOffset(12, 12)
+			img.Parent = btn
+		end
+
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+		if ctrlSettings.Callback then
+			btn.MouseButton1Click:Connect(function()
+				task.spawn(ctrlSettings.Callback)
+			end)
+		end
+
+		btn.Parent = controls
+
+		local ctrlObj = {}
+		function ctrlObj:Destroy() btn:Destroy() end
+		function ctrlObj:SetLabel(t) btn.Text = t end
+		function ctrlObj:SetColor(c) btn.BackgroundColor3 = c end
+		function ctrlObj:SetImage(id)
+			local ic = btn:FindFirstChild("Icon")
+			if ic then ic.Image = id end
+		end
+		function ctrlObj:SetVisible(s) btn.Visible = s end
+		return ctrlObj
+	end
+
 	controls.Parent = windowControls
 
 	local divider1 = Instance.new("Frame")
@@ -787,6 +838,76 @@ function MacLib:Window(Settings)
 	hideIconBtn.AutoButtonColor = false
 	hideIconBtn.Parent = elements
 
+	-- FIX4: таблица кастомных topbar иконок (добавляются левее hideIconBtn)
+	local _topbarIcons = {}
+	local _topbarIconBaseOffset = 46  -- начальный отступ от правого края (левее hideIconBtn)
+
+	local function _refreshTopbarIconPositions()
+		local offset = _topbarIconBaseOffset
+		for i = #_topbarIcons, 1, -1 do
+			local btn = _topbarIcons[i]
+			local sz = btn.Size.X.Offset
+			offset = offset + sz + 4
+			btn.Position = UDim2.new(1, -offset + sz/2 + _topbarIconBaseOffset - sz/2, 0.5, 0)
+		end
+	end
+
+	-- Метод добавления кастомной topbar иконки (вызывается через WindowFunctions)
+	-- Возвращает объект с методом :Destroy()
+	local function _addTopbarIcon(iconSettings)
+		local iconBtn = Instance.new("ImageButton")
+		iconBtn.Name = "TopbarCustomIcon"
+		iconBtn.Image = iconSettings.Image or ""
+		iconBtn.ImageTransparency = iconSettings.ImageTransparency or 0.5
+		iconBtn.BackgroundTransparency = 1
+		iconBtn.BorderSizePixel = 0
+		iconBtn.AnchorPoint = Vector2.new(1, 0.5)
+		local sz = iconSettings.Size or (_isMobileHide and 24 or 16)
+		iconBtn.Size = UDim2.fromOffset(sz, sz)
+		iconBtn.ZIndex = 5
+		iconBtn.AutoButtonColor = false
+		iconBtn.Visible = true
+		iconBtn.Parent = elements
+
+		table.insert(_topbarIcons, iconBtn)
+		-- пересчитать позиции
+		local offset = 0
+		for i = #_topbarIcons, 1, -1 do
+			local btn = _topbarIcons[i]
+			local bsz = btn.Size.X.Offset
+			offset = offset + bsz + 4
+			btn.Position = UDim2.new(1, -(_topbarIconBaseOffset + offset - bsz - 4) - bsz/2 - 4, 0.5, 0)
+		end
+
+		if iconSettings.Callback then
+			local _db = false
+			iconBtn.Activated:Connect(function()
+				if _db then return end
+				_db = true
+				Tween(iconBtn, TweenInfo.new(0.07, Enum.EasingStyle.Sine), {ImageTransparency = 0.05}):Play()
+				task.delay(0.12, function()
+					Tween(iconBtn, TweenInfo.new(0.15, Enum.EasingStyle.Sine), {
+						ImageTransparency = iconSettings.ImageTransparency or 0.5
+					}):Play()
+					_db = false
+				end)
+				task.spawn(iconSettings.Callback)
+			end)
+		end
+
+		local iconObj = {}
+		function iconObj:Destroy()
+			iconBtn:Destroy()
+			for i, v in ipairs(_topbarIcons) do
+				if v == iconBtn then table.remove(_topbarIcons, i) break end
+			end
+		end
+		function iconObj:SetImage(id) iconBtn.Image = id end
+		function iconObj:SetVisible(s) iconBtn.Visible = s end
+		function iconObj:SetTransparency(t) iconBtn.ImageTransparency = t end
+		return iconObj
+	end
+
 	hideIconBtn.MouseEnter:Connect(function()
 		Tween(hideIconBtn, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {ImageTransparency = 0.2}):Play()
 	end)
@@ -1078,9 +1199,12 @@ function MacLib:Window(Settings)
 	toggleBtn.Name = "MacLibToggleBtn"
 	toggleBtn.AnchorPoint = Vector2.new(0.5, 0)
 	toggleBtn.Position    = UDim2.new(0.5, 0, 0, 14)
-	toggleBtn.Size = UDim2.fromOffset(44, 44)
+	-- FIX2: мобайл = 40px + 75% прозрачность; ПК = скрыт по умолчанию
+	local _isMobileToggle = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	toggleBtn.Size = _isMobileToggle and UDim2.fromOffset(40, 40) or UDim2.fromOffset(44, 44)
 	toggleBtn.BackgroundColor3 = Color3.fromRGB(12, 12, 14)
-	toggleBtn.BackgroundTransparency = 0.08
+	toggleBtn.BackgroundTransparency = _isMobileToggle and 0.75 or 0.08
+	toggleBtn.Visible = _isMobileToggle  -- ПК: скрыт, включить через SetToggleBtnVisible(true)
 	toggleBtn.BorderSizePixel = 0
 	toggleBtn.Image = ""
 	toggleBtn.AutoButtonColor = false
@@ -3000,9 +3124,13 @@ function MacLib:Window(Settings)
 					dropdownFrame.BorderSizePixel = 0
 					dropdownFrame.ClipsDescendants = true
 					dropdownFrame.ZIndex = 20
-					-- FIX1: учитываем PaddingLeft=15/PaddingRight=15 родителя → симметрично выходим на 12px с обеих сторон
-					dropdownFrame.Size = UDim2.new(1, 54, 0, 0)
-					dropdownFrame.Position = UDim2.new(0, -27, 0, 38)
+					-- dropdownFrame: чуть уже основного фона dropdown (без padding-расчёта)
+					-- dropdown.Size=1,0 + UIPadding 15/15 → content width = W-30
+					-- dropdownFrame Position=(0,-4) → левый отступ -4 от content = отступ 11px от края section
+					-- dropdownFrame Size=(1,-8) → ширина content-8 = W-30-8 = W-38
+					-- Основной фон = W (весь section), dropdownFrame = W-38 → уже ✓
+					dropdownFrame.Size = UDim2.new(1, -8, 0, 0)
+					dropdownFrame.Position = UDim2.new(0, -4, 0, 38)
 					dropdownFrame.Visible = false
 					dropdownFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 					dropdownFrame.CanvasSize = UDim2.new()
@@ -3044,7 +3172,9 @@ function MacLib:Window(Settings)
 					search.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					search.BorderSizePixel = 0
 					search.LayoutOrder = -1
-					search.Size = UDim2.new(1, 0, 0, 30)
+					-- search: чуть уже тёмного фона
+					search.Size = UDim2.new(1, -16, 0, 30)
+					search.Position = UDim2.new(0, 8, 0, 0)
 					search.Parent = dropdownFrame
 					search.Visible = DropdownFunctions.Settings.Search
 
@@ -3234,7 +3364,7 @@ function MacLib:Window(Settings)
 						if isDropdownOpen then
 							dropdownFrame.Visible = true
 							-- FIX8: размер фрейма точно совпадает с открытой областью
-							dropdownFrame.Size = UDim2.new(1, 54, 0, math.max(frameH, 1))
+							dropdownFrame.Size = UDim2.new(1, -8, 0, math.max(frameH, 1))
 							dropTween.Completed:Connect(function()
 								db = false
 							end)
@@ -3395,7 +3525,7 @@ function MacLib:Window(Settings)
 							local openHeight = math.min(rawH, maxDropHeight + 38)
 							dropdown.Size = UDim2.new(1, 0, 0, openHeight)
 							local frameH2 = math.min(rawH, maxDropHeight)
-							dropdownFrame.Size = UDim2.new(1, 54, 0, math.max(frameH2, 1))
+							dropdownFrame.Size = UDim2.new(1, -8, 0, math.max(frameH2, 1))
 						end
 					end
 
@@ -6415,8 +6545,22 @@ function MacLib:Window(Settings)
 
 
 	-- ================================================================
-	-- NEW API METHODS (mobile, notify, toggle, keybind)
+	-- NEW API METHODS (mobile, notify, toggle, keybind, topbar, controls)
 	-- ================================================================
+
+	--- Добавить кастомную иконку в topbar (рядом с кнопкой перемещения)
+	--- Settings: { Image, Callback, Size, ImageTransparency }
+	--- Возвращает объект: { Destroy(), SetImage(id), SetVisible(bool), SetTransparency(t) }
+	function WindowFunctions:AddTopbarIcon(iconSettings)
+		return _addTopbarIcon(iconSettings)
+	end
+
+	--- Добавить кастомную кнопку в controls (рядом с exit/minimize)
+	--- Settings: { Name, Label, Image, Color, TextColor, TextSize, Transparency, Callback, LayoutOrder }
+	--- Возвращает объект: { Destroy(), SetLabel(t), SetColor(c), SetImage(id), SetVisible(bool) }
+	function WindowFunctions:AddWindowControl(ctrlSettings)
+		return _addWindowControl(ctrlSettings)
+	end
 
 	--- Изменить масштаб Notify (по умолчанию 1)
 	--- Пример: WindowFunctions:SetNotifyScale(0.8)
