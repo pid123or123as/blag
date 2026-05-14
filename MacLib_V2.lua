@@ -3302,7 +3302,17 @@ function MacLib:Window(Settings)
 							end
 						end
 
-						dropdown.Size = UDim2.new(1, 0, 0, CalculateDropdownSize())
+						-- defer so Roblox layout pass updates AbsoluteSize before we read it
+						if dropped then
+							task.defer(function()
+								local maxDropHeight = 200
+								local rawH = CalculateDropdownSize()
+								local frameH = math.min(rawH, maxDropHeight)
+								local openHeight = 38 + math.max(frameH, 1)
+								dropdown.Size = UDim2.new(1, 0, 0, openHeight)
+								dropdownFrame.Size = UDim2.new(1, 14, 0, math.max(frameH, 1))
+							end)
+						end
 					end
 
 					searchBox:GetPropertyChangedSignal("Text"):Connect(findOption)
@@ -3573,12 +3583,14 @@ function MacLib:Window(Settings)
 						end)
 
 						if dropped then
-							local maxDropHeight = 200
-							local rawH = CalculateDropdownSize()
-							local openHeight = math.min(rawH, maxDropHeight + 38)
-							dropdown.Size = UDim2.new(1, 0, 0, openHeight)
-							local frameH2 = math.min(rawH, maxDropHeight)
-							dropdownFrame.Size = UDim2.new(1, 14, 0, math.max(frameH2, 1))
+							task.defer(function()
+								local maxDropHeight = 200
+								local rawH = CalculateDropdownSize()
+								local frameH2 = math.min(rawH, maxDropHeight)
+								local openHeight = 38 + math.max(frameH2, 1)
+								dropdown.Size = UDim2.new(1, 0, 0, openHeight)
+								dropdownFrame.Size = UDim2.new(1, 14, 0, math.max(frameH2, 1))
+							end)
 						end
 					end
 
