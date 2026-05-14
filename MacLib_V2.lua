@@ -35,7 +35,7 @@ local assets = {
 	togglerHead = "rbxassetid://18772309008",
 	buttonImage = "rbxassetid://10709791437",
 	searchIcon = "rbxassetid://86737463322606",
-	colorWheel = "rbxassetid://2849458409",
+	colorWheel = "rbxassetid://116272652345519",
 	colorTarget = "rbxassetid://73265255323268",
 	grid = "rbxassetid://121484455191370",
 	globe = "rbxassetid://108952102602834",
@@ -3958,118 +3958,33 @@ function MacLib:Window(Settings)
 					wheel.BorderSizePixel = 0
 					wheel.Size = isMobile and UDim2.new(1, 0, 0, 150) or UDim2.new(1, 0, 0, 100)
 
-					-- Programmatic HSV colour wheel (no asset required)
-					local wheel1 = Instance.new("Frame")
+					local wheel1 = Instance.new("ImageButton")
 					wheel1.Name = "Wheel"
-					wheel1.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					wheel1.Image = assets.colorWheel
+					wheel1.AutoButtonColor = false
+					wheel1.Active = false
+					wheel1.BackgroundColor3 = Color3.fromRGB(248, 248, 248)
 					wheel1.BackgroundTransparency = 1
-					wheel1.BorderSizePixel = 0
+					wheel1.BorderColor3 = Color3.fromRGB(27, 42, 53)
+					wheel1.Selectable = false
 					wheel1.Size = UDim2.fromOffset(220, 220)
 					wheel1.SizeConstraint = Enum.SizeConstraint.RelativeYY
-					wheel1.ClipsDescendants = true
 
-					-- Build hue ring: 36 sectors of 10 degrees each
-					local SECTORS = 36
-					for i = 0, SECTORS - 1 do
-						local angle = (i / SECTORS) * 360
-						local hue0 = i / SECTORS
-						local hue1 = ((i + 1) % SECTORS) / SECTORS
-
-						local sector = Instance.new("Frame")
-						sector.Name = "Sector" .. i
-						sector.AnchorPoint = Vector2.new(0.5, 1)
-						sector.BackgroundColor3 = Color3.fromHSV(hue0, 1, 1)
-						sector.BorderSizePixel = 0
-						sector.Position = UDim2.fromScale(0.5, 0.5)
-						sector.Size = UDim2.fromScale(0.5 + 0.01, 0.5 + 0.01)
-						sector.Rotation = angle
-						sector.ZIndex = 1
-						sector.ClipsDescendants = false
-
-						local grad = Instance.new("UIGradient")
-						grad.Color = ColorSequence.new({
-							ColorSequenceKeypoint.new(0, Color3.fromHSV(hue0, 1, 1)),
-							ColorSequenceKeypoint.new(1, Color3.fromHSV(hue1, 1, 1)),
-						})
-						grad.Rotation = 90
-						grad.Parent = sector
-
-						sector.Parent = wheel1
-					end
-
-					-- White radial gradient overlay (centre->transparent, edge->white) for saturation
-					local satOverlay = Instance.new("ImageLabel")
-					satOverlay.Name = "SatOverlay"
-					satOverlay.AnchorPoint = Vector2.new(0.5, 0.5)
-					satOverlay.BackgroundTransparency = 1
-					satOverlay.BorderSizePixel = 0
-					satOverlay.Position = UDim2.fromScale(0.5, 0.5)
-					satOverlay.Size = UDim2.fromScale(1, 1)
-					satOverlay.SizeConstraint = Enum.SizeConstraint.RelativeYY
-					satOverlay.ZIndex = 2
-					-- radial white-to-transparent gradient faked with UIGradient on a circle
-					satOverlay.Image = "rbxasset://textures/ui/LuaChat/graphic/divider-short.png"
-					satOverlay.ImageTransparency = 1  -- hidden, we use UIGradient below
-
-					local satGradFrame = Instance.new("Frame")
-					satGradFrame.Name = "SatGrad"
-					satGradFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-					satGradFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-					satGradFrame.BorderSizePixel = 0
-					satGradFrame.Position = UDim2.fromScale(0.5, 0.5)
-					satGradFrame.Size = UDim2.fromScale(1, 1)
-					satGradFrame.SizeConstraint = Enum.SizeConstraint.RelativeYY
-					satGradFrame.ZIndex = 2
-
-					local satUICorner = Instance.new("UICorner")
-					satUICorner.CornerRadius = UDim.new(1, 0)
-					satUICorner.Parent = satGradFrame
-
-					-- Radial: centre white opaque, edge white transparent
-					local satUIGrad = Instance.new("UIGradient")
-					satUIGrad.Color = ColorSequence.new({
-						ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
-						ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 255, 255)),
-					})
-					satUIGrad.Transparency = NumberSequence.new({
-						NumberSequenceKeypoint.new(0, 0),
-						NumberSequenceKeypoint.new(0.45, 0),
-						NumberSequenceKeypoint.new(1, 1),
-					})
-					satUIGrad.Rotation = 0
-					satUIGrad.Parent = satGradFrame
-
-					satGradFrame.Parent = wheel1
-
-					-- Clip entire wheel to circle
-					local wheelUICorner = Instance.new("UICorner")
-					wheelUICorner.CornerRadius = UDim.new(1, 0)
-					wheelUICorner.Parent = wheel1
-
-					-- Cursor dot (replaces target ImageLabel)
-					local target = Instance.new("Frame")
+					local target = Instance.new("ImageLabel")
 					target.Name = "Target"
+					target.Image = assets.colorTarget
+					target.ImageColor3 = Color3.fromRGB(0, 0, 0)
 					target.AnchorPoint = Vector2.new(0.5, 0.5)
 					target.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-					target.BackgroundTransparency = 0
-					target.BorderSizePixel = 0
+					target.BackgroundTransparency = 1
+					target.BorderColor3 = Color3.fromRGB(27, 42, 53)
 					target.Position = UDim2.fromScale(0.5, 0.5)
-					target.Size = UDim2.fromOffset(14, 14)
+					target.Size = UDim2.fromOffset(22, 22)
 					target.SizeConstraint = Enum.SizeConstraint.RelativeYY
-					target.ZIndex = 10
-
-					local targetCorner = Instance.new("UICorner")
-					targetCorner.CornerRadius = UDim.new(1, 0)
-					targetCorner.Parent = target
-
-					local targetStroke = Instance.new("UIStroke")
-					targetStroke.Color = Color3.fromRGB(0, 0, 0)
-					targetStroke.Thickness = 2
-					targetStroke.Parent = target
-
 					target.Parent = wheel1
 
 					wheel1.Parent = wheel
+
 					local inputs = Instance.new("Frame")
 					inputs.Name = "Inputs"
 					inputs.AnchorPoint = Vector2.new(1, 0.5)
