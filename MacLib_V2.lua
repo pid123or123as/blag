@@ -368,7 +368,9 @@ function MacLib:Window(Settings)
 	globalSettingsButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
 	globalSettingsButton.BorderSizePixel = 0
 	globalSettingsButton.Position = UDim2.fromScale(1, 0.5)
-	globalSettingsButton.Size = UDim2.fromOffset(16,16)
+	-- FIX3: увеличенная hit-area для мобильных
+	globalSettingsButton.Size = UDim2.fromOffset(36, 36)
+	globalSettingsButton.ImageRectSize = Vector2.new(0, 0)
 	globalSettingsButton.Parent = informationHolder
 
 	local function ChangeGlobalSettingsButtonState(State)
@@ -761,7 +763,8 @@ function MacLib:Window(Settings)
 	moveIcon.BorderColor3 = Color3.fromRGB(0, 0, 0)
 	moveIcon.BorderSizePixel = 0
 	moveIcon.Position = UDim2.fromScale(1, 0.5)
-	moveIcon.Size = UDim2.fromOffset(15, 15)
+	-- FIX3: увеличенная hit-area для moveIcon
+	moveIcon.Size = UDim2.fromOffset(34, 34)
 	moveIcon.Parent = elements
 	moveIcon.Visible = (not Settings.DragStyle or Settings.DragStyle == 1)
 
@@ -772,9 +775,10 @@ function MacLib:Window(Settings)
 	hideIconBtn.ImageTransparency = 0.5
 	hideIconBtn.BackgroundTransparency = 1
 	hideIconBtn.BorderSizePixel = 0
+	-- FIX3+FIX4: увеличенная hit-area, ещё левее от moveIcon
 	hideIconBtn.AnchorPoint = Vector2.new(1, 0.5)
-	hideIconBtn.Position = UDim2.new(1, -22, 0.5, 0)
-	hideIconBtn.Size = UDim2.fromOffset(18, 18)
+	hideIconBtn.Position = UDim2.new(1, -42, 0.5, 0)
+	hideIconBtn.Size = UDim2.fromOffset(34, 34)
 	local _isMobileHide = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 	hideIconBtn.Visible = _isMobileHide and (not Settings.DragStyle or Settings.DragStyle == 1)
 	hideIconBtn.ZIndex = 5
@@ -787,37 +791,19 @@ function MacLib:Window(Settings)
 	hideIconBtn.MouseLeave:Connect(function()
 		Tween(hideIconBtn, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {ImageTransparency = 0.5}):Play()
 	end)
-	hideIconBtn.MouseButton1Click:Connect(function()
+	-- FIX2c+FIX3: единый Activated — работает на Touch и Mouse без ручного трекинга
+	local _hideDebounce = false
+	hideIconBtn.Activated:Connect(function()
+		if _hideDebounce then return end
+		_hideDebounce = true
 		Tween(hideIconBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {ImageTransparency = 0.05}):Play()
 		task.delay(0.1, function()
 			Tween(hideIconBtn, TweenInfo.new(0.12, Enum.EasingStyle.Sine), {ImageTransparency = 0.5}):Play()
 		end)
-		-- FIX3 ПК: скрываем окно
 		local ns = not WindowFunctions:GetState()
 		WindowFunctions:SetState(ns)
+		task.delay(0.4, function() _hideDebounce = false end)
 	end)
-	-- FIX3: Touch-обработчик для мобилы
-	do
-		local _tapStart
-		hideIconBtn.InputBegan:Connect(function(inp)
-			if inp.UserInputType == Enum.UserInputType.Touch then
-				_tapStart = inp.Position
-			end
-		end)
-		hideIconBtn.InputEnded:Connect(function(inp)
-			if inp.UserInputType == Enum.UserInputType.Touch and _tapStart then
-				if (inp.Position - _tapStart).Magnitude < 12 then
-					Tween(hideIconBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {ImageTransparency = 0.05}):Play()
-					task.delay(0.1, function()
-						Tween(hideIconBtn, TweenInfo.new(0.12, Enum.EasingStyle.Sine), {ImageTransparency = 0.5}):Play()
-					end)
-					local ns = not WindowFunctions:GetState()
-					WindowFunctions:SetState(ns)
-				end
-				_tapStart = nil
-			end
-		end)
-	end
 
 	local interact = Instance.new("TextButton")
 	interact.Name = "Interact"
@@ -1091,9 +1077,9 @@ function MacLib:Window(Settings)
 	_registerGui(toggleButtonGui)
 	local toggleBtn = Instance.new("ImageButton")
 	toggleBtn.Name = "MacLibToggleBtn"
-	-- На мобильных — снизу экрана, на ПК — сверху
-	toggleBtn.AnchorPoint = isMobile and Vector2.new(0.5, 1) or Vector2.new(0.5, 0)
-	toggleBtn.Position    = isMobile and UDim2.new(0.5, 0, 1, -70) or UDim2.new(0.5, 0, 0, 14)
+	-- FIX1: всегда сверху по центру (убрали мобильный вариант снизу)
+	toggleBtn.AnchorPoint = Vector2.new(0.5, 0)
+	toggleBtn.Position    = UDim2.new(0.5, 0, 0, 14)
 	toggleBtn.Size = UDim2.fromOffset(44, 44)
 	toggleBtn.BackgroundColor3 = Color3.fromRGB(12, 12, 14)
 	toggleBtn.BackgroundTransparency = 0.08
@@ -1194,7 +1180,8 @@ function MacLib:Window(Settings)
 			toggled = false
 		end
 	end
-	globalSettingsButton.MouseButton1Click:Connect(function()
+	-- FIX3: Activated работает и на Touch
+	globalSettingsButton.Activated:Connect(function()
 		if not hasGlobalSetting then return end
 		toggle()
 	end)
@@ -2255,19 +2242,49 @@ function MacLib:Window(Settings)
 
 					SetValue(SliderFunctions.Settings.Default, true)
 
+					-- FIX6: расширенная зона нажатия для слайдера на мобиле
+					local sliderTouchBar = Instance.new("TextButton")
+					sliderTouchBar.Name = "SliderTouchBar"
+					sliderTouchBar.Text = ""
+					sliderTouchBar.BackgroundTransparency = 1
+					sliderTouchBar.BorderSizePixel = 0
+					sliderTouchBar.AnchorPoint = Vector2.new(0, 0.5)
+					sliderTouchBar.Position = UDim2.new(0, 0, 0.5, 0)
+					sliderTouchBar.Size = UDim2.new(1, 0, 0, 44)
+					sliderTouchBar.ZIndex = sliderHead.ZIndex + 1
+					sliderTouchBar.Parent = sliderBar
+
+					local function startDrag(input)
+						dragging = true
+						SetValue(input)
+					end
+					local function endDrag(input)
+						dragging = false
+						if SliderFunctions.Settings.onInputComplete then
+							SliderFunctions.Settings.onInputComplete(finalValue)
+						end
+					end
+
 					sliderHead.InputBegan:Connect(function(input)
 						if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-							dragging = true
-							SetValue(input)
+							startDrag(input)
+						end
+					end)
+					sliderHead.InputEnded:Connect(function(input)
+						if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+							endDrag(input)
 						end
 					end)
 
-					sliderHead.InputEnded:Connect(function(input)
-						if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-							dragging = false
-							if SliderFunctions.Settings.onInputComplete then
-								SliderFunctions.Settings.onInputComplete(finalValue)
-							end
+					-- FIX6: широкая невидимая кнопка ловит тач по всей высоте строки
+					sliderTouchBar.InputBegan:Connect(function(input)
+						if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+							startDrag(input)
+						end
+					end)
+					sliderTouchBar.InputEnded:Connect(function(input)
+						if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+							endDrag(input)
 						end
 					end)
 
@@ -2855,9 +2872,9 @@ function MacLib:Window(Settings)
 					end)
 					mobileKeybindBtn.Activated:Connect(function()
 						if not mbDragging then
-							-- На мобильных callback вызывается всегда (binded может быть nil)
+							-- FIX2: callback вызывается всегда независимо от binded
 							if KeybindFunctions.Settings.Callback then
-								task.spawn(KeybindFunctions.Settings.Callback, binded)
+								task.spawn(KeybindFunctions.Settings.Callback, binded or Enum.KeyCode.Unknown)
 							end
 							Tween(mobileKeybindBtn, TweenInfo.new(0.08, Enum.EasingStyle.Sine), {
 								Size = UDim2.fromOffset(48, 48), ImageTransparency = 0.1
@@ -2967,8 +2984,9 @@ function MacLib:Window(Settings)
 					dropdownFrame.BorderSizePixel = 0
 					dropdownFrame.ClipsDescendants = true
 					dropdownFrame.ZIndex = 20
-					dropdownFrame.Size = UDim2.new(1, 0, 0, 0)
-					dropdownFrame.Position = UDim2.new(0, 0, 0, 38)
+					-- FIX DD: чуть шире для перекрытия рамки dropdown
+					dropdownFrame.Size = UDim2.new(1, 4, 0, 0)
+					dropdownFrame.Position = UDim2.new(0, -2, 0, 38)
 					dropdownFrame.Visible = false
 					dropdownFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 					dropdownFrame.CanvasSize = UDim2.new()
