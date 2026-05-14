@@ -770,8 +770,10 @@ function MacLib:Window(Settings)
 	hideIconBtn.Name = "HideIconBtn"
 	hideIconBtn.Image = "rbxassetid://125716871945612"
 	hideIconBtn.ImageTransparency = 0.5
-	hideIconBtn.AnchorPoint = Vector2.new(0, 0.5) -- FIX5: симметрично слева от moveIcon
-	hideIconBtn.Position = UDim2.new(0, -24, 0.5, 0) -- FIX5: левее moveIcon симметрично
+	hideIconBtn.BackgroundTransparency = 1
+	hideIconBtn.BorderSizePixel = 0
+	hideIconBtn.AnchorPoint = Vector2.new(1, 0.5)
+	hideIconBtn.Position = UDim2.new(1, -22, 0.5, 0)
 	hideIconBtn.Size = UDim2.fromOffset(18, 18)
 	local _isMobileHide = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 	hideIconBtn.Visible = _isMobileHide and (not Settings.DragStyle or Settings.DragStyle == 1)
@@ -791,8 +793,8 @@ function MacLib:Window(Settings)
 			Tween(hideIconBtn, TweenInfo.new(0.12, Enum.EasingStyle.Sine), {ImageTransparency = 0.5}):Play()
 		end)
 		-- FIX3 ПК: скрываем окно
-		local ns = not WindowFunctions.GetState()
-		WindowFunctions.SetState(ns)
+		local ns = not WindowFunctions:GetState()
+		WindowFunctions:SetState(ns)
 	end)
 	-- FIX3: Touch-обработчик для мобилы
 	do
@@ -809,8 +811,8 @@ function MacLib:Window(Settings)
 					task.delay(0.1, function()
 						Tween(hideIconBtn, TweenInfo.new(0.12, Enum.EasingStyle.Sine), {ImageTransparency = 0.5}):Play()
 					end)
-					local ns = not WindowFunctions.GetState()
-					WindowFunctions.SetState(ns)
+					local ns = not WindowFunctions:GetState()
+					WindowFunctions:SetState(ns)
 				end
 				_tapStart = nil
 			end
@@ -1119,12 +1121,15 @@ function MacLib:Window(Settings)
 	toggleBtnIcon.ImageTransparency = 0.05
 	toggleBtnIcon.ZIndex = 11
 	toggleBtnIcon.Parent = toggleBtn
+	-- FIX7: делаем updateToggleBtnIcon доступной для SetState через upvalue
+	local _updateToggleBtnIcon
 	local function updateToggleBtnIcon(state)
 		toggleBtnIcon.Image = state and TOGGLE_ICON_CLOSE or TOGGLE_ICON_OPEN
 		Tween(toggleBtn, TweenInfo.new(0.1, Enum.EasingStyle.Sine), {
 			BackgroundColor3 = state and Color3.fromRGB(20,8,8) or Color3.fromRGB(12,12,14)
 		}):Play()
 	end
+	_updateToggleBtnIcon = updateToggleBtnIcon
 	local function animateToggleBtn()
 		-- плавное нажатие: чуть уменьшается и возвращается
 		Tween(toggleBtn, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
@@ -1137,29 +1142,19 @@ function MacLib:Window(Settings)
 		end)
 	end
 
-	toggleBtn.MouseButton1Click:Connect(function()
+	-- FIX1: Activated работает и на Touch и на Mouse — единый обработчик
+	local _toggleBtnDebounce = false
+	local function _doToggle()
+		if _toggleBtnDebounce then return end
+		_toggleBtnDebounce = true
 		animateToggleBtn()
 		local ns = not WindowFunctions:GetState()
 		WindowFunctions:SetState(ns)
-		updateToggleBtnIcon(ns)
-	end)
-	do
-		local tapStart
-		toggleBtn.InputBegan:Connect(function(inp)
-			if inp.UserInputType==Enum.UserInputType.Touch then tapStart=inp.Position end
-		end)
-		toggleBtn.InputEnded:Connect(function(inp)
-			if inp.UserInputType==Enum.UserInputType.Touch and tapStart then
-				if (inp.Position-tapStart).Magnitude < 12 then
-					animateToggleBtn()
-					local ns = not WindowFunctions:GetState()
-					WindowFunctions:SetState(ns)
-					updateToggleBtnIcon(ns)
-				end
-				tapStart = nil
-			end
-		end)
+		-- updateToggleBtnIcon вызовется через SetState→_updateToggleBtnIcon
+		task.delay(0.3, function() _toggleBtnDebounce = false end)
 	end
+	toggleBtn.Activated:Connect(_doToggle)
+	toggleBtn.MouseButton1Click:Connect(_doToggle)
 	updateToggleBtnIcon(true)
 
 	-- Clean up when window is unloaded
@@ -2813,23 +2808,13 @@ function MacLib:Window(Settings)
 						updatePlusText() -- FIX2: инициализация знака кнопки при старте
 
 						plusBtn.MouseButton1Click:Connect(function()
-							-- FIX1: на мобиле нет клавиши — plusBtn сразу вызывает callback
-							if _isMobileKB then
-								if KeybindFunctions.Settings.Callback then
-									task.spawn(KeybindFunctions.Settings.Callback, binded)
-								end
-								Tween(plusBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.6}):Play()
-								task.delay(0.12, function()
-									Tween(plusBtn, TweenInfo.new(0.1, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.88}):Play()
-								end)
-							else
-								showMobileBtn(not _mbVisible)
-								updatePlusText()
-								Tween(plusBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.6}):Play()
-								task.delay(0.12, function()
-									Tween(plusBtn, TweenInfo.new(0.1, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.88}):Play()
-								end)
-							end
+							-- показываем/скрываем mobileKeybindBtn (работает и на мобиле, и на ПК)
+							showMobileBtn(not _mbVisible)
+							updatePlusText()
+							Tween(plusBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.6}):Play()
+							task.delay(0.12, function()
+								Tween(plusBtn, TweenInfo.new(0.1, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.88}):Play()
+							end)
 						end)
 					end
 
@@ -2976,8 +2961,8 @@ function MacLib:Window(Settings)
 
 					local dropdownFrame = Instance.new("ScrollingFrame")
 					dropdownFrame.Name = "DropdownFrame"
-					dropdownFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-					dropdownFrame.BackgroundTransparency = 1
+					dropdownFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+					dropdownFrame.BackgroundTransparency = 0.1
 					dropdownFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					dropdownFrame.BorderSizePixel = 0
 					dropdownFrame.ClipsDescendants = true
@@ -2993,6 +2978,14 @@ function MacLib:Window(Settings)
 					dropdownFrame.BottomImage = ""
 					dropdownFrame.TopImage = ""
 					dropdownFrame.ScrollingDirection = Enum.ScrollingDirection.Y
+
+					-- FIX8: UIStroke чтобы рамка дропдауна совпадала с фоном
+					local _ddStroke = Instance.new("UIStroke")
+					_ddStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					_ddStroke.Color = Color3.fromRGB(255, 255, 255)
+					_ddStroke.Transparency = 0.9
+					_ddStroke.Thickness = 1
+					_ddStroke.Parent = dropdownFrame
 
 					local _ddFC = Instance.new("UICorner")
 					_ddFC.CornerRadius = UDim.new(0, 6)
@@ -3189,7 +3182,9 @@ function MacLib:Window(Settings)
 						local isDropdownOpen = not dropped
 						local maxDropHeight = 200
 						local rawHeight = CalculateDropdownSize()
-						local openHeight = math.min(rawHeight, maxDropHeight + 38)
+						-- FIX8: openHeight = заголовок(38) + список, dropdownFrame = только список
+						local frameH = math.min(rawHeight, maxDropHeight)
+						local openHeight = defaultDropdownSize + math.max(frameH, 1)
 						local targetSize = isDropdownOpen and UDim2.new(1, 0, 0, openHeight) or UDim2.new(1, 0, 0, defaultDropdownSize)
 
 						local dropTween = Tween(dropdown, TweenInfo.new(0.2, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
@@ -3204,16 +3199,15 @@ function MacLib:Window(Settings)
 
 						if isDropdownOpen then
 							dropdownFrame.Visible = true
-							-- clamp frame to rawHeight so last item is never clipped
-							local frameH = math.min(rawHeight, maxDropHeight)
+							-- FIX8: размер фрейма точно совпадает с открытой областью
 							dropdownFrame.Size = UDim2.new(1, 0, 0, math.max(frameH, 1))
 							dropTween.Completed:Connect(function()
 								db = false
 							end)
 						else
 							dropdownFrame.Visible = false
-							dropdownFrame.CanvasPosition = Vector2.new(0,0)
-							dropTween.Completed:Connect(function() db=false end)
+							dropdownFrame.CanvasPosition = Vector2.new(0, 0)
+							dropTween.Completed:Connect(function() db = false end)
 						end
 
 						dropped = isDropdownOpen
@@ -5264,9 +5258,11 @@ function MacLib:Window(Settings)
 			local _vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
 			local _isMobileNotif = UserInputService.TouchEnabled and _vp.X <= 900
 			if _isMobileNotif then
-				notification.Size = UDim2.new(0.88, 0, 0, 0)
-				notification.AnchorPoint = Vector2.new(0.5, 1)
-				notification.Position = UDim2.new(0.5, 0, 1, 0)
+				-- FIX6: компактный размер для мобилы
+				local _mobileW = math.min(200, math.floor(_vp.X * 0.55))
+				notification.Size = UDim2.fromOffset(_mobileW, 0)
+				notification.AnchorPoint = Vector2.new(1, 1)
+				notification.Position = UDim2.new(1, -10, 1, -10)
 			else
 				notification.Size = UDim2.fromOffset(Settings.SizeX or 250, 0)
 			end
@@ -5741,6 +5737,10 @@ function MacLib:Window(Settings)
 		windowState = State
 		base.Visible = State
 		if not State then for _,pt in pairs(parts) do pt.Parent=nil end end
+		-- FIX7: синхронизируем иконку toggleBtn при любом изменении состояния
+		if _updateToggleBtnIcon then
+			_updateToggleBtnIcon(State)
+		end
 	end
 
 	function WindowFunctions:GetState()
