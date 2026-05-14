@@ -3013,8 +3013,8 @@ function MacLib:Window(Settings)
 						end
 						updatePlusText() -- FIX2: инициализация знака кнопки при старте
 
-						plusBtn.MouseButton1Click:Connect(function()
-							-- показываем/скрываем mobileKeybindBtn (работает и на мобиле, и на ПК)
+						plusBtn.Activated:Connect(function()
+							-- show/hide mobileKeybindBtn (works on both mobile and PC)
 							showMobileBtn(not _mbVisible)
 							updatePlusText()
 							Tween(plusBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.6}):Play()
@@ -3772,10 +3772,10 @@ function MacLib:Window(Settings)
 					colorCbg.Name = "NewColor"
 					colorCbg.Image = assets.grid
 					colorCbg.ScaleType = Enum.ScaleType.Tile
-					colorCbg.TileSize = UDim2.fromOffset(500, 500)
+					colorCbg.TileSize = UDim2.fromOffset(7, 7)
 					colorCbg.AnchorPoint = Vector2.new(1, 0.5)
 					colorCbg.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-					colorCbg.BackgroundTransparency = 1
+					colorCbg.BackgroundTransparency = 0
 					colorCbg.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					colorCbg.BorderSizePixel = 0
 					colorCbg.Position = UDim2.fromScale(1, 0.5)
@@ -4449,7 +4449,7 @@ function MacLib:Window(Settings)
 					newColor.Name = "NewColor"
 					newColor.Image = assets.grid
 					newColor.ScaleType = Enum.ScaleType.Tile
-					newColor.TileSize = UDim2.fromOffset(500, 500)
+					newColor.TileSize = UDim2.fromOffset(7, 7)
 					newColor.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 					newColor.BackgroundTransparency = 1
 					newColor.BorderColor3 = Color3.fromRGB(0, 0, 0)
@@ -4480,7 +4480,7 @@ function MacLib:Window(Settings)
 					oldColor.Name = "OldColor"
 					oldColor.Image = assets.grid
 					oldColor.ScaleType = Enum.ScaleType.Tile
-					oldColor.TileSize = UDim2.fromOffset(500, 500)
+					oldColor.TileSize = UDim2.fromOffset(7, 7)
 					oldColor.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 					oldColor.BackgroundTransparency = 1
 					oldColor.BorderColor3 = Color3.fromRGB(0, 0, 0)
@@ -6360,8 +6360,8 @@ function MacLib:Window(Settings)
 		-- Восстанавливаем видимость toggle-кнопки
 		if decoded.toggle_btn_visible ~= nil then
 			MacLib._toggleBtnVisible = decoded.toggle_btn_visible
-			if toggleButtonGui then
-				toggleButtonGui.Enabled = decoded.toggle_btn_visible
+			if toggleBtn then
+				toggleBtn.Visible = decoded.toggle_btn_visible
 			end
 		end
 
@@ -6547,8 +6547,8 @@ function MacLib:Window(Settings)
 	]]
 	function MacLib:SetToggleButtonVisible(state)
 		MacLib._toggleBtnVisible = state
-		if toggleButtonGui then
-			toggleButtonGui.Enabled = state
+		if toggleBtn then
+			toggleBtn.Visible = state
 		end
 		MacLib:SetData("__toggleBtnHidden", not state)
 	end
@@ -7009,5 +7009,64 @@ function MacLib:Demo()
 	tabs.Main:Select()
 	MacLib:LoadAutoLoadConfig()
 end
+
+	--[[
+		MacLib:Preloader(url, callback)
+		Loads an external Lua module via loadstring/HttpGet and injects it into
+		the MacLib element builder context.
+
+		url        -- HTTP URL to raw Lua source (string)
+		callback   -- function(module) called with the loaded module result
+		            -- module receives { MacLib=MacLib, Options=MacLib.Options }
+
+		Example:
+			MacLib:Preloader("https://raw.githubusercontent.com/.../MyElement.lua", function(mod)
+				-- mod is whatever the remote script returns
+				mod:Build(Window)
+			end)
+	]]
+	function MacLib:Preloader(url, callback)
+		assert(type(url) == "string", "Preloader: url must be a string")
+		task.spawn(function()
+			local ok, result = pcall(function()
+				local src
+				if typeof(game) ~= "nil" and game:GetService("HttpService") then
+					src = game:GetService("HttpService"):GetAsync(url)
+				elseif syn and syn.request then
+					src = syn.request({ Url = url, Method = "GET" }).Body
+				elseif http and http.request then
+					src = http.request({ Url = url, Method = "GET" }).Body
+				elseif request then
+					src = request({ Url = url, Method = "GET" }).Body
+				elseif game and game.HttpGet then
+					src = game:HttpGet(url)
+				else
+					error("Preloader: no available HTTP method found")
+				end
+
+				local fn, err = loadstring(src)
+				if not fn then
+					error("Preloader: loadstring failed: " .. tostring(err))
+				end
+
+				-- Inject MacLib context as upvalue-like env table
+				local module = fn({
+					MacLib  = MacLib,
+					Options = MacLib.Options,
+					Window  = nil,  -- user sets this in callback
+				})
+				return module
+			end)
+
+			if ok then
+				if type(callback) == "function" then
+					callback(result)
+				end
+			else
+				warn("[MacLib:Preloader] Failed to load: " .. tostring(result))
+			end
+		end)
+	end
+
 
 return MacLib
