@@ -123,33 +123,9 @@ function MacLib:Window(Settings)
 	baseUIScale.Name = "BaseUIScale"
 	baseUIScale.Parent = base
 
-	-- === AUTO SCALE ===
-	local _designW = (Settings.Size and Settings.Size.X.Offset > 0 and Settings.Size.X.Offset) or 868
-	local _designH = (Settings.Size and Settings.Size.Y.Offset > 0 and Settings.Size.Y.Offset) or 650
-	local _autoScale = Settings.AutoScale ~= false  -- по умолчанию включён
-
-	local function _applyAutoScale()
-		if not _autoScale then return end
-		local vp = workspace.CurrentCamera.ViewportSize
-		if vp.X <= 0 or vp.Y <= 0 then return end
-		local scaleX = vp.X / (_designW + 60)
-		local scaleY = vp.Y / (_designH + 60)
-		local scale  = math.min(scaleX, scaleY)
-		-- Не уменьшаем больше чем до 0.45, не увеличиваем больше 1.0
-		baseUIScale.Scale = math.clamp(scale, 0.45, 1.0)
-	end
-
-	local function _applyAutoScaleAndNotif()
-		_applyAutoScale()
-		notifUIScale.Scale = baseUIScale.Scale
-	end
-
-	_applyAutoScaleAndNotif()
-	workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(_applyAutoScaleAndNotif)
-	baseUIScale:GetPropertyChangedSignal("Scale"):Connect(function()
-		notifUIScale.Scale = baseUIScale.Scale
-	end)
-	-- === END AUTO SCALE ===
+	-- FIX6: Автоскейл убран — Scale фиксирован в 1
+	baseUIScale.Scale = 1
+	notifUIScale.Scale = 1
 
 	local baseUICorner = Instance.new("UICorner")
 	baseUICorner.Name = "BaseUICorner"
@@ -793,24 +769,53 @@ function MacLib:Window(Settings)
 	local hideIconBtn = Instance.new("ImageButton")
 	hideIconBtn.Name = "HideIconBtn"
 	hideIconBtn.Image = "rbxassetid://125716871945612"
-	hideIconBtn.ImageTransparency = 0.35
-	hideIconBtn.AnchorPoint = Vector2.new(0, 0.5)
-	hideIconBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-	hideIconBtn.BackgroundTransparency = 1
-	hideIconBtn.BorderSizePixel = 0
-	hideIconBtn.Position = UDim2.new(0, -5, 0.5, 0)
-	hideIconBtn.Size = UDim2.fromOffset(22, 22)
+	hideIconBtn.ImageTransparency = 0.5
+	hideIconBtn.AnchorPoint = Vector2.new(0, 0.5) -- FIX5: симметрично слева от moveIcon
+	hideIconBtn.Position = UDim2.new(0, -24, 0.5, 0) -- FIX5: левее moveIcon симметрично
+	hideIconBtn.Size = UDim2.fromOffset(18, 18)
 	local _isMobileHide = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 	hideIconBtn.Visible = _isMobileHide and (not Settings.DragStyle or Settings.DragStyle == 1)
-	hideIconBtn.ZIndex = 10
-	hideIconBtn.AutoButtonColor = true
+	hideIconBtn.ZIndex = 5
+	hideIconBtn.AutoButtonColor = false
 	hideIconBtn.Parent = elements
 
-	hideIconBtn.Activated:Connect(function()
-		local ns = not WindowFunctions:GetState()
-		WindowFunctions:SetState(ns)
-		if updateToggleBtnIcon then updateToggleBtnIcon(ns) end
+	hideIconBtn.MouseEnter:Connect(function()
+		Tween(hideIconBtn, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {ImageTransparency = 0.2}):Play()
 	end)
+	hideIconBtn.MouseLeave:Connect(function()
+		Tween(hideIconBtn, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {ImageTransparency = 0.5}):Play()
+	end)
+	hideIconBtn.MouseButton1Click:Connect(function()
+		Tween(hideIconBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {ImageTransparency = 0.05}):Play()
+		task.delay(0.1, function()
+			Tween(hideIconBtn, TweenInfo.new(0.12, Enum.EasingStyle.Sine), {ImageTransparency = 0.5}):Play()
+		end)
+		-- FIX3 ПК: скрываем окно
+		local ns = not WindowFunctions.GetState()
+		WindowFunctions.SetState(ns)
+	end)
+	-- FIX3: Touch-обработчик для мобилы
+	do
+		local _tapStart
+		hideIconBtn.InputBegan:Connect(function(inp)
+			if inp.UserInputType == Enum.UserInputType.Touch then
+				_tapStart = inp.Position
+			end
+		end)
+		hideIconBtn.InputEnded:Connect(function(inp)
+			if inp.UserInputType == Enum.UserInputType.Touch and _tapStart then
+				if (inp.Position - _tapStart).Magnitude < 12 then
+					Tween(hideIconBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {ImageTransparency = 0.05}):Play()
+					task.delay(0.1, function()
+						Tween(hideIconBtn, TweenInfo.new(0.12, Enum.EasingStyle.Sine), {ImageTransparency = 0.5}):Play()
+					end)
+					local ns = not WindowFunctions.GetState()
+					WindowFunctions.SetState(ns)
+				end
+				_tapStart = nil
+			end
+		end)
+	end
 
 	local interact = Instance.new("TextButton")
 	interact.Name = "Interact"
@@ -2607,7 +2612,6 @@ function MacLib:Window(Settings)
 
 					binderBox.FocusLost:Connect(function()
 						focused = false
-						if updatePlusText then updatePlusText() end
 					end)
 
 					UserInputService.InputBegan:Connect(function(inp)
@@ -2630,7 +2634,6 @@ function MacLib:Window(Settings)
 									binded = input.UserInputType
 									binderBox.Text = input.UserInputType.Name
 								end
-								if updatePlusText then updatePlusText() end
 
 								if KeybindFunctions.Settings.onBinded then
 									KeybindFunctions.Settings.onBinded(binded)
@@ -2668,13 +2671,11 @@ function MacLib:Window(Settings)
 						binded = Key
 						reset = false
 						binderBox.Text = Key.Name
-						if updatePlusText then updatePlusText() end
 					end
 
 					function KeybindFunctions:Unbind()
 						binded = nil
 						binderBox.Text = ""
-						if updatePlusText then updatePlusText() end
 					end
 
 					function KeybindFunctions:GetBind()
@@ -2807,18 +2808,28 @@ function MacLib:Window(Settings)
 						end
 
 						local function updatePlusText()
-							local hasKeybind = binded and typeof(binded) == "EnumItem" and binded ~= Enum.KeyCode.Unknown
-							plusBtn.Text = (_mbVisible or hasKeybind) and "−" or "+"
+							plusBtn.Text = _mbVisible and "−" or "+"
 						end
+						updatePlusText() -- FIX2: инициализация знака кнопки при старте
 
 						plusBtn.MouseButton1Click:Connect(function()
-							showMobileBtn(not _mbVisible)
-							updatePlusText()
-							-- визуальный фидбек на кнопке
-							Tween(plusBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.6}):Play()
-							task.delay(0.12, function()
-								Tween(plusBtn, TweenInfo.new(0.1, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.88}):Play()
-							end)
+							-- FIX1: на мобиле нет клавиши — plusBtn сразу вызывает callback
+							if _isMobileKB then
+								if KeybindFunctions.Settings.Callback then
+									task.spawn(KeybindFunctions.Settings.Callback, binded)
+								end
+								Tween(plusBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.6}):Play()
+								task.delay(0.12, function()
+									Tween(plusBtn, TweenInfo.new(0.1, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.88}):Play()
+								end)
+							else
+								showMobileBtn(not _mbVisible)
+								updatePlusText()
+								Tween(plusBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.6}):Play()
+								task.delay(0.12, function()
+									Tween(plusBtn, TweenInfo.new(0.1, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.88}):Play()
+								end)
+							end
 						end)
 					end
 
@@ -5248,7 +5259,18 @@ function MacLib:Window(Settings)
 		notification.BorderColor3 = Color3.fromRGB(0, 0, 0)
 		notification.BorderSizePixel = 0
 		notification.Position = UDim2.fromScale(0.5, 0.5)
-		notification.Size = UDim2.fromOffset(Settings.SizeX or 250, 0)
+		-- FIX4: на мобиле используем относительный размер
+		do
+			local _vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+			local _isMobileNotif = UserInputService.TouchEnabled and _vp.X <= 900
+			if _isMobileNotif then
+				notification.Size = UDim2.new(0.88, 0, 0, 0)
+				notification.AnchorPoint = Vector2.new(0.5, 1)
+				notification.Position = UDim2.new(0.5, 0, 1, 0)
+			else
+				notification.Size = UDim2.fromOffset(Settings.SizeX or 250, 0)
+			end
+		end
 
 		notification.Parent = notifications
 
