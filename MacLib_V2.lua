@@ -3948,10 +3948,9 @@ function MacLib:Window(Settings)
 					uIListLayout1.Padding = UDim.new(0, 25)
 					uIListLayout1.SortOrder = Enum.SortOrder.LayoutOrder
 					uIListLayout1.Parent = colorOptions
-
-					local wheel = Instance.new("Frame")
+										local wheel = Instance.new("Frame")
 					wheel.Name = "Wheel"
-					wheel.AutomaticSize = Enum.AutomaticSize.Y
+					wheel.AutomaticSize = Enum.AutomaticSize.None  -- ИСПРАВЛЕНО: было Y
 					wheel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 					wheel.BackgroundTransparency = 1
 					wheel.BorderColor3 = Color3.fromRGB(0, 0, 0)
@@ -3969,6 +3968,7 @@ function MacLib:Window(Settings)
 					wheel1.Selectable = false
 					wheel1.Size = UDim2.fromOffset(220, 220)
 					wheel1.SizeConstraint = Enum.SizeConstraint.RelativeYY
+					wheel1.LayoutOrder = 0  -- ДОБАВЛЕНО
 
 					local target = Instance.new("ImageLabel")
 					target.Name = "Target"
@@ -3985,16 +3985,25 @@ function MacLib:Window(Settings)
 
 					wheel1.Parent = wheel
 
+					-- ДОБАВЛЕНО: горизонтальный layout внутри wheel-контейнера
+					local wheelUIListLayout = Instance.new("UIListLayout")
+					wheelUIListLayout.Name = "WheelUIListLayout"
+					wheelUIListLayout.Padding = UDim.new(0, 0)
+					wheelUIListLayout.FillDirection = Enum.FillDirection.Horizontal
+					wheelUIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+					wheelUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+					wheelUIListLayout.Parent = wheel
+
 					local inputs = Instance.new("Frame")
 					inputs.Name = "Inputs"
-					inputs.AnchorPoint = Vector2.new(1, 0.5)
+					inputs.AnchorPoint = Vector2.new(0, 0.5)   -- ИСПРАВЛЕНО: было (1, 0.5)
 					inputs.AutomaticSize = Enum.AutomaticSize.XY
 					inputs.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 					inputs.BackgroundTransparency = 1
 					inputs.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					inputs.BorderSizePixel = 0
 					inputs.LayoutOrder = 1
-					inputs.Position = UDim2.fromScale(1, 0.5)
+					inputs.Position = UDim2.fromScale(0, 0.5)  -- ИСПРАВЛЕНО: было (1, 0.5)
 
 					local uIListLayout2 = Instance.new("UIListLayout")
 					uIListLayout2.Name = "UIListLayout"
