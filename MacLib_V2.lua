@@ -2041,9 +2041,29 @@ function MacLib:Window(Settings)
 						ChangeState("Idle")
 					end)
 
-					buttonInteract.MouseButton1Click:Connect(Callback)
+					if ButtonFunctions.Settings.DoubleClick then
+						local _lastClick = 0
+						buttonInteract.MouseButton1Click:Connect(function()
+							local now = tick()
+							if now - _lastClick < 0.4 then
+								Callback()
+								_lastClick = 0
+							else
+								_lastClick = now
+							end
+						end)
+					else
+						buttonInteract.MouseButton1Click:Connect(Callback)
+					end
 					function ButtonFunctions:UpdateName(Name)
+						ButtonFunctions.Settings.Name = Name
 						buttonInteract.Text = Name
+					end
+					function ButtonFunctions:UpdateDescription(Desc)
+						ButtonFunctions.Settings.Description = Desc
+					end
+					function ButtonFunctions:SetCallback(fn)
+						ButtonFunctions.Settings.Callback = fn
 					end
 					function ButtonFunctions:SetVisibility(State)
 						button.Visible = State
@@ -2182,7 +2202,11 @@ function MacLib:Window(Settings)
 						return togglebool
 					end
 					function ToggleFunctions:UpdateName(Name)
+						ToggleFunctions.Settings.Name = Name
 						toggleName.Text = Name
+					end
+					function ToggleFunctions:SetCallback(fn)
+						ToggleFunctions.Settings.Callback = fn
 					end
 					function ToggleFunctions:SetVisibility(State)
 						toggle.Visible = State
@@ -2469,7 +2493,11 @@ function MacLib:Window(Settings)
 					section:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateSliderBarSize)
 
 					function SliderFunctions:UpdateName(Name)
-						sliderName = Name
+						SliderFunctions.Settings.Name = Name
+						sliderName.Text = Name  -- исправлено: было sliderName = Name (перезаписывало объект)
+					end
+					function SliderFunctions:SetCallback(fn)
+						SliderFunctions.Settings.Callback = fn
 					end
 					function SliderFunctions:SetVisibility(State)
 						slider.Visible = State
@@ -2635,16 +2663,30 @@ function MacLib:Window(Settings)
 					end)
 
 					function InputFunctions:UpdateName(Name)
+						InputFunctions.Settings.Name = Name
 						inputName.Text = Name
 					end
 					function InputFunctions:SetVisibility(State)
 						input.Visible = State
 					end
-					function InputFunctions:GetInput()
+					function InputFunctions:GetInput()  -- alias kept for back-compat
 						return InputBox.Text
 					end
+					function InputFunctions:GetText()
+						return InputBox.Text
+					end
+					function InputFunctions:SetCallback(fn)
+						InputFunctions.Settings.Callback = fn
+					end
+					function InputFunctions:SetOnChanged(fn)
+						InputFunctions.Settings.onChanged = fn
+					end
 					function InputFunctions:UpdatePlaceholder(Placeholder)
-						inputBox.PlaceholderText = Placeholder
+						InputBox.PlaceholderText = Placeholder
+					end
+					function InputFunctions:Clear()
+						InputBox.Text = ""
+						InputFunctions.Text = ""
 					end
 					function InputFunctions:UpdateText(Text)
 						local filteredText = AcceptedCharacters(Text)
@@ -2834,6 +2876,17 @@ function MacLib:Window(Settings)
 						keybindName = Name
 					end
 
+					function KeybindFunctions:SetVisibility(State)
+						keybind.Visible = State
+					end
+
+					function KeybindFunctions:UpdateName(Name)
+						KeybindFunctions.Settings.Name = Name
+						keybindName.Text = Name
+					end
+					function KeybindFunctions:SetCallback(fn)
+						KeybindFunctions.Settings.Callback = fn
+					end
 					function KeybindFunctions:SetVisibility(State)
 						keybind.Visible = State
 					end
@@ -3124,13 +3177,11 @@ function MacLib:Window(Settings)
 					dropdownFrame.BorderSizePixel = 0
 					dropdownFrame.ClipsDescendants = true
 					dropdownFrame.ZIndex = 20
-					-- dropdownFrame: чуть уже основного фона dropdown (без padding-расчёта)
-					-- dropdown.Size=1,0 + UIPadding 15/15 → content width = W-30
-					-- dropdownFrame Position=(0,-4) → левый отступ -4 от content = отступ 11px от края section
-					-- dropdownFrame Size=(1,-8) → ширина content-8 = W-30-8 = W-38
-					-- Основной фон = W (весь section), dropdownFrame = W-38 → уже ✓
-					dropdownFrame.Size = UDim2.new(1, -8, 0, 0)
-					dropdownFrame.Position = UDim2.new(0, -4, 0, 38)
+					-- dropdownFrame: симметричный зазор 8px с обеих сторон от dropdown
+					-- dropdown content = W-68 (W=section, -38 section padding, -30 dropdown padding)
+					-- для зазора G=8: Size.X.Offset = 30-2*8 = 14, Position.X = 8-15 = -7
+					dropdownFrame.Size = UDim2.new(1, 14, 0, 0)
+					dropdownFrame.Position = UDim2.new(0, -7, 0, 38)
 					dropdownFrame.Visible = false
 					dropdownFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 					dropdownFrame.CanvasSize = UDim2.new()
@@ -3172,9 +3223,10 @@ function MacLib:Window(Settings)
 					search.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					search.BorderSizePixel = 0
 					search.LayoutOrder = -1
-					-- search: чуть уже тёмного фона
-					search.Size = UDim2.new(1, -16, 0, 30)
-					search.Position = UDim2.new(0, 8, 0, 0)
+					-- search: центрирован, симметрично 10px от краёв dropdownFrame
+					search.Size = UDim2.new(1, -20, 0, 30)
+					search.Position = UDim2.new(0, 10, 0, 0)
+					search.AnchorPoint = Vector2.new(0, 0)
 					search.Parent = dropdownFrame
 					search.Visible = DropdownFunctions.Settings.Search
 
@@ -3364,7 +3416,7 @@ function MacLib:Window(Settings)
 						if isDropdownOpen then
 							dropdownFrame.Visible = true
 							-- FIX8: размер фрейма точно совпадает с открытой областью
-							dropdownFrame.Size = UDim2.new(1, -8, 0, math.max(frameH, 1))
+							dropdownFrame.Size = UDim2.new(1, 14, 0, math.max(frameH, 1))
 							dropTween.Completed:Connect(function()
 								db = false
 							end)
@@ -3525,7 +3577,7 @@ function MacLib:Window(Settings)
 							local openHeight = math.min(rawH, maxDropHeight + 38)
 							dropdown.Size = UDim2.new(1, 0, 0, openHeight)
 							local frameH2 = math.min(rawH, maxDropHeight)
-							dropdownFrame.Size = UDim2.new(1, -8, 0, math.max(frameH2, 1))
+							dropdownFrame.Size = UDim2.new(1, 14, 0, math.max(frameH2, 1))
 						end
 					end
 
@@ -3641,6 +3693,22 @@ function MacLib:Window(Settings)
 					function DropdownFunctions:IsOption(optionName)
 						if not optionName then return end
 						return OptionObjs[optionName] ~= nil
+					end
+
+					function DropdownFunctions:UpdateName(Name)
+						DropdownFunctions.Settings.Name = Name
+						dropdownName.Text = #Selected > 0
+							and (Name .. " • " .. table.concat(Selected, ", "))
+							or (Name .. "...")
+					end
+					function DropdownFunctions:SetCallback(fn)
+						DropdownFunctions.Settings.Callback = fn
+					end
+					function DropdownFunctions:SetVisibility(State)
+						dropdown.Visible = State
+					end
+					function DropdownFunctions:GetValue()
+						return Selected
 					end
 
 					if Flag then
@@ -4926,6 +4994,15 @@ function MacLib:Window(Settings)
 						ColorpickerFunctions.Alpha = alpha
 						colorC.Transparency = alpha
 						updateFromSettings()
+					end
+					function ColorpickerFunctions:GetColor()
+						return ColorpickerFunctions.Color
+					end
+					function ColorpickerFunctions:GetAlpha()
+						return ColorpickerFunctions.Alpha
+					end
+					function ColorpickerFunctions:SetCallback(fn)
+						ColorpickerFunctions.Settings.Callback = fn
 					end
 
 					if Flag then
