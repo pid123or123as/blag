@@ -1976,6 +1976,38 @@ function MacLib:Window(Settings)
 				-- Expose _nextOrder on SectionFunctions for CreateCustomElement
 				SectionFunctions._nextOrder = _nextOrder
 
+				--[[
+					SectionFunctions:ReserveSlot(count)
+
+					Заранее резервирует N мест в секции (создаёт невидимые placeholder-контейнеры).
+					Возвращает массив { frame1, frame2, ... }.
+					Deferred-элементы потом перемещают свои фреймы в эти контейнеры через:
+					  frame.Parent = slot   -- слот уже имеет правильный LayoutOrder
+
+					Пример:
+					  local slots = sec:ReserveSlot(3)  -- до task.defer
+					  task.defer(function()
+					    local bar = sec:Slider(...)
+					    bar._frame.Parent = slots[1]    -- помещаем в зарезервированный слот
+					  end)
+				]]
+				function SectionFunctions:ReserveSlot(count)
+					count = count or 1
+					local slots = {}
+					for i = 1, count do
+						local slot = Instance.new("Frame")
+						slot.Name = "ReservedSlot_" .. i
+						slot.BackgroundTransparency = 1
+						slot.AutomaticSize = Enum.AutomaticSize.Y
+						slot.Size = UDim2.new(1, 0, 0, 0)
+						slot.BorderSizePixel = 0
+						slot.LayoutOrder = _nextOrder()
+						slot.Parent = section
+						table.insert(slots, slot)
+					end
+					return slots
+				end
+
 				local sectionUIPadding = Instance.new("UIPadding")
 				sectionUIPadding.Name = "SectionUIPadding"
 				sectionUIPadding.PaddingBottom = UDim.new(0, 20)
@@ -1994,7 +2026,7 @@ function MacLib:Window(Settings)
 					button.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					button.BorderSizePixel = 0
 					button.Size = UDim2.new(1, 0, 0, 38)
-					button.LayoutOrder = _nextOrder()
+					button.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					button.Parent = section
 
 					local buttonInteract = Instance.new("TextButton")
@@ -2109,7 +2141,7 @@ function MacLib:Window(Settings)
 					toggle.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					toggle.BorderSizePixel = 0
 					toggle.Size = UDim2.new(1, 0, 0, 38)
-					toggle.LayoutOrder = _nextOrder()
+					toggle.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					toggle.Parent = section
 
 					local toggleName = Instance.new("TextLabel")
@@ -2287,7 +2319,7 @@ function MacLib:Window(Settings)
 					slider.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					slider.BorderSizePixel = 0
 					slider.Size = UDim2.new(1, 0, 0, 38)
-					slider.LayoutOrder = _nextOrder()
+					slider.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					slider.Parent = section
 
 					local sliderName = Instance.new("TextLabel")
@@ -2596,7 +2628,7 @@ function MacLib:Window(Settings)
 					input.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					input.BorderSizePixel = 0
 					input.Size = UDim2.new(1, 0, 0, 38)
-					input.LayoutOrder = _nextOrder()
+					input.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					input.Parent = section
 
 					local inputName = Instance.new("TextLabel")
@@ -2798,7 +2830,7 @@ function MacLib:Window(Settings)
 					keybind.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					keybind.BorderSizePixel = 0
 					keybind.Size = UDim2.new(1, 0, 0, 38)
-					keybind.LayoutOrder = _nextOrder()
+					keybind.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					keybind.Parent = section
 
 					local keybindName = Instance.new("TextLabel")
@@ -3206,7 +3238,7 @@ function MacLib:Window(Settings)
 					dropdown.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					dropdown.BorderSizePixel = 0
 					dropdown.Size = UDim2.new(1, 0, 0, 38)
-					dropdown.LayoutOrder = _nextOrder()
+					dropdown.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					dropdown.Parent = section
 					dropdown.ClipsDescendants = false
 
@@ -3860,7 +3892,7 @@ function MacLib:Window(Settings)
 					colorpicker.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					colorpicker.BorderSizePixel = 0
 					colorpicker.Size = UDim2.new(1, 0, 0, 38)
-					colorpicker.LayoutOrder = _nextOrder()
+					colorpicker.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					colorpicker.Parent = section
 
 					local colorpickerName = Instance.new("TextLabel")
@@ -5162,7 +5194,7 @@ function MacLib:Window(Settings)
 					header.BorderSizePixel = 0
 					header.LayoutOrder = 0
 					header.Size = UDim2.fromScale(1, 0)
-					header.LayoutOrder = _nextOrder()
+					header.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					header.Parent = section
 
 					local uIPadding = Instance.new("UIPadding")
@@ -5216,7 +5248,7 @@ function MacLib:Window(Settings)
 					label.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					label.BorderSizePixel = 0
 					label.Size = UDim2.new(1, 0, 0, 38)
-					label.LayoutOrder = _nextOrder()
+					label.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					label.Parent = section
 
 					local labelText = Instance.new("TextLabel")
@@ -5261,7 +5293,7 @@ function MacLib:Window(Settings)
 					subLabel.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					subLabel.BorderSizePixel = 0
 					subLabel.Size = UDim2.new(1, 0, 0, 0)
-					subLabel.LayoutOrder = _nextOrder()
+					subLabel.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					subLabel.Parent = section
 
 					local subLabelText = Instance.new("TextLabel")
@@ -5306,7 +5338,7 @@ function MacLib:Window(Settings)
 					paragraph.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					paragraph.BorderSizePixel = 0
 					paragraph.Size = UDim2.new(1, 0, 0, 38)
-					paragraph.LayoutOrder = _nextOrder()
+					paragraph.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					paragraph.Parent = section
 
 					local paragraphHeader = Instance.new("TextLabel")
@@ -5385,7 +5417,7 @@ function MacLib:Window(Settings)
 					divider.BorderSizePixel = 0
 					divider.Position = UDim2.fromScale(0, 1)
 					divider.Size = UDim2.new(1, 0, 0, 1)
-					divider.LayoutOrder = _nextOrder()
+					divider.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					divider.Parent = section
 
 					local uIPadding = Instance.new("UIPadding")
@@ -5429,7 +5461,7 @@ function MacLib:Window(Settings)
 					spacer.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					spacer.BorderSizePixel = 0
 					spacer.Position = UDim2.fromScale(0, 1)
-					spacer.LayoutOrder = _nextOrder()
+					spacer.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					spacer.Parent = section
 
 					function SpacerFunctions:Remove()
