@@ -217,9 +217,10 @@ return function(ctx)
         inputBox.BackgroundTransparency = 1
         inputBox.Font              = Enum.Font.Gotham
         inputBox.TextSize          = 14
-        inputBox.TextColor3        = Color3.fromRGB(220, 220, 225)   -- fix: white text
-        inputBox.PlaceholderText   = "Paste ur key"
-        inputBox.PlaceholderColor3 = Color3.fromRGB(85, 85, 95)
+        inputBox.TextColor3        = Color3.fromRGB(220, 220, 225)
+        inputBox.PlaceholderText   = "Paste ur key..."
+        inputBox.PlaceholderColor3 = Color3.fromRGB(80, 80, 92)
+        inputBox.Text              = ""   -- ensure starts empty so placeholder shows
         inputBox.ClearTextOnFocus  = true   -- cleared only on FIRST focus (handled below)
         inputBox.TextXAlignment    = Enum.TextXAlignment.Left
         inputBox.ZIndex            = 4
@@ -302,7 +303,7 @@ return function(ctx)
 
         local discordBtn = Instance.new("ImageButton")
         discordBtn.Name              = "DiscordBtn"
-        discordBtn.Size              = UDim2.fromOffset(28, 28)   -- smaller icon
+        discordBtn.Size              = UDim2.fromOffset(34, 34)   -- background size restored
         discordBtn.BackgroundColor3  = Color3.fromRGB(88, 101, 242)
         discordBtn.BorderSizePixel   = 0
         discordBtn.Image             = DISCORD_IMG
@@ -313,6 +314,13 @@ return function(ctx)
         discordBtn.LayoutOrder       = 1
         discordBtn.Parent            = discordCol
         Instance.new("UICorner", discordBtn).CornerRadius = UDim.new(1, 0)
+        -- Padding shrinks the image to 24x24 inside the 34x34 button
+        local discordImgPad = Instance.new("UIPadding")
+        discordImgPad.PaddingTop    = UDim.new(0, 5)
+        discordImgPad.PaddingBottom = UDim.new(0, 5)
+        discordImgPad.PaddingLeft   = UDim.new(0, 5)
+        discordImgPad.PaddingRight  = UDim.new(0, 5)
+        discordImgPad.Parent        = discordBtn
 
         -- "* Clickable" hint below icon
         local clickableLbl = Instance.new("TextLabel")
@@ -335,7 +343,7 @@ return function(ctx)
         hintLbl.Font              = Enum.Font.Gotham
         hintLbl.TextSize          = 12
         hintLbl.TextColor3        = Color3.fromRGB(100, 100, 112)
-        hintLbl.Text              = "Don't have a key? Join us"
+        hintLbl.Text              = "Don't have a key? Join discord"
         hintLbl.TextXAlignment    = Enum.TextXAlignment.Left
         hintLbl.TextWrapped       = true
         hintLbl.LayoutOrder       = 2
@@ -389,39 +397,7 @@ return function(ctx)
         manualLblInner.ZIndex             = 5
         manualLblInner.Parent             = manualBtn
 
-        -- ── "Paste last key" button ─────────────────────────────────────
-        local pasteRow = Instance.new("Frame")
-        pasteRow.Name              = "PasteRow"
-        pasteRow.Size              = UDim2.new(1, 0, 0, 28)
-        pasteRow.BackgroundTransparency = 1
-        pasteRow.LayoutOrder       = 7
-        pasteRow.Parent            = card
-
-        local pasteRowList = Instance.new("UIListLayout")
-        pasteRowList.FillDirection       = Enum.FillDirection.Horizontal
-        pasteRowList.HorizontalAlignment = Enum.HorizontalAlignment.Right
-        pasteRowList.VerticalAlignment   = Enum.VerticalAlignment.Center
-        pasteRowList.Parent              = pasteRow
-
-        local pasteBtn = Instance.new("TextButton")
-        pasteBtn.Name              = "PasteLastKey"
-        pasteBtn.Size              = UDim2.fromOffset(140, 26)
-        pasteBtn.BackgroundColor3  = Color3.fromRGB(22, 22, 28)
-        pasteBtn.BorderSizePixel   = 0
-        pasteBtn.Font              = Enum.Font.Gotham
-        pasteBtn.TextSize          = 12
-        pasteBtn.TextColor3        = Color3.fromRGB(140, 140, 155)
-        pasteBtn.Text              = "Paste last key"
-        pasteBtn.AutoButtonColor   = false
-        pasteBtn.ZIndex            = 4
-        pasteBtn.Parent            = pasteRow
-        Instance.new("UICorner", pasteBtn).CornerRadius = UDim.new(0, 7)
-
-        local pasteStroke = Instance.new("UIStroke")
-        pasteStroke.Color        = Color3.fromRGB(255, 255, 255)
-        pasteStroke.Transparency = 0.92
-        pasteStroke.Thickness    = 1
-        pasteStroke.Parent       = pasteBtn
+        -- (Paste last key is now automatic — no button needed)
 
         -- ── Tween helpers ──────────────────────────────────────────────
         local EASE_OUT  = TweenInfo.new(0.30, Enum.EasingStyle.Back,  Enum.EasingDirection.Out)
@@ -456,6 +432,18 @@ return function(ctx)
             local tInfo = TweenInfo.new(0.28, Enum.EasingStyle.Sine)
             Tw(titleLbl,    tInfo, { TextTransparency = 0 })
             Tw(subtitleLbl, tInfo, { TextTransparency = 0 })
+            -- Auto-fill saved key: if saved key matches current KEY — submit automatically
+            task.defer(function()
+                local saved = readSavedKey()
+                if saved and saved ~= "" then
+                    inputBox.Text = saved
+                    inputBox.ClearTextOnFocus = false
+                    if saved == KEY then
+                        task.wait(0.35)  -- let show animation play a bit first
+                        trySubmit()
+                    end
+                end
+            end)
         end
 
         local function hideAnim(callback)
@@ -529,18 +517,7 @@ return function(ctx)
             if enter then trySubmit() end
         end)
 
-        -- ── Paste last key ─────────────────────────────────────────────
-        pasteBtn.Activated:Connect(function()
-            local saved = readSavedKey()
-            if saved and saved ~= "" then
-                inputBox.Text = saved
-                inputBox.ClearTextOnFocus = false
-                trySubmit()
-            else
-                pasteBtn.Text = "No saved key"
-                task.delay(1.5, function() pasteBtn.Text = "Paste last key" end)
-            end
-        end)
+
 
         -- ── Hover effects ──────────────────────────────────────────────
         submitBtn.MouseEnter:Connect(function() Tw(submitBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(65, 140, 255) }) end)
@@ -549,8 +526,7 @@ return function(ctx)
         manualBtn.MouseLeave:Connect(function() Tw(manualBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(28, 28, 32) }) end)
         discordBtn.MouseEnter:Connect(function() Tw(discordBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(110, 125, 255) }) end)
         discordBtn.MouseLeave:Connect(function() Tw(discordBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(88, 101, 242) }) end)
-        pasteBtn.MouseEnter:Connect(function() Tw(pasteBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(30, 30, 38) }) end)
-        pasteBtn.MouseLeave:Connect(function() Tw(pasteBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(22, 22, 28) }) end)
+
 
         -- ── Discord RPC ────────────────────────────────────────────────
         local function sendDiscordRPC()
