@@ -583,8 +583,14 @@ return function(ctx)
         end
 
         discordBtn.Activated:Connect(openDiscord)
-        -- #9: clicking hint label also opens Discord
-        discordHint.MouseButton1Click:Connect(openDiscord)
+        -- #9: hint label is a TextLabel so we overlay an invisible button for click detection
+        local discordHintBtn = Instance.new("TextButton")
+        discordHintBtn.Size                 = UDim2.fromScale(1, 1)
+        discordHintBtn.BackgroundTransparency = 1
+        discordHintBtn.Text                 = ""
+        discordHintBtn.ZIndex               = discordHint.ZIndex + 1
+        discordHintBtn.Parent               = discordHint
+        discordHintBtn.Activated:Connect(openDiscord)
 
         -- ── Copy link ──────────────────────────────────────────────────
         local _copyDebounce = false
