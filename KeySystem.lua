@@ -303,24 +303,26 @@ return function(ctx)
 
         local discordBtn = Instance.new("ImageButton")
         discordBtn.Name              = "DiscordBtn"
-        discordBtn.Size              = UDim2.fromOffset(34, 34)   -- background size restored
+        discordBtn.Size              = UDim2.fromOffset(34, 34)   -- background 34x34
         discordBtn.BackgroundColor3  = Color3.fromRGB(88, 101, 242)
         discordBtn.BorderSizePixel   = 0
-        discordBtn.Image             = DISCORD_IMG
-        discordBtn.ImageTransparency = 0
-        discordBtn.ScaleType         = Enum.ScaleType.Fit
+        discordBtn.Image             = ""   -- no image on button itself
         discordBtn.AutoButtonColor   = false
         discordBtn.ZIndex            = 4
         discordBtn.LayoutOrder       = 1
         discordBtn.Parent            = discordCol
         Instance.new("UICorner", discordBtn).CornerRadius = UDim.new(1, 0)
-        -- Padding shrinks the image to 24x24 inside the 34x34 button
-        local discordImgPad = Instance.new("UIPadding")
-        discordImgPad.PaddingTop    = UDim.new(0, 5)
-        discordImgPad.PaddingBottom = UDim.new(0, 5)
-        discordImgPad.PaddingLeft   = UDim.new(0, 5)
-        discordImgPad.PaddingRight  = UDim.new(0, 5)
-        discordImgPad.Parent        = discordBtn
+        -- Separate ImageLabel so we control exact size (24x24) independent of button background
+        local discordImg = Instance.new("ImageLabel")
+        discordImg.Name              = "DiscordImg"
+        discordImg.AnchorPoint       = Vector2.new(0.5, 0.5)
+        discordImg.Position          = UDim2.fromScale(0.5, 0.5)
+        discordImg.Size              = UDim2.fromOffset(20, 20)   -- image 20x20 inside 34x34 bg
+        discordImg.BackgroundTransparency = 1
+        discordImg.Image             = DISCORD_IMG
+        discordImg.ScaleType         = Enum.ScaleType.Fit
+        discordImg.ZIndex            = 5
+        discordImg.Parent            = discordBtn
 
         -- "* Clickable" hint below icon
         local clickableLbl = Instance.new("TextLabel")
@@ -363,6 +365,11 @@ return function(ctx)
         manualBtn.ZIndex           = 4
         manualBtn.LayoutOrder      = 3
         manualBtn.Parent           = bottomRow
+
+        -- Push Copy link button right with left padding
+        local manualLeftPad = Instance.new("UIPadding")
+        manualLeftPad.PaddingLeft = UDim.new(0, 10)
+        manualLeftPad.Parent      = manualBtn
         Instance.new("UICorner", manualBtn).CornerRadius = UDim.new(0, 8)
 
         local manualStroke = Instance.new("UIStroke")
@@ -552,17 +559,20 @@ return function(ctx)
         discordBtn.Activated:Connect(function() task.spawn(sendDiscordRPC) end)
 
         -- ── Copy link ──────────────────────────────────────────────────
+        local _copyDebounce = false
         manualBtn.Activated:Connect(function()
+            if _copyDebounce then return end
+            _copyDebounce = true
             pcall(function()
                 if setclipboard then setclipboard(DISCORD_LINK)
                 elseif toclipboard then toclipboard(DISCORD_LINK) end
             end)
-            local origText = manualLblInner.Text
             manualLblInner.Text        = "Copied!"
             manualIcon.ImageColor3     = Color3.fromRGB(60, 210, 95)
             task.delay(1.5, function()
-                manualLblInner.Text    = origText
+                manualLblInner.Text    = MANUAL_TEXT
                 manualIcon.ImageColor3 = Color3.fromRGB(200, 200, 210)
+                _copyDebounce = false
             end)
         end)
 
