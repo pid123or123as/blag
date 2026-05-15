@@ -1,50 +1,52 @@
 --[[
-    MacLib — KeySystem
+    MacLib — KeySystem element
     MacLib:KeySystem(config) -> KeySystemFunctions
 
     config = {
-        Key             = "1234",
-        Title           = "Key System",
-        Subtitle        = "Enter your key to continue.",
-        DiscordInvite   = "A58yhBsJfY",
-        DiscordLink     = "https://discord.gg/A58yhBsJfY",
-        ManualBtnText   = "Copy link",
-        ManualCopyImage = "rbxassetid://90434151822042",
-        DiscordImage    = "rbxassetid://101192191207677",
-        Scale           = 1,          -- initial UI scale (same as MacLib SetScale)
-        onCorrect       = function() end,
-        onIncorrect     = function(k) end,
+        Key              = "1234",
+        Title            = "Key System",
+        Subtitle         = "Enter your key to continue.",
+        DiscordInvite    = "A58yhBsJfY",
+        DiscordLink      = "https://discord.gg/A58yhBsJfY",
+        ManualBtnText    = "Copy link",
+        ManualCopyImage  = "rbxassetid://90434151822042",
+        DiscordImage     = "rbxassetid://101192191207677",
+        onCorrect        = function() end,
+        onIncorrect      = function(k) end,
     }
 
-    Methods:
-        :Show()
-        :Hide()
-        :Destroy()
-        :SetKey(key)
-        :SetScale(scale)   -- rescale the card (0.5 – 2.0)
+    KeySystemFunctions:Show()
+    KeySystemFunctions:Hide()
+    KeySystemFunctions:Destroy()
+    KeySystemFunctions:SetKey(key)
 ]]
 
 return function(ctx)
     local MacLib       = ctx and ctx.MacLib or _G.MacLib
-    local TweenService = game:GetService("TweenService")
-    local UIS          = game:GetService("UserInputService")
     local HttpService  = game:GetService("HttpService")
+    local TweenService = game:GetService("TweenService")
 
-    local function Tween(obj, info, goal)
+    local function Tw(obj, info, goal)
         local t = TweenService:Create(obj, info, goal); t:Play(); return t
     end
 
-    -- ── GetGui: highest possible DisplayOrder, protected ──────────────
-    local function GetGui()
-        local sg = Instance.new("ScreenGui")
-        sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-        sg.ResetOnSpawn   = false
-        sg.DisplayOrder   = 999999   -- #1: above all other GUIs including MacLib
-        sg.IgnoreGuiInset = true
-        local protect = (syn and syn.protect_gui) or (protect_gui) or nil
-        if protect then pcall(protect, sg) end
-        sg.Parent = (gethui and gethui()) or game:GetService("CoreGui")
-        return sg
+    -- Reuse MacLib's own GetGui so display order and parent match exactly
+    local function MakeGui()
+        local newGui = Instance.new("ScreenGui")
+        newGui.ScreenInsets    = Enum.ScreenInsets.None
+        newGui.ResetOnSpawn    = false
+        newGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
+        newGui.DisplayOrder    = 2147483647   -- same as MacLib main GUI
+
+        local RunService   = game:GetService("RunService")
+        local LocalPlayer  = game:GetService("Players").LocalPlayer
+        local parent = RunService:IsStudio()
+            and LocalPlayer:FindFirstChild("PlayerGui")
+            or  (gethui and gethui())
+            or  (cloneref and cloneref(game:GetService("CoreGui")) or game:GetService("CoreGui"))
+
+        newGui.Parent = parent
+        return newGui
     end
 
     function MacLib:KeySystem(cfg)
@@ -53,110 +55,89 @@ return function(ctx)
         local TITLE        = cfg.Title    or "Key System"
         local SUBTITLE     = cfg.Subtitle or "Enter your key to continue."
         local DISCORD_CODE = cfg.DiscordInvite or ""
-        local DISCORD_LINK = cfg.DiscordLink   or ("https://discord.gg/" .. DISCORD_CODE)
+        local DISCORD_LINK = cfg.DiscordLink or ("https://discord.gg/" .. DISCORD_CODE)
         local MANUAL_TEXT  = cfg.ManualBtnText  or "Copy link"
         local MANUAL_IMG   = cfg.ManualCopyImage or "rbxassetid://90434151822042"
         local DISCORD_IMG  = cfg.DiscordImage    or "rbxassetid://101192191207677"
-        local INIT_SCALE   = cfg.Scale or 1
 
-        -- ── Build GUI ──────────────────────────────────────────────────
-        local ksGui = GetGui()
+        -- ── Key file persistence via MacLib:GetFolder() ────────────────
+        local KEY_FILE = nil
+        local function updateKeyFile(key)
+            pcall(function()
+                local folder = MacLib:GetFolder()
+                if folder and writefile then
+                    KEY_FILE = folder .. "/key.syl"
+                    writefile(KEY_FILE, tostring(key))
+                end
+            end)
+        end
+        local function readSavedKey()
+            local ok, val = pcall(function()
+                local folder = MacLib:GetFolder()
+                if folder and isfile and readfile then
+                    local path = folder .. "/key.syl"
+                    if isfile(path) then return readfile(path) end
+                end
+                return nil
+            end)
+            return ok and val or nil
+        end
+
+        -- ── GUI structure ──────────────────────────────────────────────
+        local ksGui = MakeGui()
         ksGui.Name    = "MacLibKeySystem"
         ksGui.Enabled = false
 
-        -- #8 Anti-bypass: prevent deletion of the ScreenGui
-        local _guardConn
-        _guardConn = ksGui.AncestryChanged:Connect(function()
-            if not ksGui.Parent then
-                -- re-parent immediately
-                local ok = pcall(function()
-                    ksGui.Parent = (gethui and gethui()) or game:GetService("CoreGui")
-                end)
-                if not ok then
-                    -- last resort: recreate (rare edge case)
-                    task.defer(function()
-                        ksGui = GetGui()
-                        ksGui.Enabled = true
-                    end)
-                end
-            end
-        end)
-
-        -- Blocker: intercepts all input while KeySystem is visible
-        -- #8 Also blocks the MacLib window from receiving clicks
+        -- Full-screen input blocker (prevents clicking through to MacLib)
         local blocker = Instance.new("Frame")
-        blocker.Name             = "Blocker"
-        blocker.Size             = UDim2.fromScale(1, 1)
+        blocker.Name                 = "Blocker"
+        blocker.Size                 = UDim2.fromScale(1, 1)
         blocker.BackgroundTransparency = 1
-        blocker.BorderSizePixel  = 0
-        blocker.ZIndex           = 1
-        -- Making it a button eats all Activated/MouseButton1Click events
+        blocker.BorderSizePixel      = 0
+        blocker.ZIndex               = 1
+        -- Intercept all input so nothing behind is clickable
         local blockerBtn = Instance.new("TextButton")
-        blockerBtn.Size              = UDim2.fromScale(1, 1)
+        blockerBtn.Size               = UDim2.fromScale(1, 1)
         blockerBtn.BackgroundTransparency = 1
-        blockerBtn.Text              = ""
-        blockerBtn.ZIndex            = 1
-        blockerBtn.Parent            = blocker
-        blocker.Parent               = ksGui
+        blockerBtn.BorderSizePixel    = 0
+        blockerBtn.Text               = ""
+        blockerBtn.AutoButtonColor    = false
+        blockerBtn.ZIndex             = 1
+        blockerBtn.Parent             = blocker
+        blocker.Parent = ksGui
 
-        -- Backdrop dim
+        -- Backdrop
         local backdrop = Instance.new("Frame")
-        backdrop.Name                = "Backdrop"
-        backdrop.Size                = UDim2.fromScale(1, 1)
-        backdrop.BackgroundColor3    = Color3.fromRGB(0, 0, 0)
+        backdrop.Name                 = "Backdrop"
+        backdrop.Size                 = UDim2.fromScale(1, 1)
+        backdrop.BackgroundColor3     = Color3.fromRGB(0, 0, 0)
         backdrop.BackgroundTransparency = 1
-        backdrop.BorderSizePixel     = 0
-        backdrop.ZIndex              = 2
-        backdrop.Parent              = ksGui
-
-        -- Card container (holds UIScale for SetScale support)
-        local cardHolder = Instance.new("Frame")
-        cardHolder.Name              = "CardHolder"
-        cardHolder.AnchorPoint       = Vector2.new(0.5, 0.5)
-        cardHolder.Position          = UDim2.fromScale(0.5, 0.5)
-        cardHolder.Size              = UDim2.fromOffset(390, 0)
-        cardHolder.AutomaticSize     = Enum.AutomaticSize.Y
-        cardHolder.BackgroundTransparency = 1
-        cardHolder.BorderSizePixel   = 0
-        cardHolder.ZIndex            = 3
-        cardHolder.ClipsDescendants  = false
-        cardHolder.Parent            = ksGui
-
-        -- #10 SetScale UIScale
-        local cardUIScale = Instance.new("UIScale")
-        cardUIScale.Scale  = INIT_SCALE
-        cardUIScale.Parent = cardHolder
-
-        -- Bounce scale (separate from user scale)
-        local cardScale = Instance.new("UIScale")
-        cardScale.Scale  = 0.88
-        -- We'll drive bounce via cardHolder transform instead; keep single UIScale
-        -- Actually Roblox supports only one UIScale → we multiply them via a wrapper
-        -- Simpler: animate Position Y offset for bounce instead
-        cardHolder.Position = UDim2.new(0.5, 0, 0.5, 20)
+        backdrop.BorderSizePixel      = 0
+        backdrop.ZIndex               = 2
+        backdrop.Parent               = ksGui
 
         -- Card
         local card = Instance.new("Frame")
-        card.Name                = "Card"
-        card.Size                = UDim2.fromScale(1, 0)
-        card.AutomaticSize       = Enum.AutomaticSize.Y
-        card.BackgroundColor3    = Color3.fromRGB(13, 13, 15)
+        card.Name            = "Card"
+        card.AnchorPoint     = Vector2.new(0.5, 0.5)
+        card.Position        = UDim2.fromScale(0.5, 0.5)
+        card.Size            = UDim2.fromOffset(390, 0)
+        card.AutomaticSize   = Enum.AutomaticSize.Y
+        card.BackgroundColor3 = Color3.fromRGB(13, 13, 15)
         card.BackgroundTransparency = 1
-        card.BorderSizePixel     = 0
-        card.ZIndex              = 3
-        card.ClipsDescendants    = false
-        card.Parent              = cardHolder
+        card.BorderSizePixel = 0
+        card.ZIndex          = 3
+        card.ClipsDescendants = false
+        card.Parent          = ksGui
 
-        local cardCorner = Instance.new("UICorner")
-        cardCorner.CornerRadius  = UDim.new(0, 16)
-        cardCorner.Parent        = card
+        Instance.new("UICorner", card).CornerRadius = UDim.new(0, 16)
 
         local cardStroke = Instance.new("UIStroke")
-        cardStroke.Color         = Color3.fromRGB(255, 255, 255)
-        cardStroke.Transparency  = 0.90
-        cardStroke.Thickness     = 1
+        cardStroke.Color           = Color3.fromRGB(255, 255, 255)
+        cardStroke.Transparency    = 0.90
+        cardStroke.Thickness       = 1
         cardStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        cardStroke.Parent        = card
+        cardStroke.Parent          = card
 
         local cardPad = Instance.new("UIPadding")
         cardPad.PaddingTop    = UDim.new(0, 28)
@@ -166,356 +147,380 @@ return function(ctx)
         cardPad.Parent        = card
 
         local cardList = Instance.new("UIListLayout")
-        cardList.Padding              = UDim.new(0, 14)
-        cardList.SortOrder            = Enum.SortOrder.LayoutOrder
-        cardList.HorizontalAlignment  = Enum.HorizontalAlignment.Center
-        cardList.Parent               = card
+        cardList.Padding             = UDim.new(0, 12)
+        cardList.SortOrder           = Enum.SortOrder.LayoutOrder
+        cardList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        cardList.Parent              = card
+
+        -- UIScale for bounce
+        local cardScale = Instance.new("UIScale")
+        cardScale.Scale  = 0.88
+        cardScale.Parent = card
 
         -- ── Title ──────────────────────────────────────────────────────
-        local titleLbl = Instance.new("TextLabel")
-        titleLbl.Name                = "Title"
-        titleLbl.Size                = UDim2.new(1, 0, 0, 28)
-        titleLbl.BackgroundTransparency = 1
-        titleLbl.Font                = Enum.Font.GothamBold
-        titleLbl.TextSize            = 20
-        titleLbl.TextColor3          = Color3.fromRGB(240, 240, 240)
-        titleLbl.Text                = TITLE   -- #7 set via cfg
-        titleLbl.TextXAlignment      = Enum.TextXAlignment.Center
-        titleLbl.TextTransparency    = 1
-        titleLbl.LayoutOrder         = 1
-        titleLbl.Parent              = card
+        local function makeLbl(name, size, font, tsize, color, text, align, lo)
+            local lbl = Instance.new("TextLabel")
+            lbl.Name                = name
+            lbl.Size                = size
+            lbl.BackgroundTransparency = 1
+            lbl.Font                = font
+            lbl.TextSize            = tsize
+            lbl.TextColor3          = color
+            lbl.Text                = text
+            lbl.TextXAlignment      = align or Enum.TextXAlignment.Center
+            lbl.TextTransparency    = 1
+            lbl.LayoutOrder         = lo
+            lbl.Parent              = card
+            return lbl
+        end
 
-        local subtitleLbl = Instance.new("TextLabel")
-        subtitleLbl.Name             = "Subtitle"
-        subtitleLbl.Size             = UDim2.new(1, 0, 0, 18)
-        subtitleLbl.BackgroundTransparency = 1
-        subtitleLbl.Font             = Enum.Font.Gotham
-        subtitleLbl.TextSize         = 13
-        subtitleLbl.TextColor3       = Color3.fromRGB(140, 140, 150)
-        subtitleLbl.Text             = SUBTITLE
-        subtitleLbl.TextXAlignment   = Enum.TextXAlignment.Center
-        subtitleLbl.TextTransparency = 1
-        subtitleLbl.LayoutOrder      = 2
-        subtitleLbl.Parent           = card
+        local titleLbl = makeLbl("Title", UDim2.new(1,0,0,26),
+            Enum.Font.GothamBold, 20, Color3.fromRGB(235,235,235), TITLE,
+            Enum.TextXAlignment.Center, 1)
+        local subtitleLbl = makeLbl("Subtitle", UDim2.new(1,0,0,16),
+            Enum.Font.Gotham, 13, Color3.fromRGB(130,130,140), SUBTITLE,
+            Enum.TextXAlignment.Center, 2)
 
-        -- Divider
+        -- ── Divider ────────────────────────────────────────────────────
         local divider = Instance.new("Frame")
-        divider.Size                 = UDim2.new(1, 0, 0, 1)
-        divider.BackgroundColor3     = Color3.fromRGB(255, 255, 255)
+        divider.Size                  = UDim2.new(1, 0, 0, 1)
+        divider.BackgroundColor3      = Color3.fromRGB(255, 255, 255)
         divider.BackgroundTransparency = 0.92
-        divider.BorderSizePixel      = 0
-        divider.LayoutOrder          = 3
-        divider.Parent               = card
+        divider.BorderSizePixel       = 0
+        divider.LayoutOrder           = 3
+        divider.Parent                = card
 
         -- ── Input row ─────────────────────────────────────────────────
         local inputFrame = Instance.new("Frame")
         inputFrame.Name              = "InputRow"
         inputFrame.Size              = UDim2.new(1, 0, 0, 40)
         inputFrame.BackgroundColor3  = Color3.fromRGB(22, 22, 26)
+        inputFrame.BackgroundTransparency = 0
         inputFrame.BorderSizePixel   = 0
         inputFrame.LayoutOrder       = 4
         inputFrame.Parent            = card
 
-        local inputCorner = Instance.new("UICorner")
-        inputCorner.CornerRadius     = UDim.new(0, 10)
-        inputCorner.Parent           = inputFrame
+        Instance.new("UICorner", inputFrame).CornerRadius = UDim.new(0, 10)
 
         local inputStroke = Instance.new("UIStroke")
-        inputStroke.Color            = Color3.fromRGB(255, 255, 255)
-        inputStroke.Transparency     = 0.88
-        inputStroke.Thickness        = 1
-        inputStroke.ApplyStrokeMode  = Enum.ApplyStrokeMode.Border
-        inputStroke.Parent           = inputFrame
+        inputStroke.Color           = Color3.fromRGB(255, 255, 255)
+        inputStroke.Transparency    = 0.88
+        inputStroke.Thickness       = 1
+        inputStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        inputStroke.Parent          = inputFrame
 
         local inputBox = Instance.new("TextBox")
-        inputBox.Name                = "Input"
-        inputBox.AnchorPoint         = Vector2.new(0, 0.5)
-        inputBox.Position            = UDim2.new(0, 14, 0.5, 0)
-        inputBox.Size                = UDim2.new(1, -100, 0, 28)
+        inputBox.Name              = "Input"
+        inputBox.AnchorPoint       = Vector2.new(0, 0.5)
+        inputBox.Position          = UDim2.new(0, 14, 0.5, 0)
+        inputBox.Size              = UDim2.new(1, -100, 0, 28)
         inputBox.BackgroundTransparency = 1
-        inputBox.Font                = Enum.Font.Gotham
-        inputBox.TextSize            = 14
-        inputBox.TextColor3          = Color3.fromRGB(220, 220, 220)
-        inputBox.PlaceholderText     = "Enter key..."
-        inputBox.PlaceholderColor3   = Color3.fromRGB(90, 90, 100)
-        inputBox.ClearTextOnFocus    = true   -- #2 clear on focus
-        inputBox.TextXAlignment      = Enum.TextXAlignment.Left
-        inputBox.ZIndex              = 4
-        inputBox.Parent              = inputFrame
+        inputBox.Font              = Enum.Font.Gotham
+        inputBox.TextSize          = 14
+        inputBox.TextColor3        = Color3.fromRGB(220, 220, 225)   -- fix: white text
+        inputBox.PlaceholderText   = "Paste ur key"
+        inputBox.PlaceholderColor3 = Color3.fromRGB(85, 85, 95)
+        inputBox.ClearTextOnFocus  = true   -- cleared only on FIRST focus (handled below)
+        inputBox.TextXAlignment    = Enum.TextXAlignment.Left
+        inputBox.ZIndex            = 4
+        inputBox.Parent            = inputFrame
 
+        -- Clear only once on first focus
+        local _clearedOnce = false
+        inputBox.Focused:Connect(function()
+            if not _clearedOnce then
+                _clearedOnce = true
+                -- ClearTextOnFocus = true handles it the first time
+            else
+                inputBox.ClearTextOnFocus = false
+            end
+        end)
+
+        -- Submit button
         local submitBtn = Instance.new("TextButton")
-        submitBtn.Name               = "Submit"
-        submitBtn.AnchorPoint        = Vector2.new(1, 0.5)
-        submitBtn.Position           = UDim2.new(1, -8, 0.5, 0)
-        submitBtn.Size               = UDim2.fromOffset(72, 28)
-        submitBtn.BackgroundColor3   = Color3.fromRGB(40, 120, 255)
-        submitBtn.BorderSizePixel    = 0
-        submitBtn.Font               = Enum.Font.GothamSemibold
-        submitBtn.TextSize           = 13
-        submitBtn.TextColor3         = Color3.fromRGB(255, 255, 255)
-        submitBtn.Text               = "Submit"
-        submitBtn.AutoButtonColor    = false
-        submitBtn.ZIndex             = 5
-        submitBtn.Parent             = inputFrame
-
-        local submitCorner = Instance.new("UICorner")
-        submitCorner.CornerRadius    = UDim.new(0, 7)
-        submitCorner.Parent          = submitBtn
+        submitBtn.Name            = "Submit"
+        submitBtn.AnchorPoint     = Vector2.new(1, 0.5)
+        submitBtn.Position        = UDim2.new(1, -8, 0.5, 0)
+        submitBtn.Size            = UDim2.fromOffset(72, 28)
+        submitBtn.BackgroundColor3 = Color3.fromRGB(40, 120, 255)
+        submitBtn.BorderSizePixel = 0
+        submitBtn.Font            = Enum.Font.GothamSemibold
+        submitBtn.TextSize        = 13
+        submitBtn.TextColor3      = Color3.fromRGB(255, 255, 255)
+        submitBtn.Text            = "Submit"
+        submitBtn.AutoButtonColor = false
+        submitBtn.ZIndex          = 5
+        submitBtn.Parent          = inputFrame
+        Instance.new("UICorner", submitBtn).CornerRadius = UDim.new(0, 7)
 
         -- ── Status label ───────────────────────────────────────────────
         local statusLbl = Instance.new("TextLabel")
-        statusLbl.Name               = "Status"
-        statusLbl.Size               = UDim2.new(1, 0, 0, 16)
+        statusLbl.Name              = "Status"
+        statusLbl.Size              = UDim2.new(1, 0, 0, 14)
         statusLbl.BackgroundTransparency = 1
-        statusLbl.Font               = Enum.Font.Gotham
-        statusLbl.TextSize           = 12
-        statusLbl.TextColor3         = Color3.fromRGB(100, 100, 110)
-        statusLbl.TextTransparency   = 1
-        statusLbl.Text               = " "
-        statusLbl.TextXAlignment     = Enum.TextXAlignment.Center
-        statusLbl.LayoutOrder        = 5
-        statusLbl.Parent             = card
+        statusLbl.Font              = Enum.Font.Gotham
+        statusLbl.TextSize          = 12
+        statusLbl.TextColor3        = Color3.fromRGB(100, 100, 110)
+        statusLbl.Text              = " "
+        statusLbl.TextXAlignment    = Enum.TextXAlignment.Center
+        statusLbl.TextTransparency  = 0
+        statusLbl.LayoutOrder       = 5
+        statusLbl.Parent            = card
 
         -- ── Bottom row ─────────────────────────────────────────────────
+        -- Layout: [Discord icon + "Clickable" label] [hint text] [Copy link btn]
         local bottomRow = Instance.new("Frame")
-        bottomRow.Name               = "BottomRow"
-        bottomRow.Size               = UDim2.new(1, 0, 0, 36)
+        bottomRow.Name              = "BottomRow"
+        bottomRow.Size              = UDim2.new(1, 0, 0, 40)
         bottomRow.BackgroundTransparency = 1
-        bottomRow.LayoutOrder        = 6
-        bottomRow.Parent             = card
+        bottomRow.LayoutOrder       = 6
+        bottomRow.Parent            = card
 
         local bottomList = Instance.new("UIListLayout")
-        bottomList.FillDirection     = Enum.FillDirection.Horizontal
-        bottomList.HorizontalAlignment = Enum.HorizontalAlignment.Left
-        bottomList.VerticalAlignment = Enum.VerticalAlignment.Center
-        bottomList.Padding           = UDim.new(0, 10)
-        bottomList.SortOrder         = Enum.SortOrder.LayoutOrder
-        bottomList.Parent            = bottomRow
+        bottomList.FillDirection        = Enum.FillDirection.Horizontal
+        bottomList.HorizontalAlignment  = Enum.HorizontalAlignment.Left
+        bottomList.VerticalAlignment    = Enum.VerticalAlignment.Center
+        bottomList.Padding              = UDim.new(0, 8)
+        bottomList.SortOrder            = Enum.SortOrder.LayoutOrder
+        bottomList.Parent               = bottomRow
 
-        -- #3 Discord icon: button is 36px, image inset to 22px to look smaller
+        -- Discord icon column (icon + "* Clickable" label below)
+        local discordCol = Instance.new("Frame")
+        discordCol.Name              = "DiscordCol"
+        discordCol.Size              = UDim2.fromOffset(36, 40)
+        discordCol.BackgroundTransparency = 1
+        discordCol.LayoutOrder       = 1
+        discordCol.Parent            = bottomRow
+
+        local discordColList = Instance.new("UIListLayout")
+        discordColList.FillDirection        = Enum.FillDirection.Vertical
+        discordColList.HorizontalAlignment  = Enum.HorizontalAlignment.Center
+        discordColList.VerticalAlignment    = Enum.VerticalAlignment.Center
+        discordColList.Padding              = UDim.new(0, 2)
+        discordColList.SortOrder            = Enum.SortOrder.LayoutOrder
+        discordColList.Parent               = discordCol
+
         local discordBtn = Instance.new("ImageButton")
         discordBtn.Name              = "DiscordBtn"
-        discordBtn.Size              = UDim2.fromOffset(36, 36)
+        discordBtn.Size              = UDim2.fromOffset(28, 28)   -- smaller icon
         discordBtn.BackgroundColor3  = Color3.fromRGB(88, 101, 242)
         discordBtn.BorderSizePixel   = 0
         discordBtn.Image             = DISCORD_IMG
-        discordBtn.ImageRectSize     = Vector2.new(0, 0)  -- full image
-        discordBtn.AutoButtonColor   = false
-        discordBtn.ScaleType         = Enum.ScaleType.Fit
         discordBtn.ImageTransparency = 0
+        discordBtn.ScaleType         = Enum.ScaleType.Fit
+        discordBtn.AutoButtonColor   = false
         discordBtn.ZIndex            = 4
         discordBtn.LayoutOrder       = 1
-        discordBtn.Parent            = bottomRow
+        discordBtn.Parent            = discordCol
+        Instance.new("UICorner", discordBtn).CornerRadius = UDim.new(1, 0)
 
-        -- #3 icon smaller via UIPadding on the image inside the button
-        local discordImgPad = Instance.new("UIPadding")
-        discordImgPad.PaddingTop    = UDim.new(0, 7)
-        discordImgPad.PaddingBottom = UDim.new(0, 7)
-        discordImgPad.PaddingLeft   = UDim.new(0, 7)
-        discordImgPad.PaddingRight  = UDim.new(0, 7)
-        discordImgPad.Parent        = discordBtn
+        -- "* Clickable" hint below icon
+        local clickableLbl = Instance.new("TextLabel")
+        clickableLbl.Name              = "Clickable"
+        clickableLbl.Size              = UDim2.fromOffset(46, 12)
+        clickableLbl.BackgroundTransparency = 1
+        clickableLbl.Font              = Enum.Font.Gotham
+        clickableLbl.TextSize          = 9
+        clickableLbl.TextColor3        = Color3.fromRGB(90, 90, 100)
+        clickableLbl.Text              = "* Clickable"
+        clickableLbl.TextXAlignment    = Enum.TextXAlignment.Center
+        clickableLbl.LayoutOrder       = 2
+        clickableLbl.Parent            = discordCol
 
-        local discordCorner = Instance.new("UICorner")
-        discordCorner.CornerRadius   = UDim.new(1, 0)
-        discordCorner.Parent         = discordBtn
+        -- Hint text "Don't have a key? Join us"
+        local hintLbl = Instance.new("TextLabel")
+        hintLbl.Name              = "Hint"
+        hintLbl.Size              = UDim2.new(1, -36-8-130-8, 1, 0)   -- fills remaining space
+        hintLbl.BackgroundTransparency = 1
+        hintLbl.Font              = Enum.Font.Gotham
+        hintLbl.TextSize          = 12
+        hintLbl.TextColor3        = Color3.fromRGB(100, 100, 112)
+        hintLbl.Text              = "Don't have a key? Join us"
+        hintLbl.TextXAlignment    = Enum.TextXAlignment.Left
+        hintLbl.TextWrapped       = true
+        hintLbl.LayoutOrder       = 2
+        hintLbl.Parent            = bottomRow
 
-        -- #9 Subtle "clickable" hint: small arrow label next to the button
-        local discordHint = Instance.new("TextLabel")
-        discordHint.Name             = "DiscordHint"
-        discordHint.Size             = UDim2.new(0, 140, 1, 0)
-        discordHint.BackgroundTransparency = 1
-        discordHint.Font             = Enum.Font.Gotham
-        discordHint.TextSize         = 12
-        discordHint.TextColor3       = Color3.fromRGB(110, 110, 125)
-        discordHint.RichText         = true
-        -- underline effect via RichText to hint it's clickable
-        discordHint.Text             = "Don't have a key? <u>Join Discord ↗</u>"
-        discordHint.TextXAlignment   = Enum.TextXAlignment.Left
-        discordHint.LayoutOrder      = 2
-        discordHint.Parent           = bottomRow
-
-        -- Copy button
+        -- Copy link button (rightmost)
         local manualBtn = Instance.new("TextButton")
-        manualBtn.Name               = "ManualBtn"
-        manualBtn.Size               = UDim2.fromOffset(110, 30)
-        manualBtn.BackgroundColor3   = Color3.fromRGB(28, 28, 32)
-        manualBtn.BorderSizePixel    = 0
-        manualBtn.Font               = Enum.Font.GothamSemibold
-        manualBtn.TextSize           = 12
-        manualBtn.TextColor3         = Color3.fromRGB(180, 180, 190)
-        manualBtn.Text               = ""
-        manualBtn.AutoButtonColor    = false
-        manualBtn.ZIndex             = 4
-        manualBtn.LayoutOrder        = 3
-        manualBtn.Parent             = bottomRow
-
-        local manualCorner = Instance.new("UICorner")
-        manualCorner.CornerRadius    = UDim.new(0, 8)
-        manualCorner.Parent          = manualBtn
+        manualBtn.Name             = "ManualBtn"
+        manualBtn.Size             = UDim2.fromOffset(100, 28)
+        manualBtn.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
+        manualBtn.BorderSizePixel  = 0
+        manualBtn.Font             = Enum.Font.GothamSemibold
+        manualBtn.TextSize         = 11
+        manualBtn.TextColor3       = Color3.fromRGB(170, 170, 180)
+        manualBtn.Text             = ""
+        manualBtn.AutoButtonColor  = false
+        manualBtn.ZIndex           = 4
+        manualBtn.LayoutOrder      = 3
+        manualBtn.Parent           = bottomRow
+        Instance.new("UICorner", manualBtn).CornerRadius = UDim.new(0, 8)
 
         local manualStroke = Instance.new("UIStroke")
-        manualStroke.Color           = Color3.fromRGB(255, 255, 255)
-        manualStroke.Transparency    = 0.88
-        manualStroke.Thickness       = 1
-        manualStroke.Parent          = manualBtn
+        manualStroke.Color        = Color3.fromRGB(255, 255, 255)
+        manualStroke.Transparency = 0.88
+        manualStroke.Thickness    = 1
+        manualStroke.Parent       = manualBtn
 
-        local manualLayout = Instance.new("UIListLayout")
-        manualLayout.FillDirection   = Enum.FillDirection.Horizontal
-        manualLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-        manualLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-        manualLayout.Padding         = UDim.new(0, 6)
-        manualLayout.Parent          = manualBtn
+        local manualInnerList = Instance.new("UIListLayout")
+        manualInnerList.FillDirection      = Enum.FillDirection.Horizontal
+        manualInnerList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        manualInnerList.VerticalAlignment  = Enum.VerticalAlignment.Center
+        manualInnerList.Padding            = UDim.new(0, 5)
+        manualInnerList.Parent             = manualBtn
 
         local manualIcon = Instance.new("ImageLabel")
-        manualIcon.Size              = UDim2.fromOffset(14, 14)
+        manualIcon.Size                = UDim2.fromOffset(14, 14)
         manualIcon.BackgroundTransparency = 1
-        manualIcon.Image             = MANUAL_IMG
-        manualIcon.ZIndex            = 5
-        manualIcon.Parent            = manualBtn
+        manualIcon.Image               = MANUAL_IMG
+        manualIcon.ImageColor3         = Color3.fromRGB(200, 200, 210)
+        manualIcon.ZIndex              = 5
+        manualIcon.Parent              = manualBtn
 
-        local manualLbl = Instance.new("TextLabel")
-        manualLbl.Size               = UDim2.new(0, 70, 1, 0)
-        manualLbl.BackgroundTransparency = 1
-        manualLbl.Font               = Enum.Font.GothamSemibold
-        manualLbl.TextSize           = 12
-        manualLbl.TextColor3         = Color3.fromRGB(180, 180, 190)
-        manualLbl.Text               = MANUAL_TEXT
-        manualLbl.TextXAlignment     = Enum.TextXAlignment.Left
-        manualLbl.ZIndex             = 5
-        manualLbl.Parent             = manualBtn
+        local manualLblInner = Instance.new("TextLabel")
+        manualLblInner.Size                = UDim2.fromOffset(66, 28)
+        manualLblInner.BackgroundTransparency = 1
+        manualLblInner.Font               = Enum.Font.GothamSemibold
+        manualLblInner.TextSize           = 11
+        manualLblInner.TextColor3         = Color3.fromRGB(170, 170, 180)
+        manualLblInner.Text               = MANUAL_TEXT
+        manualLblInner.TextXAlignment     = Enum.TextXAlignment.Left
+        manualLblInner.ZIndex             = 5
+        manualLblInner.Parent             = manualBtn
+
+        -- ── "Paste last key" button ─────────────────────────────────────
+        local pasteRow = Instance.new("Frame")
+        pasteRow.Name              = "PasteRow"
+        pasteRow.Size              = UDim2.new(1, 0, 0, 28)
+        pasteRow.BackgroundTransparency = 1
+        pasteRow.LayoutOrder       = 7
+        pasteRow.Parent            = card
+
+        local pasteRowList = Instance.new("UIListLayout")
+        pasteRowList.FillDirection       = Enum.FillDirection.Horizontal
+        pasteRowList.HorizontalAlignment = Enum.HorizontalAlignment.Right
+        pasteRowList.VerticalAlignment   = Enum.VerticalAlignment.Center
+        pasteRowList.Parent              = pasteRow
+
+        local pasteBtn = Instance.new("TextButton")
+        pasteBtn.Name              = "PasteLastKey"
+        pasteBtn.Size              = UDim2.fromOffset(140, 26)
+        pasteBtn.BackgroundColor3  = Color3.fromRGB(22, 22, 28)
+        pasteBtn.BorderSizePixel   = 0
+        pasteBtn.Font              = Enum.Font.Gotham
+        pasteBtn.TextSize          = 12
+        pasteBtn.TextColor3        = Color3.fromRGB(140, 140, 155)
+        pasteBtn.Text              = "Paste last key"
+        pasteBtn.AutoButtonColor   = false
+        pasteBtn.ZIndex            = 4
+        pasteBtn.Parent            = pasteRow
+        Instance.new("UICorner", pasteBtn).CornerRadius = UDim.new(0, 7)
+
+        local pasteStroke = Instance.new("UIStroke")
+        pasteStroke.Color        = Color3.fromRGB(255, 255, 255)
+        pasteStroke.Transparency = 0.92
+        pasteStroke.Thickness    = 1
+        pasteStroke.Parent       = pasteBtn
 
         -- ── Tween helpers ──────────────────────────────────────────────
-        local EASE_OUT  = TweenInfo.new(0.32, Enum.EasingStyle.Back,  Enum.EasingDirection.Out)
-        local EASE_IN   = TweenInfo.new(0.20, Enum.EasingStyle.Quad,  Enum.EasingDirection.In)
-        local EASE_SINE = TweenInfo.new(0.18, Enum.EasingStyle.Sine,  Enum.EasingDirection.Out)
+        local EASE_OUT  = TweenInfo.new(0.30, Enum.EasingStyle.Back,  Enum.EasingDirection.Out)
+        local EASE_IN   = TweenInfo.new(0.22, Enum.EasingStyle.Quad,  Enum.EasingDirection.In)
+        local EASE_SINE = TweenInfo.new(0.16, Enum.EasingStyle.Sine,  Enum.EasingDirection.Out)
+
+        -- All fade-able objects, tweened together so nothing lags behind
+        local function setAllTransparency(t)
+            card.BackgroundTransparency   = t
+            backdrop.BackgroundTransparency = t == 0 and 0.45 or 1
+            titleLbl.TextTransparency     = t
+            subtitleLbl.TextTransparency  = t
+            divider.BackgroundTransparency = t == 0 and 0.92 or 1
+            statusLbl.TextTransparency    = t
+            inputFrame.BackgroundTransparency = t
+        end
 
         local _shown = false
-
-        -- #4 Fix: all content elements fade IN together from the start,
-        --         and fade OUT all together before the card shrinks
-        local _contentAlpha = 1  -- tracks current transparency
-
-        local function setContentTransparency(v)
-            titleLbl.TextTransparency    = v
-            subtitleLbl.TextTransparency = v
-            statusLbl.TextTransparency   = math.max(v, statusLbl.TextTransparency)
-            inputBox.TextTransparency    = v
-            inputBox.PlaceholderColor3   = Color3.fromRGB(90, 90, 100):Lerp(
-                Color3.fromRGB(0,0,0), v)
-            submitBtn.TextTransparency   = v
-            manualLbl.TextTransparency   = v
-            manualIcon.ImageTransparency = v
-            discordBtn.ImageTransparency = v
-            discordHint.TextTransparency = v
-        end
-
-        local function tweenContent(targetT, duration)
-            local info = TweenInfo.new(duration or 0.22, Enum.EasingStyle.Sine)
-            Tween(titleLbl,    info, { TextTransparency = targetT })
-            Tween(subtitleLbl, info, { TextTransparency = targetT })
-            Tween(inputBox,    info, { TextTransparency = targetT })
-            Tween(submitBtn,   info, { TextTransparency = targetT })
-            Tween(manualLbl,   info, { TextTransparency = targetT })
-            Tween(manualIcon,  info, { ImageTransparency = targetT })
-            Tween(discordBtn,  info, { ImageTransparency = targetT })
-            Tween(discordHint, info, { TextTransparency = targetT })
-        end
-
-        -- Initial state: everything invisible
-        setContentTransparency(1)
-        card.BackgroundTransparency = 1
 
         local function showAnim()
             ksGui.Enabled = true
             _shown = true
-            Tween(backdrop, TweenInfo.new(0.25, Enum.EasingStyle.Sine), { BackgroundTransparency = 0.45 })
-            Tween(card, TweenInfo.new(0.20, Enum.EasingStyle.Sine), { BackgroundTransparency = 0 })
-            -- bounce: slide up from slightly below
-            cardHolder.Position = UDim2.new(0.5, 0, 0.5, 24)
-            Tween(cardHolder, EASE_OUT, { Position = UDim2.fromScale(0.5, 0.5) })
-            -- content fades in together with card
-            tweenContent(0, 0.28)
+            -- Snap all to start state
+            card.BackgroundTransparency   = 0
+            inputFrame.BackgroundTransparency = 0
+            cardScale.Scale = 0.88
+            -- Fade in: backdrop
+            Tw(backdrop, TweenInfo.new(0.25, Enum.EasingStyle.Sine), { BackgroundTransparency = 0.45 })
+            -- Card scale bounce
+            Tw(cardScale, EASE_OUT, { Scale = 1 })
+            -- Text fade
+            local tInfo = TweenInfo.new(0.28, Enum.EasingStyle.Sine)
+            Tw(titleLbl,    tInfo, { TextTransparency = 0 })
+            Tw(subtitleLbl, tInfo, { TextTransparency = 0 })
         end
 
         local function hideAnim(callback)
-            -- #4 Fix: fade content OUT first, then shrink card
-            tweenContent(1, 0.14)
-            task.delay(0.10, function()
-                Tween(backdrop, TweenInfo.new(0.20, Enum.EasingStyle.Sine), { BackgroundTransparency = 1 })
-                Tween(card, TweenInfo.new(0.18, Enum.EasingStyle.Sine), { BackgroundTransparency = 1 })
-                local t = Tween(cardHolder, EASE_IN, { Position = UDim2.new(0.5, 0, 0.5, 24) })
-                t.Completed:Connect(function()
-                    ksGui.Enabled = false
-                    _shown = false
-                    if callback then callback() end
-                end)
+            -- Tween everything simultaneously so nothing lags
+            Tw(backdrop,    TweenInfo.new(0.22, Enum.EasingStyle.Sine), { BackgroundTransparency = 1 })
+            Tw(card,        TweenInfo.new(0.20, Enum.EasingStyle.Sine), { BackgroundTransparency = 1 })
+            Tw(inputFrame,  TweenInfo.new(0.20, Enum.EasingStyle.Sine), { BackgroundTransparency = 1 })
+            Tw(titleLbl,    TweenInfo.new(0.16, Enum.EasingStyle.Sine), { TextTransparency = 1 })
+            Tw(subtitleLbl, TweenInfo.new(0.16, Enum.EasingStyle.Sine), { TextTransparency = 1 })
+            Tw(statusLbl,   TweenInfo.new(0.16, Enum.EasingStyle.Sine), { TextTransparency = 1 })
+            local t = Tw(cardScale, EASE_IN, { Scale = 0.88 })
+            t.Completed:Connect(function()
+                ksGui.Enabled = false
+                _shown = false
+                if callback then callback() end
             end)
         end
 
         -- Shake on wrong key
         local function shakeAnim()
-            local offsets = { 8, -8, 6, -6, 3, -3, 0 }
+            local offsets = { 9, -9, 6, -6, 3, -3, 0 }
             local function step(i)
                 if i > #offsets then return end
-                Tween(cardHolder, TweenInfo.new(0.04, Enum.EasingStyle.Sine), {
+                Tw(card, TweenInfo.new(0.04, Enum.EasingStyle.Sine), {
                     Position = UDim2.new(0.5, offsets[i], 0.5, 0)
                 }).Completed:Connect(function() step(i + 1) end)
             end
             step(1)
         end
 
-        local function successAnim()
-            inputFrame.BackgroundColor3 = Color3.fromRGB(20, 60, 30)
-            inputStroke.Color           = Color3.fromRGB(60, 220, 100)
-            inputStroke.Transparency    = 0.3
-            statusLbl.TextColor3        = Color3.fromRGB(60, 220, 100)
-            statusLbl.TextTransparency  = 0
-            Tween(cardHolder, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-                { Position = UDim2.new(0.5, 0, 0.5, -6) })
-            task.delay(0.18, function()
-                Tween(cardHolder, TweenInfo.new(0.12, Enum.EasingStyle.Sine),
-                    { Position = UDim2.fromScale(0.5, 0.5) })
-            end)
-        end
-
-        local function errorAnim()
-            inputFrame.BackgroundColor3 = Color3.fromRGB(50, 14, 14)
-            inputStroke.Color           = Color3.fromRGB(220, 60, 60)
-            inputStroke.Transparency    = 0.3
-            statusLbl.TextColor3        = Color3.fromRGB(220, 80, 80)
-            statusLbl.TextTransparency  = 0
-            shakeAnim()
-            task.delay(0.8, function()
-                Tween(inputFrame, TweenInfo.new(0.3, Enum.EasingStyle.Sine),
-                    { BackgroundColor3 = Color3.fromRGB(22, 22, 26) })
-                Tween(inputStroke, TweenInfo.new(0.3),
-                    { Transparency = 0.88, Color = Color3.fromRGB(255, 255, 255) })
-                Tween(statusLbl, TweenInfo.new(0.3), { TextTransparency = 1 })
-            end)
-        end
-
         -- ── Submit logic ───────────────────────────────────────────────
-        local _submitted = false
         local function trySubmit()
-            if _submitted then return end
             local entered = inputBox.Text
             if entered == "" then return end
+            inputBox.ClearTextOnFocus = false   -- never clear again after first submit
+
             if entered == KEY then
-                _submitted = true
-                statusLbl.Text = "✓ Access granted"
-                successAnim()
-                task.delay(0.6, function()
+                -- Save to file
+                updateKeyFile(entered)
+                statusLbl.TextColor3 = Color3.fromRGB(55, 210, 95)
+                statusLbl.Text       = "Access granted"
+                -- Success pulse
+                inputFrame.BackgroundColor3 = Color3.fromRGB(18, 52, 28)
+                Tw(inputStroke, EASE_SINE, { Color = Color3.fromRGB(55, 210, 95), Transparency = 0.3 })
+                Tw(cardScale, TweenInfo.new(0.14, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1.04 })
+                task.delay(0.18, function()
+                    Tw(cardScale, TweenInfo.new(0.12, Enum.EasingStyle.Sine), { Scale = 1 })
+                end)
+                task.delay(0.55, function()
                     hideAnim(function()
                         if cfg.onCorrect then task.spawn(cfg.onCorrect) end
                     end)
                 end)
             else
-                statusLbl.Text = "✗ Incorrect key"   -- #5: no key shown in notify
-                errorAnim()
-                if cfg.onIncorrect then
-                    -- #5: pass the key to the callback but NOT to any notification here
-                    task.spawn(cfg.onIncorrect, entered)
-                end
+                statusLbl.TextColor3 = Color3.fromRGB(210, 70, 70)
+                statusLbl.Text       = "Incorrect key"
+                inputFrame.BackgroundColor3 = Color3.fromRGB(46, 14, 14)
+                Tw(inputStroke, EASE_SINE, { Color = Color3.fromRGB(210, 70, 70), Transparency = 0.3 })
+                shakeAnim()
+                task.delay(0.75, function()
+                    Tw(inputFrame,  EASE_SINE, { BackgroundColor3 = Color3.fromRGB(22, 22, 26) })
+                    Tw(inputStroke, TweenInfo.new(0.3), { Transparency = 0.88, Color = Color3.fromRGB(255,255,255) })
+                    Tw(statusLbl,   TweenInfo.new(0.3), { TextTransparency = 1 })
+                end)
+                if cfg.onIncorrect then task.spawn(cfg.onIncorrect, entered) end
             end
         end
 
@@ -524,45 +529,31 @@ return function(ctx)
             if enter then trySubmit() end
         end)
 
-        -- Hover effects
-        submitBtn.MouseEnter:Connect(function()
-            Tween(submitBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(60, 140, 255) })
-        end)
-        submitBtn.MouseLeave:Connect(function()
-            Tween(submitBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(40, 120, 255) })
-        end)
-        -- Touch feedback (mobile)
-        submitBtn.MouseButton1Down:Connect(function()
-            Tween(submitBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(20, 90, 220) })
-        end)
-        submitBtn.MouseButton1Up:Connect(function()
-            Tween(submitBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(40, 120, 255) })
+        -- ── Paste last key ─────────────────────────────────────────────
+        pasteBtn.Activated:Connect(function()
+            local saved = readSavedKey()
+            if saved and saved ~= "" then
+                inputBox.Text = saved
+                inputBox.ClearTextOnFocus = false
+                trySubmit()
+            else
+                pasteBtn.Text = "No saved key"
+                task.delay(1.5, function() pasteBtn.Text = "Paste last key" end)
+            end
         end)
 
-        manualBtn.MouseEnter:Connect(function()
-            Tween(manualBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(38, 38, 44) })
-        end)
-        manualBtn.MouseLeave:Connect(function()
-            Tween(manualBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(28, 28, 32) })
-        end)
-
-        discordBtn.MouseEnter:Connect(function()
-            Tween(discordBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(110, 125, 255) })
-        end)
-        discordBtn.MouseLeave:Connect(function()
-            Tween(discordBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(88, 101, 242) })
-        end)
-        -- Touch press glow (mobile #10)
-        discordBtn.MouseButton1Down:Connect(function()
-            Tween(discordBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(130, 150, 255) })
-        end)
-        discordBtn.MouseButton1Up:Connect(function()
-            Tween(discordBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(88, 101, 242) })
-        end)
+        -- ── Hover effects ──────────────────────────────────────────────
+        submitBtn.MouseEnter:Connect(function() Tw(submitBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(65, 140, 255) }) end)
+        submitBtn.MouseLeave:Connect(function() Tw(submitBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(40, 120, 255) }) end)
+        manualBtn.MouseEnter:Connect(function() Tw(manualBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(36, 36, 42) }) end)
+        manualBtn.MouseLeave:Connect(function() Tw(manualBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(28, 28, 32) }) end)
+        discordBtn.MouseEnter:Connect(function() Tw(discordBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(110, 125, 255) }) end)
+        discordBtn.MouseLeave:Connect(function() Tw(discordBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(88, 101, 242) }) end)
+        pasteBtn.MouseEnter:Connect(function() Tw(pasteBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(30, 30, 38) }) end)
+        pasteBtn.MouseLeave:Connect(function() Tw(pasteBtn, EASE_SINE, { BackgroundColor3 = Color3.fromRGB(22, 22, 28) }) end)
 
         -- ── Discord RPC ────────────────────────────────────────────────
-        local function openDiscord()
-            -- Try Discord RPC (PC desktop client)
+        local function sendDiscordRPC()
             pcall(function()
                 local reqFunc = (http and http.request) or request or nil
                 if not reqFunc then return end
@@ -582,73 +573,27 @@ return function(ctx)
             end)
         end
 
-        discordBtn.Activated:Connect(openDiscord)
-        -- #9: hint label is a TextLabel so we overlay an invisible button for click detection
-        local discordHintBtn = Instance.new("TextButton")
-        discordHintBtn.Size                 = UDim2.fromScale(1, 1)
-        discordHintBtn.BackgroundTransparency = 1
-        discordHintBtn.Text                 = ""
-        discordHintBtn.ZIndex               = discordHint.ZIndex + 1
-        discordHintBtn.Parent               = discordHint
-        discordHintBtn.Activated:Connect(openDiscord)
+        discordBtn.Activated:Connect(function() task.spawn(sendDiscordRPC) end)
 
         -- ── Copy link ──────────────────────────────────────────────────
-        local _copyDebounce = false
         manualBtn.Activated:Connect(function()
-            if _copyDebounce then return end
-            _copyDebounce = true
             pcall(function()
                 if setclipboard then setclipboard(DISCORD_LINK)
                 elseif toclipboard then toclipboard(DISCORD_LINK) end
             end)
-            -- Show "Copied!" state
-            local origText = MANUAL_TEXT
-            manualLbl.Text = "Copied!"
-            manualIcon.ImageColor3 = Color3.fromRGB(60, 220, 100)
-            manualLbl.TextColor3   = Color3.fromRGB(60, 220, 100)
-            Tween(manualStroke, TweenInfo.new(0.2), { Color = Color3.fromRGB(60, 220, 100), Transparency = 0.5 })
-            -- #6: revert after 2 seconds
-            task.delay(2, function()
-                manualLbl.Text     = origText
-                manualLbl.TextColor3 = Color3.fromRGB(180, 180, 190)
-                manualIcon.ImageColor3 = Color3.fromRGB(255, 255, 255)
-                Tween(manualStroke, TweenInfo.new(0.2), { Color = Color3.fromRGB(255, 255, 255), Transparency = 0.88 })
-                task.delay(0.2, function() _copyDebounce = false end)
+            local origText = manualLblInner.Text
+            manualLblInner.Text        = "Copied!"
+            manualIcon.ImageColor3     = Color3.fromRGB(60, 210, 95)
+            task.delay(1.5, function()
+                manualLblInner.Text    = origText
+                manualIcon.ImageColor3 = Color3.fromRGB(200, 200, 210)
             end)
         end)
-
-        -- ── #10 Mobile: responsive card width ─────────────────────────
-        local function adaptToViewport()
-            local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize
-                or Vector2.new(1280, 720)
-            local isTouchDevice = UIS.TouchEnabled
-            if isTouchDevice or vp.X < 500 then
-                -- On phone: make card full-width with margins
-                local w = math.min(vp.X - 32, 390)
-                cardHolder.Size = UDim2.fromOffset(w, 0)
-                -- slightly bigger text for touch
-                titleLbl.TextSize    = 22
-                subtitleLbl.TextSize = 14
-                inputBox.TextSize    = 15
-                submitBtn.TextSize   = 14
-                inputFrame.Size      = UDim2.new(1, 0, 0, 46)
-                submitBtn.Size       = UDim2.fromOffset(80, 32)
-            else
-                cardHolder.Size = UDim2.fromOffset(390, 0)
-            end
-        end
-
-        adaptToViewport()
-        -- Re-adapt if viewport changes (rotation, etc.)
-        if workspace.CurrentCamera then
-            workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(adaptToViewport)
-        end
 
         -- ── Public API ─────────────────────────────────────────────────
         local KSFunctions = {}
 
         function KSFunctions:Show()
-            _submitted = false
             showAnim()
         end
 
@@ -657,18 +602,11 @@ return function(ctx)
         end
 
         function KSFunctions:Destroy()
-            _guardConn:Disconnect()
             hideAnim(function() ksGui:Destroy() end)
         end
 
         function KSFunctions:SetKey(key)
             KEY = tostring(key)
-            _submitted = false
-        end
-
-        -- #10 SetScale: rescale the card just like MacLib:SetScale
-        function KSFunctions:SetScale(scale)
-            cardUIScale.Scale = math.clamp(scale, 0.4, 3)
         end
 
         return KSFunctions
