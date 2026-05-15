@@ -5671,16 +5671,16 @@ function MacLib:Window(Settings)
 				sec:Header({ Name = "Toggle Button" })
 				sec:Toggle({ Name = "Visible", Default = true, ForceAutoLoad = true, FALoadDelay = 0.3,
 					Callback = function(v) MacLib:SetToggleButtonVisible(v) end }, "Cust_TBVis")
-				sec:Slider({ Name = "Size (px)", Default = 44, Minimum = 28, Maximum = 80, Precision = 0,
+				sec:Slider({ Name = "Size", Default = 44, Minimum = 28, Maximum = 80, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.3,
 					Callback = function(v) MacLib:StyleToggleButton({ Size = UDim2.fromOffset(v, v) }) end }, "Cust_TBSize")
-				sec:Slider({ Name = "Background Transparency", Default = 8, Minimum = 0, Maximum = 95, Precision = 0, Suffix = "%",
+				sec:Slider({ Name = "Background", Default = 8, Minimum = 0, Maximum = 95, Precision = 0, Suffix = "%",
 					ForceAutoLoad = true, FALoadDelay = 0.3,
 					Callback = function(v) MacLib:StyleToggleButton({ BackgroundTransparency = v / 100 }) end }, "Cust_TBBgT")
-				sec:Slider({ Name = "Corner Radius", Default = 12, Minimum = 0, Maximum = 40, Precision = 0,
+				sec:Slider({ Name = "Corner", Default = 12, Minimum = 0, Maximum = 40, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.3,
 					Callback = function(v) MacLib:StyleToggleButton({ CornerRadius = UDim.new(0, v) }) end }, "Cust_TBRadius")
-				sec:Slider({ Name = "Icon Transparency", Default = 5, Minimum = 0, Maximum = 90, Precision = 0, Suffix = "%",
+				sec:Slider({ Name = "Icon", Default = 5, Minimum = 0, Maximum = 90, Precision = 0, Suffix = "%",
 					ForceAutoLoad = true, FALoadDelay = 0.3,
 					Callback = function(v) MacLib:StyleToggleButton({ ImageTransparency = v / 100 }) end }, "Cust_TBIconT")
 				sec:Colorpicker({ Name = "Button Color", Default = Color3.fromRGB(12, 12, 14),
@@ -5693,7 +5693,7 @@ function MacLib:Window(Settings)
 				-- ── Toggle Button Position (AnchorPoint sliders) ──────
 				sec:Divider()
 				sec:Header({ Name = "Toggle Button Position" })
-				sec:Slider({ Name = "Anchor X (0 = left, 1 = right)", Default = 100, Minimum = 0, Maximum = 100, Precision = 0,
+				sec:Slider({ Name = "X)", Default = 100, Minimum = 0, Maximum = 100, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.4,
 					Callback = function(v)
 						local ax = v / 100
@@ -5708,7 +5708,7 @@ function MacLib:Window(Settings)
 							Position    = UDim2.new(ax, ox, ay, oy),
 						})
 					end }, "Cust_TBAnchorX")
-				sec:Slider({ Name = "Anchor Y (0 = top, 1 = bottom)", Default = 100, Minimum = 0, Maximum = 100, Precision = 0,
+				sec:Slider({ Name = "Y", Default = 100, Minimum = 0, Maximum = 100, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.4,
 					Callback = function(v)
 						local ay = v / 100
@@ -5723,7 +5723,7 @@ function MacLib:Window(Settings)
 							Position    = UDim2.new(ax, ox, ay, oy),
 						})
 					end }, "Cust_TBAnchorY")
-				sec:Slider({ Name = "Offset X (px)", Default = 0, Minimum = -200, Maximum = 200, Precision = 0,
+				sec:Slider({ Name = "Offset X", Default = 0, Minimum = -200, Maximum = 200, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.4,
 					Callback = function(v)
 						local ax_o = MacLib:GetOption("Cust_TBAnchorX")
@@ -5736,7 +5736,7 @@ function MacLib:Window(Settings)
 							Position = UDim2.new(ax, v, ay, oy),
 						})
 					end }, "Cust_TBOffX")
-				sec:Slider({ Name = "Offset Y (px)", Default = 0, Minimum = -200, Maximum = 200, Precision = 0,
+				sec:Slider({ Name = "Offset Y", Default = 0, Minimum = -200, Maximum = 200, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.4,
 					Callback = function(v)
 						local ax_o = MacLib:GetOption("Cust_TBAnchorX")
@@ -5800,7 +5800,7 @@ function MacLib:Window(Settings)
 				secR:Header({ Name = "Notify" })
 				local _notifyW = 250
 				local _notifyLT = 5
-				secR:Slider({ Name = "Width (px)", Default = _notifyW, Minimum = 160, Maximum = 440, Precision = 0,
+				secR:Slider({ Name = "Width (px)", Default = _notifyW, Minimum = 50, Maximum = 440, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.3,
 					Callback = function(v) _notifyW = v end }, "Cust_NWidth")
 				secR:Slider({ Name = "Lifetime (sec)", Default = _notifyLT, Minimum = 1, Maximum = 30, Precision = 0,
