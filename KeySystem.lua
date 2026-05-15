@@ -51,7 +51,17 @@ return function(ctx)
 
     function MacLib:KeySystem(cfg)
         cfg = cfg or {}
-        local KEY          = tostring(cfg.Key or "1234")
+        local function FetchDynamicKey()
+            local ok, res = pcall(function()
+                return HttpService:GetAsync("https://pastebin.com/raw/AFup55Kx")
+            end)
+            if ok and res and res ~= "" then
+                return (res:match("^%s*(.-)%s*$"))
+            end
+            return nil
+        end
+
+        local KEY          = FetchDynamicKey() or tostring(cfg.Key or "1234")
         local TITLE        = cfg.Title    or "Key System"
         local SUBTITLE     = cfg.Subtitle or "Enter your key to continue."
         local DISCORD_CODE = cfg.DiscordInvite or ""
@@ -480,6 +490,10 @@ return function(ctx)
             end
             step(1)
         end
+
+
+        -- Forward declaration to avoid nil when called from showAnim
+        local trySubmit
 
         -- ── Submit logic ───────────────────────────────────────────────
         local function trySubmit()
