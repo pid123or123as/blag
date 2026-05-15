@@ -6791,21 +6791,32 @@ function MacLib:Window(Settings)
 		  end)
 	]]
 	MacLib._sectionPatches = MacLib._sectionPatches or {}
+	-- Registry of all live SectionFunctions tables so PatchSection can retrofit them
+	MacLib._liveSections = MacLib._liveSections or {}
 
 	function MacLib:PatchSection(methodName, fn)
 		MacLib._sectionPatches[methodName] = fn
-		-- Патчим уже существующие Options если они являются секциями
-		-- (Новые секции подхватят патч через _ApplySectionPatches)
+		-- Retrofit ALL already-created sections immediately
+		-- This fixes "missing method" when Preloader fires after sections are built
+		for _, sectionFns in ipairs(MacLib._liveSections) do
+			local _fn = fn
+			sectionFns[methodName] = function(self, settings, flag)
+				return _fn(self, settings, flag)
+			end
+		end
 	end
 
-	-- Вызывается внутри создания секции для применения накопленных патчей
+	-- Called inside Section() creation to apply accumulated patches and register the section
 	function MacLib:_ApplySectionPatches(sectionFns)
+		-- Apply all patches registered so far
 		for name, fn in next, (MacLib._sectionPatches or {}) do
 			local _fn = fn
 			sectionFns[name] = function(self, settings, flag)
 				return _fn(self, settings, flag)
 			end
 		end
+		-- Register so future PatchSection calls can retrofit this section
+		table.insert(MacLib._liveSections, sectionFns)
 	end
 
 	function MacLib:CreateCustomElement(sectionObj, typeName, settings, flag)
