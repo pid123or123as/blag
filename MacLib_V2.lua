@@ -1277,6 +1277,12 @@ function MacLib:Window(Settings)
 	toggleBtn.MouseButton1Click:Connect(_doToggle)
 	updateToggleBtnIcon(true)
 
+	-- Применяем параметры Window для toggleBtn
+	if Settings.ToggleBtnPosition  then toggleBtn.Position = Settings.ToggleBtnPosition end
+	if Settings.ToggleBtnSize      then toggleBtn.Size = UDim2.fromOffset(Settings.ToggleBtnSize, Settings.ToggleBtnSize) end
+	if Settings.ToggleBtnColor     then toggleBtn.BackgroundColor3 = Settings.ToggleBtnColor end
+	if Settings.ToggleBtnVisible   ~= nil then toggleBtn.Visible = Settings.ToggleBtnVisible end
+
 	-- Clean up when window is unloaded
 	local _origUnload = WindowFunctions.Unload
 	function WindowFunctions:Unload()
@@ -1923,12 +1929,6 @@ function MacLib:Window(Settings)
 
 			function TabFunctions:Section(Settings)
 				local SectionFunctions = {}
-				-- Регистрируем секцию и применяем PatchSection-методы
-				MacLib._sectionInstances = MacLib._sectionInstances or {}
-				table.insert(MacLib._sectionInstances, SectionFunctions)
-				for methodName, fn in next, (MacLib._sectionPatches or {}) do
-					SectionFunctions[methodName] = fn
-				end
 				local section = Instance.new("Frame")
 				section.Name = "Section"
 				section.AutomaticSize = Enum.AutomaticSize.Y
@@ -2156,6 +2156,10 @@ function MacLib:Window(Settings)
 					local toggle1Transparency = {Enabled = 0, Disabled = 0.5}
 					local togglerHeadTransparency = {Enabled = 0, Disabled = 0.85}
 
+					-- FIX5: сохраняем пользовательские цвета отдельно, чтобы они не сбрасывались при смене состояния
+					local _toggle1EnabledColor  = ToggleFunctions.Settings.EnabledColor  or Color3.fromRGB(87, 86, 86)
+					local _toggle1DisabledColor = ToggleFunctions.Settings.DisabledColor or Color3.fromRGB(87, 86, 86)
+
 					local TweenSettings = {
 						Info = TweenInfo.new(0.15, Enum.EasingStyle.Quad),
 
@@ -2169,9 +2173,12 @@ function MacLib:Window(Settings)
 						local transparencyValues = State and {toggle1Transparency.Enabled, togglerHeadTransparency.Enabled}
 							or {toggle1Transparency.Disabled, togglerHeadTransparency.Disabled}
 						local position = State and TweenSettings.EnabledPosition or TweenSettings.DisabledPosition
+						-- FIX5: применяем сохранённый цвет для каждого состояния
+						local targetColor = State and _toggle1EnabledColor or _toggle1DisabledColor
 
 						Tween(toggle1, TweenSettings.Info, {
-							ImageTransparency = transparencyValues[1]
+							ImageTransparency = transparencyValues[1],
+							ImageColor3 = targetColor,
 						}):Play()
 
 						Tween(togglerHead, TweenSettings.Info, {
@@ -2218,8 +2225,35 @@ function MacLib:Window(Settings)
 						toggle.Visible = State
 					end
 
+					-- FIX5: методы для изменения цвета toggle без сброса при смене состояния
+					function ToggleFunctions:SetEnabledColor(color)
+						_toggle1EnabledColor = color
+						NewState(togglebool)
+					end
+					function ToggleFunctions:SetDisabledColor(color)
+						_toggle1DisabledColor = color
+						NewState(togglebool)
+					end
+					-- SetColor устанавливает цвет для обоих состояний сразу
+					function ToggleFunctions:SetColor(color)
+						_toggle1EnabledColor = color
+						_toggle1DisabledColor = color
+						NewState(togglebool)
+					end
+
 					if Flag then
 						MacLib.Options[Flag] = ToggleFunctions
+					end
+					-- ForceAutoLoad
+					if Flag and Settings.ForceAutoLoad then
+						local _origCB = ToggleFunctions.Settings.Callback
+						ToggleFunctions.Settings.Callback = function(v)
+							MacLib:FALSave(Flag, ToggleFunctions)
+							if _origCB then _origCB(v) end
+						end
+						task.defer(function()
+							MacLib:FALLoad(Flag, ToggleFunctions, Settings.FALoadDelay)
+						end)
 					end
 					return ToggleFunctions
 				end
@@ -2518,6 +2552,17 @@ function MacLib:Window(Settings)
 					if Flag then
 						MacLib.Options[Flag] = SliderFunctions
 					end
+					-- ForceAutoLoad: сохраняем при каждом изменении, загружаем при старте
+					if Flag and Settings.ForceAutoLoad then
+						local _origCallback = SliderFunctions.Settings.Callback
+						SliderFunctions.Settings.Callback = function(v)
+							MacLib:FALSave(Flag, SliderFunctions)
+							if _origCallback then _origCallback(v) end
+						end
+						task.defer(function()
+							MacLib:FALLoad(Flag, SliderFunctions, Settings.FALoadDelay)
+						end)
+					end
 					return SliderFunctions
 				end
 
@@ -2707,6 +2752,17 @@ function MacLib:Window(Settings)
 
 					if Flag then
 						MacLib.Options[Flag] = InputFunctions
+					end
+					-- ForceAutoLoad
+					if Flag and Settings.ForceAutoLoad then
+						local _origCB = InputFunctions.Settings.Callback
+						InputFunctions.Settings.Callback = function(v)
+							MacLib:FALSave(Flag, InputFunctions)
+							if _origCB then _origCB(v) end
+						end
+						task.defer(function()
+							MacLib:FALLoad(Flag, InputFunctions, Settings.FALoadDelay)
+						end)
 					end
 					return InputFunctions
 				end
@@ -2974,9 +3030,12 @@ function MacLib:Window(Settings)
 						end
 					end
 
-					-- На мобильных — заменяем binderBox на '+' кнопку
-					if _isMobileKB then
-						binderBox.Visible = false
+					-- Кнопка '+' для показа/скрытия плавающей кнопки — создаётся на мобильных и ПК
+					-- На мобильных: заменяет binderBox. На ПК: отображается рядом с binderBox.
+					do
+						if _isMobileKB then
+							binderBox.Visible = false
+						end
 
 						-- Применяем сохранённую видимость '+' кнопки
 						local _plusHidden = MacLib._mobileKeybindsHidden and Flag and MacLib._mobileKeybindsHidden[Flag]
@@ -2994,7 +3053,8 @@ function MacLib:Window(Settings)
 						plusBtn.BorderSizePixel = 0
 						plusBtn.Size = UDim2.fromOffset(34, 26)
 						plusBtn.AnchorPoint = Vector2.new(1, 0.5)
-						plusBtn.Position = UDim2.new(1, 0, 0.5, 0)
+						-- На ПК позиционируем левее binderBox, чтобы не перекрывать его
+						plusBtn.Position = _isMobileKB and UDim2.new(1, 0, 0.5, 0) or UDim2.new(1, -46, 0.5, 0)
 						plusBtn.ZIndex = 5
 						plusBtn.Parent = keybind
 
@@ -3017,10 +3077,9 @@ function MacLib:Window(Settings)
 						local function updatePlusText()
 							plusBtn.Text = _mbVisible and "−" or "+"
 						end
-						updatePlusText() -- FIX2: инициализация знака кнопки при старте
+						updatePlusText()
 
 						plusBtn.Activated:Connect(function()
-							-- show/hide mobileKeybindBtn (works on both mobile and PC)
 							showMobileBtn(not _mbVisible)
 							updatePlusText()
 							Tween(plusBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.6}):Play()
@@ -3732,6 +3791,17 @@ function MacLib:Window(Settings)
 
 					if Flag then
 						MacLib.Options[Flag] = DropdownFunctions
+					end
+					-- ForceAutoLoad
+					if Flag and Settings.ForceAutoLoad then
+						local _origCB = DropdownFunctions.Settings.Callback
+						DropdownFunctions.Settings.Callback = function(v)
+							MacLib:FALSave(Flag, DropdownFunctions)
+							if _origCB then _origCB(v) end
+						end
+						task.defer(function()
+							MacLib:FALLoad(Flag, DropdownFunctions, Settings.FALoadDelay)
+						end)
 					end
 
 					return DropdownFunctions
@@ -5027,6 +5097,17 @@ function MacLib:Window(Settings)
 					if Flag then
 						MacLib.Options[Flag] = ColorpickerFunctions
 					end
+					-- ForceAutoLoad
+					if Flag and Settings.ForceAutoLoad then
+						local _origCB = ColorpickerFunctions.Settings.Callback
+						ColorpickerFunctions.Settings.Callback = function(color, alpha)
+							MacLib:FALSave(Flag, ColorpickerFunctions)
+							if _origCB then _origCB(color, alpha) end
+						end
+						task.defer(function()
+							MacLib:FALLoad(Flag, ColorpickerFunctions, Settings.FALoadDelay)
+						end)
+					end
 					return ColorpickerFunctions
 				end
 
@@ -6266,6 +6347,8 @@ function MacLib:Window(Settings)
 
 		MacLib.Folder = Folder;
 		BuildFolderTree()
+		-- Автоматически инициализируем папку FAutoLoad
+		MacLib:InitForceAutoLoad()
 	end
 
 	function MacLib:SaveConfig(Path)
@@ -6688,6 +6771,11 @@ function MacLib:Window(Settings)
 		toggleBtn.Position = pos
 	end
 
+	--- Задать цвет фона toggleBtn
+	function WindowFunctions:SetToggleBtnColor(color)
+		toggleBtn.BackgroundColor3 = color
+	end
+
 	--- Задать иконку toggleBtn вручную (open, close)
 	function WindowFunctions:SetToggleBtnIcons(openIcon, closeIcon)
 		TOGGLE_ICON_OPEN = openIcon
@@ -7017,37 +7105,206 @@ function MacLib:Demo()
 end
 
 	--[[
-		MacLib:Preloader(url, callback)
-		Loads an external Lua module via loadstring/HttpGet and injects it into
-		the MacLib element builder context.
+		ForceAutoLoad API
+		=================
+		Позволяет автоматически сохранять и восстанавливать значения
+		отдельных элементов (Slider, Toggle, Input, Dropdown, Colorpicker)
+		при каждом запуске скрипта.
 
-		url        -- HTTP URL to raw Lua source (string)
-		callback   -- function(module) called with the loaded module result
-		            -- module receives { MacLib=MacLib, Options=MacLib.Options }
+		Данные хранятся в отдельной папке FAutoLoad (не в /settings/),
+		по одному файлу на флаг элемента.
 
-		Example:
-			MacLib:Preloader("https://raw.githubusercontent.com/.../MyElement.lua", function(mod)
-				-- mod is whatever the remote script returns
-				mod:Build(Window)
-			end)
+		Параметры в конфигурации элемента:
+		  ForceAutoLoad = true   -- включить автосохранение для этого элемента
+		  FALoadDelay   = 1.5   -- задержка в секундах перед загрузкой при старте (default: 0)
+
+		Методы MacLib:
+		  MacLib:InitForceAutoLoad()          -- инициализирует папку FAutoLoad (вызывается автоматически при SetFolder)
+		  MacLib:FALSave(flag, elementObj)    -- сохраняет текущее значение элемента (вызывается при изменении)
+		  MacLib:FALLoad(flag, elementObj, delay) -- загружает сохранённое значение (вызывается при создании элемента)
+		  MacLib:FALClear(flag)               -- удаляет файл автосохранения для флага
+
+		Пример использования:
+		  section:Slider({
+		    Name = "Speed",
+		    Min = 0, Max = 100, Default = 50,
+		    ForceAutoLoad = true,
+		    FALoadDelay = 0.5,
+		    Callback = function(v) ... end
+		  }, "SpeedFlag")
 	]]
-	function MacLib:Preloader(url, callback)
+
+	MacLib._falFolder = nil  -- путь к папке FAutoLoad
+
+	function MacLib:InitForceAutoLoad()
+		if isStudio or not (isfolder and makefolder) then return end
+		MacLib._falFolder = MacLib.Folder .. "/FAutoLoad"
+		if not isfolder(MacLib._falFolder) then
+			makefolder(MacLib._falFolder)
+		end
+	end
+
+	function MacLib:FALSave(flag, elementObj)
+		if isStudio or not (MacLib._falFolder and writefile) then return end
+		if not isfolder(MacLib._falFolder) then
+			makefolder(MacLib._falFolder)
+		end
+		local path = MacLib._falFolder .. "/" .. tostring(flag) .. ".syl"
+		local class = elementObj and elementObj.Class
+		local data = {}
+		if class == "Slider" then
+			data = { type = "Slider", value = tostring(elementObj:GetValue()) }
+		elseif class == "Toggle" then
+			data = { type = "Toggle", state = elementObj:GetState() }
+		elseif class == "Input" then
+			data = { type = "Input", text = elementObj:GetText() }
+		elseif class == "Dropdown" then
+			data = { type = "Dropdown", value = elementObj.Value }
+		elseif class == "Colorpicker" then
+			local c = elementObj.Color
+			if c then
+				data = { type = "Colorpicker", r = c.R, g = c.G, b = c.B, a = elementObj.Alpha or 0 }
+			end
+		end
+		local ok, encoded = pcall(HttpService.JSONEncode, HttpService, data)
+		if ok then
+			pcall(writefile, path, encoded)
+		end
+	end
+
+	function MacLib:FALLoad(flag, elementObj, delay)
+		if isStudio or not (MacLib._falFolder and isfile and readfile) then return end
+		task.spawn(function()
+			if delay and delay > 0 then
+				task.wait(delay)
+			end
+			local path = MacLib._falFolder .. "/" .. tostring(flag) .. ".syl"
+			if not isfile(path) then return end
+			local ok, data = pcall(HttpService.JSONDecode, HttpService, readfile(path))
+			if not ok or not data then return end
+			local class = data.type
+			pcall(function()
+				if class == "Slider" and elementObj.Class == "Slider" then
+					elementObj:UpdateValue(tonumber(data.value), true)
+				elseif class == "Toggle" and elementObj.Class == "Toggle" then
+					elementObj:UpdateState(data.state)
+				elseif class == "Input" and elementObj.Class == "Input" then
+					if elementObj.UpdateText then elementObj:UpdateText(data.text) end
+				elseif class == "Dropdown" and elementObj.Class == "Dropdown" then
+					if elementObj.UpdateSelection then elementObj:UpdateSelection(data.value) end
+				elseif class == "Colorpicker" and elementObj.Class == "Colorpicker" then
+					if data.r and elementObj.SetColor then
+						elementObj:SetColor(Color3.new(data.r, data.g, data.b))
+					end
+				end
+			end)
+		end)
+	end
+
+	function MacLib:FALClear(flag)
+		if isStudio or not (MacLib._falFolder and isfile) then return end
+		local path = MacLib._falFolder .. "/" .. tostring(flag) .. ".syl"
+		if isfile(path) then
+			pcall(function() delfile(path) end)
+		end
+	end
+
+	--[[
+		MacLib:Preloader(url, config)
+
+		Загружает внешний Lua-модуль и регистрирует его как полноценный элемент
+		библиотеки. Разработчик сам определяет методы и логику элемента.
+
+		url    -- URL до raw Lua-скрипта (string)
+		config -- таблица конфигурации:
+		  {
+		    Name    = "MyElement",   -- имя для регистрации (опционально)
+		    Window  = WindowFunctions, -- окно для передачи в модуль
+		    Timeout = 10,            -- таймаут загрузки в секундах (default: 10)
+		    onLoad  = function(element) ... end,  -- вызывается после загрузки
+		    onError = function(err)   ... end,    -- вызывается при ошибке
+		  }
+
+		Внешний модуль (url) должен возвращать функцию или таблицу:
+		  - Если функция: вызывается с context-таблицей, результат = элемент
+		  - Если таблица: возвращается напрямую как элемент
+
+		Context-таблица, передаваемая в модуль:
+		  {
+		    MacLib  = MacLib,
+		    Options = MacLib.Options,
+		    Window  = config.Window,
+		    Name    = config.Name,
+		  }
+
+		Пример внешнего модуля (MyElement.lua):
+		  return function(ctx)
+		    local element = {}
+		    local _value = 0
+
+		    -- Разработчик сам создаёт любые методы:
+		    function element:SetValue(v) _value = v end
+		    function element:GetValue() return _value end
+		    function element:Build(section, settings)
+		      -- создаём UI через section:Slider / section:Toggle и т.д.
+		      section:Slider({ Name = settings.Name, Min=0, Max=100, Callback=function(v) _value=v end })
+		    end
+
+		    return element
+		  end
+
+		Пример использования:
+		  MacLib:Preloader("https://.../MyElement.lua", {
+		    Window = Window,
+		    Name   = "MyElement",
+		    onLoad = function(element)
+		      element:Build(tab:Section({ Name = "Custom" }), { Name = "Speed" })
+		      -- теперь можно вызывать: element:SetValue(50)
+		    end,
+		  })
+	]]
+	function MacLib:Preloader(url, config)
 		assert(type(url) == "string", "Preloader: url must be a string")
+
+		-- Поддержка старого API: Preloader(url, callback)
+		if type(config) == "function" then
+			config = { onLoad = config }
+		end
+		config = config or {}
+
+		local timeout = config.Timeout or 10
+
 		task.spawn(function()
 			local ok, result = pcall(function()
+				-- Загружаем исходник с таймаутом
 				local src
-				if typeof(game) ~= "nil" and game:GetService("HttpService") then
-					src = game:GetService("HttpService"):GetAsync(url)
-				elseif syn and syn.request then
-					src = syn.request({ Url = url, Method = "GET" }).Body
-				elseif http and http.request then
-					src = http.request({ Url = url, Method = "GET" }).Body
-				elseif request then
-					src = request({ Url = url, Method = "GET" }).Body
-				elseif game and game.HttpGet then
-					src = game:HttpGet(url)
-				else
-					error("Preloader: no available HTTP method found")
+				local loadDone = false
+
+				task.spawn(function()
+					if typeof(game) ~= "nil" and game:GetService("HttpService") then
+						src = game:GetService("HttpService"):GetAsync(url)
+					elseif syn and syn.request then
+						src = syn.request({ Url = url, Method = "GET" }).Body
+					elseif http and http.request then
+						src = http.request({ Url = url, Method = "GET" }).Body
+					elseif request then
+						src = request({ Url = url, Method = "GET" }).Body
+					elseif game and game.HttpGet then
+						src = game:HttpGet(url)
+					else
+						error("Preloader: no available HTTP method found")
+					end
+					loadDone = true
+				end)
+
+				local elapsed = 0
+				while not loadDone and elapsed < timeout do
+					task.wait(0.05)
+					elapsed = elapsed + 0.05
+				end
+
+				if not loadDone or not src then
+					error("Preloader: timed out or failed to fetch URL")
 				end
 
 				local fn, err = loadstring(src)
@@ -7055,21 +7312,33 @@ end
 					error("Preloader: loadstring failed: " .. tostring(err))
 				end
 
-				-- Inject MacLib context as upvalue-like env table
-				local module = fn({
+				-- Передаём context-таблицу в модуль
+				local ctx = {
 					MacLib  = MacLib,
 					Options = MacLib.Options,
-					Window  = nil,  -- user sets this in callback
-				})
-				return module
+					Window  = config.Window,
+					Name    = config.Name,
+				}
+
+				local moduleResult = fn(ctx)
+
+				-- Если модуль вернул функцию — вызываем её с ctx
+				if type(moduleResult) == "function" then
+					moduleResult = moduleResult(ctx)
+				end
+
+				return moduleResult
 			end)
 
 			if ok then
-				if type(callback) == "function" then
-					callback(result)
+				if type(config.onLoad) == "function" then
+					config.onLoad(result)
 				end
 			else
-				warn("[MacLib:Preloader] Failed to load: " .. tostring(result))
+				warn("[MacLib:Preloader] Failed to load '" .. tostring(config.Name or url) .. "': " .. tostring(result))
+				if type(config.onError) == "function" then
+					config.onError(result)
+				end
 			end
 		end)
 	end
