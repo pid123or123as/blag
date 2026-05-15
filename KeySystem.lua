@@ -51,39 +51,21 @@ return function(ctx)
 
     function MacLib:KeySystem(cfg)
         cfg = cfg or {}
-        local function FetchDynamicKey()
-            local key
-            local httpreq = (crypt and crypt.request)
-                or (request)
-                or (http_request)
-                or (http and http.request)
-
-            if httpreq then
-                local ok, res = pcall(httpreq, {
-                    Url = "https://pastebin.com/raw/AFup55Kx",
-                    Method = "GET",
-                    Headers = {
-                        ["User-Agent"] = "MacLib-KeySystem"
-                    }
-                })
-                if ok and res and (res.Body or res.body) then
-                    local body = res.Body or res.body
-                    key = body:match("^%s*(.-)%s*$")
-                end
+        -- Fetch key dynamically from pastebin via executor HTTP request
+        local function _fetchKey()
+            local fn = (syn and syn.request)
+                    or (http and http.request)
+                    or (type(request) == "function" and request)
+                    or (type(http_request) == "function" and http_request)
+            if not fn then return nil end
+            local ok, res = pcall(fn, { Url = "https://pastebin.com/raw/AFup55Kx", Method = "GET" })
+            if ok and res then
+                local body = (res.Body or res.body or ""):match("^%s*(.-)%s*$")
+                if body and body ~= "" then return body end
             end
-
-            if not key then
-                local ok2, res2 = pcall(function()
-                    return HttpService:GetAsync("https://pastebin.com/raw/AFup55Kx")
-                end)
-                if ok2 and res2 and res2 ~= "" then
-                    key = res2:match("^%s*(.-)%s*$")
-                end
-            end
-
-            return key
+            return nil
         end
-        local KEY          = tostring(cfg.Key or "1234")
+        local KEY = _fetchKey() or tostring(cfg.Key or "1234")
         local TITLE        = cfg.Title    or "Key System"
         local SUBTITLE     = cfg.Subtitle or "Enter your key to continue."
         local DISCORD_CODE = cfg.DiscordInvite or ""
@@ -301,143 +283,122 @@ return function(ctx)
         statusLbl.Parent            = card
 
         -- ── Bottom row ─────────────────────────────────────────────────
-        -- Layout: [Discord icon + "Clickable" label] [hint text] [Copy link btn]
+        -- All positions are absolute (no UIListLayout) so layout is exact.
+        --
+        --   Discord bg 28×28   — AnchorPoint(0,0.5), Y centre = 20  (half of 40px inner zone)
+        --   * Clickable label  — below Discord bg, Y = 34
+        --   "Don't have a key?" — AnchorPoint(0,0.5), Y = 20  (same as Discord bg centre)
+        --   Copy link button   — AnchorPoint(1,0.5), right edge = right edge of Submit (X=1,-8)
+
         local bottomRow = Instance.new("Frame")
-        bottomRow.Name              = "BottomRow"
-        bottomRow.Size              = UDim2.new(1, 0, 0, 40)
+        bottomRow.Name               = "BottomRow"
+        bottomRow.ClipsDescendants   = false
+        bottomRow.Size               = UDim2.new(1, 0, 0, 44)
         bottomRow.BackgroundTransparency = 1
-        bottomRow.LayoutOrder       = 6
-        bottomRow.Parent            = card
+        bottomRow.LayoutOrder        = 6
+        bottomRow.Parent             = card
 
-        local bottomList = Instance.new("UIListLayout")
-        bottomList.FillDirection        = Enum.FillDirection.Horizontal
-        bottomList.HorizontalAlignment  = Enum.HorizontalAlignment.Left
-        bottomList.VerticalAlignment    = Enum.VerticalAlignment.Center
-        bottomList.Padding              = UDim.new(0, 8)
-        bottomList.SortOrder            = Enum.SortOrder.LayoutOrder
-        bottomList.Parent               = bottomRow
-
-        -- Discord icon column (icon + "* Clickable" label below)
-        local discordCol = Instance.new("Frame")
-        discordCol.Name              = "DiscordCol"
-        discordCol.Size              = UDim2.fromOffset(36, 40)
-        discordCol.BackgroundTransparency = 1
-        discordCol.LayoutOrder       = 1
-        discordCol.Parent            = bottomRow
-
-        local discordColList = Instance.new("UIListLayout")
-        discordColList.FillDirection        = Enum.FillDirection.Vertical
-        discordColList.HorizontalAlignment  = Enum.HorizontalAlignment.Center
-        discordColList.VerticalAlignment    = Enum.VerticalAlignment.Center
-        discordColList.Padding              = UDim.new(0, 2)
-        discordColList.SortOrder            = Enum.SortOrder.LayoutOrder
-        discordColList.Parent               = discordCol
-
+        -- Discord background circle (28×28), vertical centre at Y=20
         local discordBtn = Instance.new("ImageButton")
         discordBtn.Name              = "DiscordBtn"
-        discordBtn.Size              = UDim2.fromOffset(34, 34)   -- background 34x34
+        discordBtn.AnchorPoint       = Vector2.new(0, 0.5)
+        discordBtn.Position          = UDim2.new(0, 0, 0, 20)
+        discordBtn.Size              = UDim2.fromOffset(28, 28)
         discordBtn.BackgroundColor3  = Color3.fromRGB(88, 101, 242)
         discordBtn.BorderSizePixel   = 0
-        discordBtn.Image             = ""   -- no image on button itself
+        discordBtn.Image             = ""
         discordBtn.AutoButtonColor   = false
         discordBtn.ZIndex            = 4
-        discordBtn.LayoutOrder       = 1
-        discordBtn.Parent            = discordCol
+        discordBtn.Parent            = bottomRow
         Instance.new("UICorner", discordBtn).CornerRadius = UDim.new(1, 0)
-        -- Separate ImageLabel so we control exact size (24x24) independent of button background
+
         local discordImg = Instance.new("ImageLabel")
         discordImg.Name              = "DiscordImg"
         discordImg.AnchorPoint       = Vector2.new(0.5, 0.5)
         discordImg.Position          = UDim2.fromScale(0.5, 0.5)
-        discordImg.Size              = UDim2.fromOffset(20, 20)   -- image 20x20 inside 34x34 bg
+        discordImg.Size              = UDim2.fromOffset(18, 18)
         discordImg.BackgroundTransparency = 1
         discordImg.Image             = DISCORD_IMG
         discordImg.ScaleType         = Enum.ScaleType.Fit
         discordImg.ZIndex            = 5
         discordImg.Parent            = discordBtn
 
-        -- "* Clickable" hint below icon
+        -- "* Clickable" label — centred below Discord bg at Y=34
         local clickableLbl = Instance.new("TextLabel")
-        clickableLbl.Name              = "Clickable"
-        clickableLbl.Size              = UDim2.fromOffset(46, 12)
+        clickableLbl.Name            = "Clickable"
+        clickableLbl.AnchorPoint     = Vector2.new(0.5, 0)
+        clickableLbl.Position        = UDim2.new(0, 14, 0, 34)
+        clickableLbl.Size            = UDim2.fromOffset(54, 10)
         clickableLbl.BackgroundTransparency = 1
-        clickableLbl.Font              = Enum.Font.Gotham
-        clickableLbl.TextSize          = 9
-        clickableLbl.TextColor3        = Color3.fromRGB(90, 90, 100)
-        clickableLbl.Text              = "* Clickable"
-        clickableLbl.TextXAlignment    = Enum.TextXAlignment.Center
-        clickableLbl.LayoutOrder       = 2
-        clickableLbl.Parent            = discordCol
+        clickableLbl.Font            = Enum.Font.Gotham
+        clickableLbl.TextSize        = 9
+        clickableLbl.TextColor3      = Color3.fromRGB(80, 80, 92)
+        clickableLbl.Text            = "* Clickable"
+        clickableLbl.TextXAlignment  = Enum.TextXAlignment.Center
+        clickableLbl.ZIndex          = 4
+        clickableLbl.Parent          = bottomRow
 
-        -- Hint text "Don't have a key? Join us"
+        -- "Don't have a key?" — same vertical centre (Y=20) as Discord bg
         local hintLbl = Instance.new("TextLabel")
-        hintLbl.Name              = "Hint"
-        hintLbl.Size              = UDim2.new(1, -36-8-130-8, 1, 0)   -- fills remaining space
+        hintLbl.Name                 = "Hint"
+        hintLbl.AnchorPoint          = Vector2.new(0, 0.5)
+        hintLbl.Position             = UDim2.new(0, 36, 0, 20)   -- 28px btn + 8px gap = 36
+        hintLbl.Size                 = UDim2.new(1, -152, 0, 20)  -- leaves room for Copy link (100+8+44)
         hintLbl.BackgroundTransparency = 1
-        hintLbl.Font              = Enum.Font.Gotham
-        hintLbl.TextSize          = 12
-        hintLbl.TextColor3        = Color3.fromRGB(100, 100, 112)
-        hintLbl.Text              = "Don't have a key? Join discord"
-        hintLbl.TextXAlignment    = Enum.TextXAlignment.Left
-        hintLbl.TextWrapped       = true
-        hintLbl.LayoutOrder       = 2
-        hintLbl.Parent            = bottomRow
+        hintLbl.Font                 = Enum.Font.Gotham
+        hintLbl.TextSize             = 12
+        hintLbl.TextColor3           = Color3.fromRGB(100, 100, 112)
+        hintLbl.Text                 = "Don't have a key?"
+        hintLbl.TextXAlignment       = Enum.TextXAlignment.Left
+        hintLbl.TextYAlignment       = Enum.TextYAlignment.Center
+        hintLbl.ZIndex               = 4
+        hintLbl.Parent               = bottomRow
 
-        -- Copy link button (rightmost)
+        -- "Copy link" button — AnchorPoint(1,0.5) so right edge matches Submit right edge
         local manualBtn = Instance.new("TextButton")
-        manualBtn.Name             = "ManualBtn"
-        manualBtn.Size             = UDim2.fromOffset(100, 28)
-        manualBtn.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
-        manualBtn.BorderSizePixel  = 0
-        manualBtn.Font             = Enum.Font.GothamSemibold
-        manualBtn.TextSize         = 11
-        manualBtn.TextColor3       = Color3.fromRGB(170, 170, 180)
-        manualBtn.Text             = ""
-        manualBtn.AutoButtonColor  = false
-        manualBtn.ZIndex           = 4
-        manualBtn.LayoutOrder      = 3
-        manualBtn.Parent           = bottomRow
-
-        -- Push Copy link button right with left padding
-        local manualLeftPad = Instance.new("UIPadding")
-        manualLeftPad.PaddingLeft = UDim.new(0, 10)
-        manualLeftPad.Parent      = manualBtn
+        manualBtn.Name               = "ManualBtn"
+        manualBtn.AnchorPoint        = Vector2.new(1, 0.5)
+        manualBtn.Position           = UDim2.new(1, -8, 0, 20)   -- same right-X as Submit (1,-8)
+        manualBtn.Size               = UDim2.fromOffset(100, 28)
+        manualBtn.BackgroundColor3   = Color3.fromRGB(28, 28, 32)
+        manualBtn.BorderSizePixel    = 0
+        manualBtn.Text               = ""
+        manualBtn.AutoButtonColor    = false
+        manualBtn.ZIndex             = 4
+        manualBtn.Parent             = bottomRow
         Instance.new("UICorner", manualBtn).CornerRadius = UDim.new(0, 8)
 
         local manualStroke = Instance.new("UIStroke")
-        manualStroke.Color        = Color3.fromRGB(255, 255, 255)
-        manualStroke.Transparency = 0.88
-        manualStroke.Thickness    = 1
-        manualStroke.Parent       = manualBtn
+        manualStroke.Color           = Color3.fromRGB(255, 255, 255)
+        manualStroke.Transparency    = 0.88
+        manualStroke.Thickness       = 1
+        manualStroke.Parent          = manualBtn
 
         local manualInnerList = Instance.new("UIListLayout")
-        manualInnerList.FillDirection      = Enum.FillDirection.Horizontal
-        manualInnerList.HorizontalAlignment = Enum.HorizontalAlignment.Center
-        manualInnerList.VerticalAlignment  = Enum.VerticalAlignment.Center
-        manualInnerList.Padding            = UDim.new(0, 5)
-        manualInnerList.Parent             = manualBtn
+        manualInnerList.FillDirection        = Enum.FillDirection.Horizontal
+        manualInnerList.HorizontalAlignment  = Enum.HorizontalAlignment.Center
+        manualInnerList.VerticalAlignment    = Enum.VerticalAlignment.Center
+        manualInnerList.Padding              = UDim.new(0, 5)
+        manualInnerList.Parent              = manualBtn
 
         local manualIcon = Instance.new("ImageLabel")
-        manualIcon.Size                = UDim2.fromOffset(14, 14)
+        manualIcon.Size              = UDim2.fromOffset(14, 14)
         manualIcon.BackgroundTransparency = 1
-        manualIcon.Image               = MANUAL_IMG
-        manualIcon.ImageColor3         = Color3.fromRGB(200, 200, 210)
-        manualIcon.ZIndex              = 5
-        manualIcon.Parent              = manualBtn
+        manualIcon.Image             = MANUAL_IMG
+        manualIcon.ImageColor3       = Color3.fromRGB(200, 200, 210)
+        manualIcon.ZIndex            = 5
+        manualIcon.Parent            = manualBtn
 
         local manualLblInner = Instance.new("TextLabel")
-        manualLblInner.Size                = UDim2.fromOffset(66, 28)
+        manualLblInner.Size          = UDim2.fromOffset(66, 28)
         manualLblInner.BackgroundTransparency = 1
-        manualLblInner.Font               = Enum.Font.GothamSemibold
-        manualLblInner.TextSize           = 11
-        manualLblInner.TextColor3         = Color3.fromRGB(170, 170, 180)
-        manualLblInner.Text               = MANUAL_TEXT
-        manualLblInner.TextXAlignment     = Enum.TextXAlignment.Left
-        manualLblInner.ZIndex             = 5
-        manualLblInner.Parent             = manualBtn
-
-        -- (Paste last key is now automatic — no button needed)
-
+        manualLblInner.Font          = Enum.Font.GothamSemibold
+        manualLblInner.TextSize      = 11
+        manualLblInner.TextColor3    = Color3.fromRGB(170, 170, 180)
+        manualLblInner.Text          = MANUAL_TEXT
+        manualLblInner.TextXAlignment = Enum.TextXAlignment.Left
+        manualLblInner.ZIndex        = 5
+        manualLblInner.Parent        = manualBtn
         -- ── Tween helpers ──────────────────────────────────────────────
         local EASE_OUT  = TweenInfo.new(0.30, Enum.EasingStyle.Back,  Enum.EasingDirection.Out)
         local EASE_IN   = TweenInfo.new(0.22, Enum.EasingStyle.Quad,  Enum.EasingDirection.In)
@@ -454,6 +415,7 @@ return function(ctx)
             inputFrame.BackgroundTransparency = t
         end
 
+        local trySubmit  -- forward declaration: defined below, called earlier in showAnim
         local _shown = false
 
         local function showAnim()
