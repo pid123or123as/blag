@@ -5397,6 +5397,9 @@ function MacLib:Window(Settings)
 					return SpacerFunctions
 				end
 
+				-- Apply any patched custom element methods (from MacLib:PatchSection)
+				MacLib:_ApplySectionPatches(SectionFunctions)
+
 				return SectionFunctions
 			end
 
@@ -5579,6 +5582,9 @@ function MacLib:Window(Settings)
 
 			return TabFunctions
 		end
+
+		-- Apply any patched custom element methods (from MacLib:PatchSection)
+		MacLib:_ApplySectionPatches(SectionFunctions)
 
 		return SectionFunctions
 	end
@@ -6522,6 +6528,38 @@ function MacLib:Window(Settings)
 		  flag       -- строка-флаг; nil = не сохраняется в config
 		Возвращает elementFunctions.
 	]]
+	--[[
+		MacLib:PatchSection(methodName, fn)
+
+		Добавляет метод methodName во все будущие и существующие секции.
+		fn(self, settings, flag) -- self = SectionFunctions объект
+
+		Используется кастомными PreLoader-модулями для регистрации
+		своих методов (section:ProgressBar, section:CheckBox и т.д.).
+
+		Пример (в PreLoader-модуле):
+		  MacLib:PatchSection("ProgressBar", function(self, settings, flag)
+		    return MacLib:CreateCustomElement(self, "ProgressBar", settings, flag)
+		  end)
+	]]
+	MacLib._sectionPatches = MacLib._sectionPatches or {}
+
+	function MacLib:PatchSection(methodName, fn)
+		MacLib._sectionPatches[methodName] = fn
+		-- Патчим уже существующие Options если они являются секциями
+		-- (Новые секции подхватят патч через _ApplySectionPatches)
+	end
+
+	-- Вызывается внутри создания секции для применения накопленных патчей
+	function MacLib:_ApplySectionPatches(sectionFns)
+		for name, fn in next, (MacLib._sectionPatches or {}) do
+			local _fn = fn
+			sectionFns[name] = function(self, settings, flag)
+				return _fn(self, settings, flag)
+			end
+		end
+	end
+
 	function MacLib:CreateCustomElement(sectionObj, typeName, settings, flag)
 		assert(_customBuilders[typeName],
 			"CreateCustomElement: type '" .. tostring(typeName) ..
@@ -6620,6 +6658,8 @@ function MacLib:Window(Settings)
 			local c = toggleBtn:FindFirstChildOfClass("UICorner")
 			if c then c.CornerRadius = props.CornerRadius end
 		end
+		if props.Position              then toggleBtn.Position = props.Position end
+		if props.AnchorPoint           then toggleBtn.AnchorPoint = props.AnchorPoint end
 		-- Сохраняем в custom data
 		MacLib:SetData("__toggleBtnStyle", {
 			sizeX  = props.Size and props.Size.X.Offset or nil,
