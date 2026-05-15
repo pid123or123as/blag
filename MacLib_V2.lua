@@ -1230,6 +1230,8 @@ function MacLib:Window(Settings)
 	toggleBtnIcon.ZIndex = 11
 	toggleBtnIcon.Parent = toggleBtn
 	-- FIX7: делаем updateToggleBtnIcon доступной для SetState через upvalue
+	-- Хранит пользовательский цвет кнопки (через StyleToggleButton), чтобы не сбрасывать его при клике
+	local _toggleBtnCustomColor = nil  -- nil = использовать дефолт
 	local _updateToggleBtnIcon
 	local function updateToggleBtnIcon(state)
 		-- FIX4: плавная анимация иконки — fade out → swap → fade in + лёгкое вращение
@@ -1246,8 +1248,12 @@ function MacLib:Window(Settings)
 				Rotation = 0
 			}):Play()
 		end)
+		-- Используем пользовательский цвет если он задан, иначе дефолтные
+		local defaultOpen  = Color3.fromRGB(12, 12, 14)
+		local defaultClose = Color3.fromRGB(16, 6, 6)
+		local targetColor = _toggleBtnCustomColor or (state and defaultClose or defaultOpen)
 		Tween(toggleBtn, TweenInfo.new(0.18, Enum.EasingStyle.Sine), {
-			BackgroundColor3 = state and Color3.fromRGB(16, 6, 6) or Color3.fromRGB(12, 12, 14)
+			BackgroundColor3 = targetColor
 		}):Play()
 	end
 	_updateToggleBtnIcon = updateToggleBtnIcon
@@ -3012,11 +3018,29 @@ function MacLib:Window(Settings)
 					local function showMobileBtn(state)
 						if state == _mbVisible then return end
 						_mbVisible = state
+						-- Сохраняем состояние видимости в конфиге
+						if Flag then
+							MacLib._keybindBtnVisible = MacLib._keybindBtnVisible or {}
+							MacLib._keybindBtnVisible[Flag] = state
+						end
 						if state then
 							mobileKeybindGui.Enabled = true
+							-- Восстанавливаем сохранённые стили при показе
+							local styles = MacLib:GetData("__keybindBtnStyles")
+							local s = styles and Flag and styles[Flag]
+							local targetSize
+							if s and s.sizeX and s.sizeY then
+								targetSize = UDim2.fromOffset(s.sizeX, s.sizeY)
+							else
+								targetSize = UDim2.fromOffset(56, 56)
+							end
+							if s and s.bgT   ~= nil then mobileKeybindBtn.BackgroundTransparency = s.bgT end
+							if s and s.iconT ~= nil then mobileKeybindBtn.ImageTransparency = 1 end  -- начинаем с 1, твин покажет
+							if s and s.image       then mobileKeybindBtn.Image = s.image end
+							local targetIconT = (s and s.iconT ~= nil) and s.iconT or 0.3
 							Tween(mobileKeybindBtn, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-								Size = UDim2.fromOffset(56, 56),
-								ImageTransparency = 0.3
+								Size = targetSize,
+								ImageTransparency = targetIconT
 							}):Play()
 						else
 							local t = Tween(mobileKeybindBtn, TweenInfo.new(0.16, Enum.EasingStyle.Sine, Enum.EasingDirection.In), {
@@ -3030,12 +3054,10 @@ function MacLib:Window(Settings)
 						end
 					end
 
-					-- Кнопка '+' для показа/скрытия плавающей кнопки — создаётся на мобильных и ПК
-					-- На мобильных: заменяет binderBox. На ПК: отображается рядом с binderBox.
-					do
-						if _isMobileKB then
-							binderBox.Visible = false
-						end
+					-- Кнопка '+' для показа/скрытия плавающей кнопки — только на мобильных.
+					-- На ПК используй MacLib:ShowKeybindButton(flag, state) для управления видимостью.
+					if _isMobileKB then
+						binderBox.Visible = false
 
 						-- Применяем сохранённую видимость '+' кнопки
 						local _plusHidden = MacLib._mobileKeybindsHidden and Flag and MacLib._mobileKeybindsHidden[Flag]
@@ -3053,8 +3075,7 @@ function MacLib:Window(Settings)
 						plusBtn.BorderSizePixel = 0
 						plusBtn.Size = UDim2.fromOffset(34, 26)
 						plusBtn.AnchorPoint = Vector2.new(1, 0.5)
-						-- На ПК позиционируем левее binderBox, чтобы не перекрывать его
-						plusBtn.Position = _isMobileKB and UDim2.new(1, 0, 0.5, 0) or UDim2.new(1, -46, 0.5, 0)
+						plusBtn.Position = UDim2.new(1, 0, 0.5, 0)
 						plusBtn.ZIndex = 5
 						plusBtn.Parent = keybind
 
@@ -6372,6 +6393,7 @@ function MacLib:Window(Settings)
 			keybind_positions = {},
 			toggle_btn_visible = MacLib._toggleBtnVisible,
 			mobile_keybinds_hidden = MacLib._mobileKeybindsHidden or {},
+			keybind_btn_visible = MacLib._keybindBtnVisible or {},
 		}
 
 		for flag, option in next, MacLib.Options do
@@ -6449,6 +6471,14 @@ function MacLib:Window(Settings)
 						MacLib._keybindPlusBtns[flag].Visible = not hidden
 					end
 				end
+			end
+		end
+
+		-- Восстанавливаем состояние видимости floating keybind кнопок
+		if decoded.keybind_btn_visible then
+			MacLib._keybindBtnVisible = decoded.keybind_btn_visible
+			for flag, visible in next, decoded.keybind_btn_visible do
+				MacLib:SetMobileKeybindVisible(flag, visible)
 			end
 		end
 
@@ -6650,7 +6680,10 @@ function MacLib:Window(Settings)
 	function MacLib:StyleToggleButton(props)
 		if not toggleBtn then return end
 		if props.Size                  then toggleBtn.Size = props.Size end
-		if props.BackgroundColor3      then toggleBtn.BackgroundColor3 = props.BackgroundColor3 end
+		if props.BackgroundColor3      then
+			toggleBtn.BackgroundColor3 = props.BackgroundColor3
+			_toggleBtnCustomColor = props.BackgroundColor3  -- сохраняем чтобы клик не сбрасывал цвет
+		end
 		if props.BackgroundTransparency ~= nil then toggleBtn.BackgroundTransparency = props.BackgroundTransparency end
 		if props.ImageColor3           then toggleBtnIcon.ImageColor3 = props.ImageColor3 end
 		if props.ImageTransparency     ~= nil then toggleBtnIcon.ImageTransparency = props.ImageTransparency end
@@ -6692,24 +6725,35 @@ function MacLib:Window(Settings)
 	function MacLib:StyleKeybindButton(flag, props)
 		local btn = MacLib._keybindBtns and MacLib._keybindBtns[flag]
 		if not btn then return end
-		if props.Size                  then btn.Size = props.Size end
+		if props.Size                  then
+			-- Сохраняем размер в метаданных (не применяем напрямую — кнопка анимируется через showMobileBtn)
+			MacLib._keybindBtnSizes = MacLib._keybindBtnSizes or {}
+			MacLib._keybindBtnSizes[flag] = props.Size
+			-- Применяем только если кнопка сейчас видима
+			if btn.Parent and btn.Parent.Enabled then
+				btn.Size = props.Size
+			end
+		end
 		if props.BackgroundColor3      then btn.BackgroundColor3 = props.BackgroundColor3 end
 		if props.BackgroundTransparency ~= nil then btn.BackgroundTransparency = props.BackgroundTransparency end
 		if props.Image                 then btn.Image = props.Image end
 		if props.ImageTransparency     ~= nil then btn.ImageTransparency = props.ImageTransparency end
-		-- Сохраняем в custom data
+		-- Сохраняем стили как новые дефолты
 		local saved = MacLib:GetData("__keybindBtnStyles") or {}
+		local prev = saved[flag] or {}
 		saved[flag] = {
-			bgT   = props.BackgroundTransparency,
-			iconT = props.ImageTransparency,
-			image = props.Image,
+			sizeX = props.Size and props.Size.X.Offset or prev.sizeX,
+			sizeY = props.Size and props.Size.Y.Offset or prev.sizeY,
+			bgT   = props.BackgroundTransparency ~= nil and props.BackgroundTransparency or prev.bgT,
+			iconT = props.ImageTransparency ~= nil and props.ImageTransparency or prev.iconT,
+			image = props.Image or prev.image,
 		}
 		MacLib:SetData("__keybindBtnStyles", saved)
 	end
 
 	--[[
 		MacLib:SetMobileKeybindVisible(flag, state)
-		Показывает или скрывает '+' кнопку конкретного Keybind.
+		Показывает или скрывает '+' кнопку конкретного Keybind (только мобильные).
 		Сохраняется в конфиг.
 	]]
 	function MacLib:SetMobileKeybindVisible(flag, state)
@@ -6717,6 +6761,80 @@ function MacLib:Window(Settings)
 		MacLib._mobileKeybindsHidden[flag] = not state
 		local btn = MacLib._keybindPlusBtns and MacLib._keybindPlusBtns[flag]
 		if btn then btn.Visible = state end
+	end
+
+	--[[
+		MacLib:ShowKeybindButton(flag, state)
+		Показывает или скрывает плавающую Keybind кнопку.
+		Работает на ПК и мобильных.
+		Используется для тестирования кнопки на ПК без касания экрана.
+
+		flag  -- Flag строка Keybind элемента
+		state -- true = показать, false = скрыть
+
+		Пример:
+		  MacLib:ShowKeybindButton("Keybind", true)   -- показать
+		  MacLib:ShowKeybindButton("Keybind", false)  -- скрыть
+	]]
+	function MacLib:ShowKeybindButton(flag, state)
+		-- Сохраняем состояние
+		MacLib._keybindBtnVisible = MacLib._keybindBtnVisible or {}
+		MacLib._keybindBtnVisible[flag] = state
+
+		local btn = MacLib._keybindBtns and MacLib._keybindBtns[flag]
+		if not btn then return end
+		local gui = btn.Parent
+		if not gui then return end
+
+		if state then
+			gui.Enabled = true
+			-- Применяем сохранённые стили
+			local styles = MacLib:GetData("__keybindBtnStyles")
+			local s = styles and styles[flag]
+			local targetSize
+			if s and s.sizeX and s.sizeY then
+				targetSize = UDim2.fromOffset(s.sizeX, s.sizeY)
+			else
+				targetSize = UDim2.fromOffset(56, 56)
+			end
+			if s and s.bgT   ~= nil then btn.BackgroundTransparency = s.bgT end
+			if s and s.image       then btn.Image = s.image end
+			local targetIconT = (s and s.iconT ~= nil) and s.iconT or 0.3
+			Tween(btn, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+				Size = targetSize,
+				ImageTransparency = targetIconT,
+			}):Play()
+		else
+			local t = Tween(btn, TweenInfo.new(0.16, Enum.EasingStyle.Sine, Enum.EasingDirection.In), {
+				Size = UDim2.fromOffset(0, 0),
+				ImageTransparency = 1,
+			})
+			t:Play()
+			t.Completed:Connect(function()
+				gui.Enabled = false
+			end)
+		end
+	end
+
+	--[[
+		MacLib:SimulateKeybindPress(flag)
+		Программно вызывает Callback конкретного Keybind.
+		Полезно для теста на ПК — имитирует нажатие плавающей кнопки.
+
+		flag -- Flag строка Keybind элемента
+
+		Пример:
+		  MacLib:SimulateKeybindPress("Keybind")
+	]]
+	function MacLib:SimulateKeybindPress(flag)
+		local kb = MacLib.Options[flag]
+		if not kb then
+			warn("[MacLib:SimulateKeybindPress] No Keybind found with flag: " .. tostring(flag))
+			return
+		end
+		if kb.Settings and kb.Settings.Callback then
+			task.spawn(kb.Settings.Callback, kb:GetBind() or Enum.KeyCode.Unknown)
+		end
 	end
 
 	-- === END EXTENDED API ===
@@ -7303,56 +7421,51 @@ end
 		    end,
 		  })
 	]]
-	function MacLib:Preloader(url, config)
-		assert(type(url) == "string", "Preloader: url must be a string")
+	--[[
+		MacLib:Preloader(moduleResult, config)
 
-		-- Поддержка старого API: Preloader(url, callback)
+		Интегрирует уже загруженный внешний модуль в MacLib.
+		Разработчик сам загружает файл через loadstring/loadfile/require,
+		а Preloader только вызывает его с нужным контекстом.
+
+		moduleResult -- результат loadstring(src)() или require(), т.е. функция или таблица
+		config       -- таблица конфигурации (опционально):
+		  {
+		    Window  = Window,              -- передаётся в ctx.Window
+		    Name    = "MyElement",         -- имя для логирования
+		    onLoad  = function(el) end,    -- callback после успешного вызова
+		    onError = function(err) end,   -- callback при ошибке
+		  }
+
+		Внешний модуль должен быть функцией(ctx) или таблицей.
+		  - Функция: вызывается с ctx = { MacLib, Options, Window, Name }
+		  - Таблица:  возвращается напрямую как элемент
+
+		Пример:
+		  local src = game:HttpGet("https://.../ProgressBar_Element.lua")
+		  local moduleFn = loadstring(src)
+		  MacLib:Preloader(moduleFn, {
+		    Window  = Window,
+		    Name    = "ProgressBar",
+		    onLoad  = function() print("loaded!") end,
+		  })
+
+		Также поддерживает уже вызванный результат:
+		  local mod = loadstring(src)()   -- вызвали сами
+		  MacLib:Preloader(mod, { onLoad = function(el) ... end })
+
+		Обратная совместимость:
+		  MacLib:Preloader(fn, callback)  -- callback = onLoad
+	]]
+	function MacLib:Preloader(moduleResult, config)
+		-- Поддержка старого API: Preloader(fn, callback)
 		if type(config) == "function" then
 			config = { onLoad = config }
 		end
 		config = config or {}
 
-		local timeout = config.Timeout or 10
-
 		task.spawn(function()
 			local ok, result = pcall(function()
-				-- Загружаем исходник с таймаутом
-				local src
-				local loadDone = false
-
-				task.spawn(function()
-					if typeof(game) ~= "nil" and game:GetService("HttpService") then
-						src = game:GetService("HttpService"):GetAsync(url)
-					elseif syn and syn.request then
-						src = syn.request({ Url = url, Method = "GET" }).Body
-					elseif http and http.request then
-						src = http.request({ Url = url, Method = "GET" }).Body
-					elseif request then
-						src = request({ Url = url, Method = "GET" }).Body
-					elseif game and game.HttpGet then
-						src = game:HttpGet(url)
-					else
-						error("Preloader: no available HTTP method found")
-					end
-					loadDone = true
-				end)
-
-				local elapsed = 0
-				while not loadDone and elapsed < timeout do
-					task.wait(0.05)
-					elapsed = elapsed + 0.05
-				end
-
-				if not loadDone or not src then
-					error("Preloader: timed out or failed to fetch URL")
-				end
-
-				local fn, err = loadstring(src)
-				if not fn then
-					error("Preloader: loadstring failed: " .. tostring(err))
-				end
-
-				-- Передаём context-таблицу в модуль
 				local ctx = {
 					MacLib  = MacLib,
 					Options = MacLib.Options,
@@ -7360,14 +7473,19 @@ end
 					Name    = config.Name,
 				}
 
-				local moduleResult = fn(ctx)
+				local mod = moduleResult
 
-				-- Если модуль вернул функцию — вызываем её с ctx
-				if type(moduleResult) == "function" then
-					moduleResult = moduleResult(ctx)
+				-- Если передана функция — вызываем с ctx
+				if type(mod) == "function" then
+					mod = mod(ctx)
 				end
 
-				return moduleResult
+				-- Если результат тоже функция (loadstring вернул closure) — вызываем ещё раз
+				if type(mod) == "function" then
+					mod = mod(ctx)
+				end
+
+				return mod
 			end)
 
 			if ok then
@@ -7375,13 +7493,11 @@ end
 					config.onLoad(result)
 				end
 			else
-				warn("[MacLib:Preloader] Failed to load '" .. tostring(config.Name or url) .. "': " .. tostring(result))
+				warn("[MacLib:Preloader] Error" .. (config.Name and (" in '" .. config.Name .. "'") or "") .. ": " .. tostring(result))
 				if type(config.onError) == "function" then
 					config.onError(result)
 				end
 			end
 		end)
 	end
-
-
 return MacLib
