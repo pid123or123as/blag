@@ -6596,6 +6596,19 @@ function MacLib:Window(Settings)
 		MacLib:InitForceAutoLoad()
 	end
 
+	--[[
+		MacLib:GetFolder()
+		Returns the current MacLib folder path set via MacLib:SetFolder().
+		Returns nil if SetFolder has not been called yet.
+		Example:
+		  local folder = MacLib:GetFolder()
+		  -- folder = "Maclib"
+		  -- key file path: folder .. "/key.syl"
+	]]
+	function MacLib:GetFolder()
+		return MacLib.Folder
+	end
+
 	function MacLib:SaveConfig(Path)
 		if isStudio or not writefile then return "Config system unavailable." end
 
