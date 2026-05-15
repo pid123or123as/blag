@@ -1965,6 +1965,17 @@ function MacLib:Window(Settings)
 				sectionUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 				sectionUIListLayout.Parent = section
 
+				-- Element order counter: каждый новый элемент получает следующий LayoutOrder
+				-- Это гарантирует, что элементы появляются в порядке вызова, даже если они создаются через task.defer
+				local _nextLayoutOrder = 1
+				local function _nextOrder()
+					local n = _nextLayoutOrder
+					_nextLayoutOrder = _nextLayoutOrder + 1
+					return n
+				end
+				-- Expose _nextOrder on SectionFunctions for CreateCustomElement
+				SectionFunctions._nextOrder = _nextOrder
+
 				local sectionUIPadding = Instance.new("UIPadding")
 				sectionUIPadding.Name = "SectionUIPadding"
 				sectionUIPadding.PaddingBottom = UDim.new(0, 20)
@@ -1983,6 +1994,7 @@ function MacLib:Window(Settings)
 					button.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					button.BorderSizePixel = 0
 					button.Size = UDim2.new(1, 0, 0, 38)
+					button.LayoutOrder = _nextOrder()
 					button.Parent = section
 
 					local buttonInteract = Instance.new("TextButton")
@@ -2097,6 +2109,7 @@ function MacLib:Window(Settings)
 					toggle.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					toggle.BorderSizePixel = 0
 					toggle.Size = UDim2.new(1, 0, 0, 38)
+					toggle.LayoutOrder = _nextOrder()
 					toggle.Parent = section
 
 					local toggleName = Instance.new("TextLabel")
@@ -2274,6 +2287,7 @@ function MacLib:Window(Settings)
 					slider.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					slider.BorderSizePixel = 0
 					slider.Size = UDim2.new(1, 0, 0, 38)
+					slider.LayoutOrder = _nextOrder()
 					slider.Parent = section
 
 					local sliderName = Instance.new("TextLabel")
@@ -2582,6 +2596,7 @@ function MacLib:Window(Settings)
 					input.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					input.BorderSizePixel = 0
 					input.Size = UDim2.new(1, 0, 0, 38)
+					input.LayoutOrder = _nextOrder()
 					input.Parent = section
 
 					local inputName = Instance.new("TextLabel")
@@ -2783,6 +2798,7 @@ function MacLib:Window(Settings)
 					keybind.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					keybind.BorderSizePixel = 0
 					keybind.Size = UDim2.new(1, 0, 0, 38)
+					keybind.LayoutOrder = _nextOrder()
 					keybind.Parent = section
 
 					local keybindName = Instance.new("TextLabel")
@@ -3190,6 +3206,7 @@ function MacLib:Window(Settings)
 					dropdown.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					dropdown.BorderSizePixel = 0
 					dropdown.Size = UDim2.new(1, 0, 0, 38)
+					dropdown.LayoutOrder = _nextOrder()
 					dropdown.Parent = section
 					dropdown.ClipsDescendants = false
 
@@ -3843,6 +3860,7 @@ function MacLib:Window(Settings)
 					colorpicker.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					colorpicker.BorderSizePixel = 0
 					colorpicker.Size = UDim2.new(1, 0, 0, 38)
+					colorpicker.LayoutOrder = _nextOrder()
 					colorpicker.Parent = section
 
 					local colorpickerName = Instance.new("TextLabel")
@@ -5144,6 +5162,7 @@ function MacLib:Window(Settings)
 					header.BorderSizePixel = 0
 					header.LayoutOrder = 0
 					header.Size = UDim2.fromScale(1, 0)
+					header.LayoutOrder = _nextOrder()
 					header.Parent = section
 
 					local uIPadding = Instance.new("UIPadding")
@@ -5197,6 +5216,7 @@ function MacLib:Window(Settings)
 					label.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					label.BorderSizePixel = 0
 					label.Size = UDim2.new(1, 0, 0, 38)
+					label.LayoutOrder = _nextOrder()
 					label.Parent = section
 
 					local labelText = Instance.new("TextLabel")
@@ -5241,6 +5261,7 @@ function MacLib:Window(Settings)
 					subLabel.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					subLabel.BorderSizePixel = 0
 					subLabel.Size = UDim2.new(1, 0, 0, 0)
+					subLabel.LayoutOrder = _nextOrder()
 					subLabel.Parent = section
 
 					local subLabelText = Instance.new("TextLabel")
@@ -5285,6 +5306,7 @@ function MacLib:Window(Settings)
 					paragraph.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					paragraph.BorderSizePixel = 0
 					paragraph.Size = UDim2.new(1, 0, 0, 38)
+					paragraph.LayoutOrder = _nextOrder()
 					paragraph.Parent = section
 
 					local paragraphHeader = Instance.new("TextLabel")
@@ -5363,6 +5385,7 @@ function MacLib:Window(Settings)
 					divider.BorderSizePixel = 0
 					divider.Position = UDim2.fromScale(0, 1)
 					divider.Size = UDim2.new(1, 0, 0, 1)
+					divider.LayoutOrder = _nextOrder()
 					divider.Parent = section
 
 					local uIPadding = Instance.new("UIPadding")
@@ -5406,6 +5429,7 @@ function MacLib:Window(Settings)
 					spacer.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					spacer.BorderSizePixel = 0
 					spacer.Position = UDim2.fromScale(0, 1)
+					spacer.LayoutOrder = _nextOrder()
 					spacer.Parent = section
 
 					function SpacerFunctions:Remove()
@@ -5592,6 +5616,168 @@ function MacLib:Window(Settings)
 					local name = readfile(MacLib.Folder .. "/settings/autoload.txt")
 					autoloadLabel:UpdateName("Autoload config: " .. name)
 				end
+			end
+
+			--[[
+				Tab:InsertCustomisationSection(Side)
+
+				Automatically builds the Customisation section in the given tab side.
+				Covers: Toggle Button appearance, Toggle Button position (AnchorPoint),
+				Keybind Button, Window toggles, Notify settings.
+
+				All settings use ForceAutoLoad for automatic persistence.
+				Call after MacLib:SetFolder().
+
+				Example:
+				  tabs.Custom:InsertCustomisationSection("Left")
+			]]
+			function TabFunctions:InsertCustomisationSection(Side)
+				local sec = TabFunctions:Section({ Side = Side or "Left" })
+				local secR = TabFunctions:Section({ Side = Side == "Right" and "Left" or "Right" })
+
+				-- ── Toggle Button ─────────────────────────────────────
+				sec:Header({ Name = "Toggle Button" })
+				sec:Toggle({ Name = "Visible", Default = true, ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:SetToggleButtonVisible(v) end }, "Cust_TBVis")
+				sec:Slider({ Name = "Size (px)", Default = 44, Minimum = 28, Maximum = 80, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleToggleButton({ Size = UDim2.fromOffset(v, v) }) end }, "Cust_TBSize")
+				sec:Slider({ Name = "Background Transparency", Default = 8, Minimum = 0, Maximum = 95, Precision = 0, Suffix = "%",
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleToggleButton({ BackgroundTransparency = v / 100 }) end }, "Cust_TBBgT")
+				sec:Slider({ Name = "Corner Radius", Default = 12, Minimum = 0, Maximum = 40, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleToggleButton({ CornerRadius = UDim.new(0, v) }) end }, "Cust_TBRadius")
+				sec:Slider({ Name = "Icon Transparency", Default = 5, Minimum = 0, Maximum = 90, Precision = 0, Suffix = "%",
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleToggleButton({ ImageTransparency = v / 100 }) end }, "Cust_TBIconT")
+				sec:Colorpicker({ Name = "Button Color", Default = Color3.fromRGB(12, 12, 14),
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(c) MacLib:StyleToggleButton({ BackgroundColor3 = c }) end }, "Cust_TBColor")
+				sec:Colorpicker({ Name = "Icon Color", Default = Color3.fromRGB(255, 255, 255),
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(c) MacLib:StyleToggleButton({ ImageColor3 = c }) end }, "Cust_TBIconColor")
+
+				-- ── Toggle Button Position (AnchorPoint sliders) ──────
+				sec:Divider()
+				sec:Header({ Name = "Toggle Button Position" })
+				sec:Slider({ Name = "Anchor X (0 = left, 1 = right)", Default = 100, Minimum = 0, Maximum = 100, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.4,
+					Callback = function(v)
+						local ax = v / 100
+						local ay_o = MacLib:GetOption("Cust_TBAnchorY")
+						local ay = ay_o and (ay_o:GetValue() / 100) or 1
+						local ox_o = MacLib:GetOption("Cust_TBOffX")
+						local oy_o = MacLib:GetOption("Cust_TBOffY")
+						local ox = ox_o and ox_o:GetValue() or 0
+						local oy = oy_o and oy_o:GetValue() or 0
+						MacLib:StyleToggleButton({
+							AnchorPoint = Vector2.new(ax, ay),
+							Position    = UDim2.new(ax, ox, ay, oy),
+						})
+					end }, "Cust_TBAnchorX")
+				sec:Slider({ Name = "Anchor Y (0 = top, 1 = bottom)", Default = 100, Minimum = 0, Maximum = 100, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.4,
+					Callback = function(v)
+						local ay = v / 100
+						local ax_o = MacLib:GetOption("Cust_TBAnchorX")
+						local ax = ax_o and (ax_o:GetValue() / 100) or 1
+						local ox_o = MacLib:GetOption("Cust_TBOffX")
+						local oy_o = MacLib:GetOption("Cust_TBOffY")
+						local ox = ox_o and ox_o:GetValue() or 0
+						local oy = oy_o and oy_o:GetValue() or 0
+						MacLib:StyleToggleButton({
+							AnchorPoint = Vector2.new(ax, ay),
+							Position    = UDim2.new(ax, ox, ay, oy),
+						})
+					end }, "Cust_TBAnchorY")
+				sec:Slider({ Name = "Offset X (px)", Default = 0, Minimum = -200, Maximum = 200, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.4,
+					Callback = function(v)
+						local ax_o = MacLib:GetOption("Cust_TBAnchorX")
+						local ay_o = MacLib:GetOption("Cust_TBAnchorY")
+						local ax = ax_o and (ax_o:GetValue() / 100) or 1
+						local ay = ay_o and (ay_o:GetValue() / 100) or 1
+						local oy_o = MacLib:GetOption("Cust_TBOffY")
+						local oy = oy_o and oy_o:GetValue() or 0
+						MacLib:StyleToggleButton({
+							Position = UDim2.new(ax, v, ay, oy),
+						})
+					end }, "Cust_TBOffX")
+				sec:Slider({ Name = "Offset Y (px)", Default = 0, Minimum = -200, Maximum = 200, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.4,
+					Callback = function(v)
+						local ax_o = MacLib:GetOption("Cust_TBAnchorX")
+						local ay_o = MacLib:GetOption("Cust_TBAnchorY")
+						local ax = ax_o and (ax_o:GetValue() / 100) or 1
+						local ay = ay_o and (ay_o:GetValue() / 100) or 1
+						local ox_o = MacLib:GetOption("Cust_TBOffX")
+						local ox = ox_o and ox_o:GetValue() or 0
+						MacLib:StyleToggleButton({
+							Position = UDim2.new(ax, ox, ay, v),
+						})
+					end }, "Cust_TBOffY")
+				sec:Button({ Name = "Reset Position", Callback = function()
+					MacLib:StyleToggleButton({
+						AnchorPoint = Vector2.new(0.5, 0),
+						Position    = UDim2.new(0.5, 0, 0, 14),
+					})
+					local oax = MacLib:GetOption("Cust_TBAnchorX") if oax then oax:UpdateValue(50) end
+					local oay = MacLib:GetOption("Cust_TBAnchorY") if oay then oay:UpdateValue(0) end
+					local oox = MacLib:GetOption("Cust_TBOffX")   if oox then oox:UpdateValue(0) end
+					local ooy = MacLib:GetOption("Cust_TBOffY")   if ooy then ooy:UpdateValue(14) end
+					WindowFunctions:Notify({ Title = "Toggle Button", Description = "Position reset.", Lifetime = 3 })
+				end })
+
+				-- ── Window ────────────────────────────────────────────
+				sec:Divider()
+				sec:Header({ Name = "Window" })
+				sec:Toggle({ Name = "Acrylic Blur", Default = true, ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) WindowFunctions:SetAcrylicBlurState(v) end }, "Cust_WBlur")
+				sec:Toggle({ Name = "User Info", Default = true, ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) WindowFunctions:SetUserInfoState(v) end }, "Cust_WUInfo")
+				sec:Toggle({ Name = "Notifications", Default = true, ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) WindowFunctions:SetNotificationsState(v) end }, "Cust_WNotifs")
+				sec:Button({ Name = "Reset Window Position", Callback = function()
+					WindowFunctions:SetState(false)
+					task.delay(0.05, function() WindowFunctions:SetState(true) end)
+				end })
+
+				-- ── Keybind Button ────────────────────────────────────
+				secR:Header({ Name = "Keybind Button" })
+				secR:Toggle({ Name = "Visible", Default = false, ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v)
+						MacLib:ShowKeybindButton("Keybind", v)
+					end }, "Cust_KBVis")
+				secR:Slider({ Name = "Size (px)", Default = 56, Minimum = 36, Maximum = 80, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleKeybindButton("Keybind", { Size = UDim2.fromOffset(v, v) }) end }, "Cust_KBSize")
+				secR:Slider({ Name = "Background Transparency", Default = 20, Minimum = 0, Maximum = 90, Precision = 0, Suffix = "%",
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleKeybindButton("Keybind", { BackgroundTransparency = v / 100 }) end }, "Cust_KBBgT")
+				secR:Slider({ Name = "Icon Transparency", Default = 30, Minimum = 0, Maximum = 90, Precision = 0, Suffix = "%",
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleKeybindButton("Keybind", { ImageTransparency = v / 100 }) end }, "Cust_KBIconT")
+				secR:Button({ Name = "Simulate Press", Callback = function()
+					MacLib:SimulateKeybindPress("Keybind")
+					WindowFunctions:Notify({ Title = "Keybind", Description = "Callback fired.", Lifetime = 3 })
+				end })
+
+				-- ── Notify ────────────────────────────────────────────
+				secR:Divider()
+				secR:Header({ Name = "Notify" })
+				local _notifyW = 250
+				local _notifyLT = 5
+				secR:Slider({ Name = "Width (px)", Default = _notifyW, Minimum = 160, Maximum = 440, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) _notifyW = v end }, "Cust_NWidth")
+				secR:Slider({ Name = "Lifetime (sec)", Default = _notifyLT, Minimum = 1, Maximum = 30, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) _notifyLT = v end }, "Cust_NLifetime")
+				secR:Button({ Name = "Test Notify", Callback = function()
+					WindowFunctions:Notify({ Title = "Customisation", Description = "Preview notification.",
+						Lifetime = _notifyLT, SizeX = _notifyW })
+				end })
 			end
 
 			tabs[tabSwitcher] = {
@@ -6594,7 +6780,17 @@ function MacLib:Window(Settings)
 		assert(_customBuilders[typeName],
 			"CreateCustomElement: type '" .. tostring(typeName) ..
 			"' not registered. Call MacLib:RegisterElement first.")
+		-- Резервируем LayoutOrder заранее (до async создания), чтобы элемент занял правильное место
+		local reservedOrder = nil
+		if sectionObj._frame and type(sectionObj._nextOrder) == "function" then
+			reservedOrder = sectionObj._nextOrder()
+		end
 		local elementFns = _customBuilders[typeName](sectionObj._frame or sectionObj, settings or {}, flag)
+		-- Применяем зарезервированный порядок к корневому frame элемента
+		if reservedOrder and elementFns and sectionObj._frame then
+			local rootFrame = sectionObj._frame:FindFirstChild(typeName)
+			if rootFrame then rootFrame.LayoutOrder = reservedOrder end
+		end
 		if flag ~= nil and elementFns ~= nil then
 			elementFns.Class = elementFns.Class or typeName
 			MacLib.Options[flag] = elementFns
