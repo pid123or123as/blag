@@ -1923,6 +1923,12 @@ function MacLib:Window(Settings)
 
 			function TabFunctions:Section(Settings)
 				local SectionFunctions = {}
+				-- Регистрируем секцию и применяем PatchSection-методы
+				MacLib._sectionInstances = MacLib._sectionInstances or {}
+				table.insert(MacLib._sectionInstances, SectionFunctions)
+				for methodName, fn in next, (MacLib._sectionPatches or {}) do
+					SectionFunctions[methodName] = fn
+				end
 				local section = Instance.new("Frame")
 				section.Name = "Section"
 				section.AutomaticSize = Enum.AutomaticSize.Y
