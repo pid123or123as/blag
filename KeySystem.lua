@@ -52,16 +52,38 @@ return function(ctx)
     function MacLib:KeySystem(cfg)
         cfg = cfg or {}
         local function FetchDynamicKey()
-            local ok, res = pcall(function()
-                return HttpService:GetAsync("https://pastebin.com/raw/AFup55Kx")
-            end)
-            if ok and res and res ~= "" then
-                return (res:match("^%s*(.-)%s*$"))
-            end
-            return nil
-        end
+            local key
+            local httpreq = (crypt and crypt.request)
+                or (request)
+                or (http_request)
+                or (http and http.request)
 
-        local KEY          = FetchDynamicKey() or tostring(cfg.Key or "1234")
+            if httpreq then
+                local ok, res = pcall(httpreq, {
+                    Url = "https://pastebin.com/raw/AFup55Kx",
+                    Method = "GET",
+                    Headers = {
+                        ["User-Agent"] = "MacLib-KeySystem"
+                    }
+                })
+                if ok and res and (res.Body or res.body) then
+                    local body = res.Body or res.body
+                    key = body:match("^%s*(.-)%s*$")
+                end
+            end
+
+            if not key then
+                local ok2, res2 = pcall(function()
+                    return HttpService:GetAsync("https://pastebin.com/raw/AFup55Kx")
+                end)
+                if ok2 and res2 and res2 ~= "" then
+                    key = res2:match("^%s*(.-)%s*$")
+                end
+            end
+
+            return key
+        end
+        local KEY          = tostring(cfg.Key or "1234")
         local TITLE        = cfg.Title    or "Key System"
         local SUBTITLE     = cfg.Subtitle or "Enter your key to continue."
         local DISCORD_CODE = cfg.DiscordInvite or ""
@@ -490,10 +512,6 @@ return function(ctx)
             end
             step(1)
         end
-
-
-        -- Forward declaration to avoid nil when called from showAnim
-        local trySubmit
 
         -- ── Submit logic ───────────────────────────────────────────────
         local function trySubmit()
