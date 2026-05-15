@@ -5784,10 +5784,10 @@ function MacLib:Window(Settings)
 				secR:Slider({ Name = "Size (px)", Default = 56, Minimum = 36, Maximum = 80, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.3,
 					Callback = function(v) MacLib:StyleKeybindButton("Keybind", { Size = UDim2.fromOffset(v, v) }) end }, "Cust_KBSize")
-				secR:Slider({ Name = "Background Transparency", Default = 20, Minimum = 0, Maximum = 90, Precision = 0, Suffix = "%",
+				secR:Slider({ Name = "Background", Default = 20, Minimum = 0, Maximum = 90, Precision = 0, Suffix = "%",
 					ForceAutoLoad = true, FALoadDelay = 0.3,
 					Callback = function(v) MacLib:StyleKeybindButton("Keybind", { BackgroundTransparency = v / 100 }) end }, "Cust_KBBgT")
-				secR:Slider({ Name = "Icon Transparency", Default = 30, Minimum = 0, Maximum = 90, Precision = 0, Suffix = "%",
+				secR:Slider({ Name = "Icon", Default = 30, Minimum = 0, Maximum = 90, Precision = 0, Suffix = "%",
 					ForceAutoLoad = true, FALoadDelay = 0.3,
 					Callback = function(v) MacLib:StyleKeybindButton("Keybind", { ImageTransparency = v / 100 }) end }, "Cust_KBIconT")
 				secR:Button({ Name = "Simulate Press", Callback = function()
