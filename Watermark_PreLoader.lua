@@ -1,21 +1,20 @@
 --[[
     Watermark_PreLoader.lua — MacLib Preloader Module
-    Patches MacLib with :Watermark(cfg) method on the Window object.
-    
-    API (WindowFunctions):
-        local wm = Window:Watermark({
-            Title        = "Syllinse",     -- script name (gradient animated)
-            Version      = "v4.3",         -- shown after gradient title
-            Discord      = "discord.gg/A58yhBsJfY", -- optional
-            ShowFPS      = true,           -- FPS counter
-            ShowTime     = true,           -- HH:MM:SS
-            GradColor1   = Color3.fromRGB(130, 90, 255),
-            GradColor2   = Color3.fromRGB(70, 180, 255),
-            GradSpeed    = 2.5,            -- seconds per full cycle
-        })
-        
-        wm:SetVisible(bool)     -- show / hide
-        wm:Destroy()            -- cleanup
+    Patches Window with :Watermark(cfg).
+
+    cfg = {
+        Title      = "Syllinse",
+        Version    = "v4.3",
+        ShowFPS    = true,
+        ShowTime   = true,
+        GradColor1 = Color3.fromRGB(130, 90, 255),
+        GradColor2 = Color3.fromRGB(70, 180, 255),
+        GradSpeed  = 2.8,
+    }
+
+    API:
+        wm:SetVisible(bool)
+        wm:Destroy()
         wm:UpdateTitle(str)
         wm:UpdateVersion(str)
         wm:SetFPSVisible(bool)
@@ -23,10 +22,9 @@
 ]]
 
 return function(ctx)
-    local MacLib   = ctx.MacLib
-    local Window   = ctx.Window
+    local MacLib = ctx.MacLib
+    local Window = ctx.Window
 
-    -- ── Services ──────────────────────────────────────────────────────────
     local TweenService     = game:GetService("TweenService")
     local RunService       = game:GetService("RunService")
     local UserInputService = game:GetService("UserInputService")
@@ -38,24 +36,31 @@ return function(ctx)
     -- ── Helpers ───────────────────────────────────────────────────────────
     local function GetGui()
         local g = Instance.new("ScreenGui")
-        g.ScreenInsets    = Enum.ScreenInsets.None
-        g.ResetOnSpawn    = false
-        g.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
-        g.DisplayOrder    = 2147483645
-        g.Parent = (RunService:IsStudio())
-            and LocalPlayer:FindFirstChild("PlayerGui")
-            or  (rawget(_G,"gethui") and gethui())
-            or  (rawget(_G,"cloneref") and cloneref(game:GetService("CoreGui")))
-            or  game:GetService("CoreGui")
+        g.ScreenInsets   = Enum.ScreenInsets.None
+        g.ResetOnSpawn   = false
+        g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        g.DisplayOrder   = 2147483645
+        local parent
+        if RunService:IsStudio() then
+            parent = LocalPlayer:FindFirstChild("PlayerGui")
+        elseif rawget(_G, "gethui") then
+            parent = gethui()
+        elseif rawget(_G, "cloneref") then
+            parent = cloneref(game:GetService("CoreGui"))
+        else
+            parent = game:GetService("CoreGui")
+        end
+        g.Parent = parent
         return g
     end
 
     local function tw(inst, info, props)
         return TweenService:Create(inst, info, props)
     end
+
     local TW_FAST   = TweenInfo.new(0.18, Enum.EasingStyle.Sine)
     local TW_MEDIUM = TweenInfo.new(0.28, Enum.EasingStyle.Sine)
-    local TW_SLOW   = TweenInfo.new(0.45, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+    local TW_SLOW   = TweenInfo.new(0.50, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
 
     local function Corner(parent, r)
         local c = Instance.new("UICorner")
@@ -63,70 +68,110 @@ return function(ctx)
         c.Parent = parent
         return c
     end
-    local function Stroke(parent, color, thickness, transparency)
+
+    local function MakeStroke(parent, color, thickness, transparency)
         local s = Instance.new("UIStroke")
         s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        s.Color           = color or Color3.fromRGB(255,255,255)
+        s.Color           = color or Color3.fromRGB(255, 255, 255)
         s.Thickness       = thickness or 1.5
         s.Transparency    = transparency or 0.82
         s.Parent          = parent
         return s
     end
-    local function Pad(parent, l,r,t,b)
+
+    local function MakePad(parent, l, r, t, b)
         local p = Instance.new("UIPadding")
-        p.PaddingLeft   = UDim.new(0,l or 0)
-        p.PaddingRight  = UDim.new(0,r or 0)
-        p.PaddingTop    = UDim.new(0,t or 0)
-        p.PaddingBottom = UDim.new(0,b or 0)
+        p.PaddingLeft   = UDim.new(0, l or 0)
+        p.PaddingRight  = UDim.new(0, r or 0)
+        p.PaddingTop    = UDim.new(0, t or 0)
+        p.PaddingBottom = UDim.new(0, b or 0)
         p.Parent = parent
         return p
     end
 
-    -- ── Patch Window:Watermark ────────────────────────────────────────────
+    -- ── SetAllTransparency: fade every visual child ────────────────────────
+    -- We cannot use GroupTransparency on a Frame, so we tween each
+    -- BackgroundTransparency / TextTransparency / ImageTransparency manually.
+    local function collectFadeable(root, list)
+        list = list or {}
+        for _, child in ipairs(root:GetChildren()) do
+            if child:IsA("Frame") or child:IsA("ImageLabel") or child:IsA("TextLabel") or child:IsA("TextButton") then
+                table.insert(list, child)
+            end
+            collectFadeable(child, list)
+        end
+        return list
+    end
+
+    -- ── Patch Window:Watermark ─────────────────────────────────────────────
     Window.Watermark = function(_, cfg)
         cfg = cfg or {}
-        local TITLE    = cfg.Title    or "Script"
-        local VERSION  = cfg.Version  or ""
-        local DISCORD  = cfg.Discord  or nil
-        local SHOW_FPS = (cfg.ShowFPS  ~= false)
-        local SHOW_TIME= (cfg.ShowTime ~= false)
-        local C1 = cfg.GradColor1 or Color3.fromRGB(130, 90, 255)
-        local C2 = cfg.GradColor2 or Color3.fromRGB(70, 180, 255)
-        local SPEED    = cfg.GradSpeed or 2.5   -- seconds per cycle
 
-        -- BG palette — matches MacLib dark surface
+        local TITLE     = cfg.Title     or "Script"
+        local VERSION   = cfg.Version   or ""
+        local SHOW_FPS  = (cfg.ShowFPS  ~= false)
+        local SHOW_TIME = (cfg.ShowTime ~= false)
+        local C1        = cfg.GradColor1 or Color3.fromRGB(130, 90, 255)
+        local C2        = cfg.GradColor2 or Color3.fromRGB(70, 180, 255)
+        local SPEED     = cfg.GradSpeed  or 2.8
+
         local BG_BASE  = Color3.fromRGB(15, 15, 15)
-        local BG_HOVER = Color3.fromRGB(22, 22, 22)
-        local STROKE_C = Color3.fromRGB(255, 255, 255)
+        local BG_HOVER = Color3.fromRGB(24, 24, 26)
+        local WHITE    = Color3.fromRGB(255, 255, 255)
+
+        -- sizes
+        local H     = isMobile and 28 or 34
+        local FS    = isMobile and 11 or 13
+        local FS_SM = isMobile and 10 or 12
+        local PAD   = isMobile and 8  or 10
 
         -- State
-        local gradTime  = 0
-        local hb_conn   = nil
-        local drag      = { active=false, startMouse=Vector2.zero, startPos=UDim2.new() }
-        local strokeList= {}    -- {stroke, phaseOffset}
-        local visible   = true
+        local gradTime   = 0
+        local hb_conn    = nil
+        local drag       = { active = false, startMouse = Vector2.zero, startPos = UDim2.new() }
+        local strokeList = {}  -- { stroke, phase }
+        local isVisible  = true
 
-        -- Root GUI
+        local function getGradColor(phase, t)
+            local s = math.sin((t / SPEED + phase) * math.pi * 2) * 0.5 + 0.5
+            return C1:Lerp(C2, s)
+        end
+
+        local function regStroke(s, phase)
+            table.insert(strokeList, { stroke = s, phase = phase or 0 })
+        end
+
+        -- ── Root GUI ──────────────────────────────────────────────────────
         local gui = GetGui()
         gui.Name = "MacLib_Watermark"
 
-        -- ── Container ──
-        local container = Instance.new("Frame")
-        container.Name                 = "WmContainer"
-        container.Size                 = UDim2.fromOffset(10, 36)
-        container.BackgroundTransparency = 1
-        container.BorderSizePixel      = 0
-        container.ZIndex               = 10
-        container.Parent               = gui
+        -- ── Outer wrapper Frame (used for slide animation) ─────────────────
+        -- Position anchor differs: PC top-right drag / Mobile fixed top-right
+        local wrapper = Instance.new("Frame")
+        wrapper.Name                  = "WmWrapper"
+        wrapper.BackgroundTransparency = 1
+        wrapper.BorderSizePixel       = 0
+        wrapper.ZIndex                = 10
+        wrapper.Size                  = UDim2.fromOffset(10, H + 4)
+        wrapper.ClipsDescendants      = false
+        wrapper.Parent                = gui
 
         if isMobile then
-            -- Fixed top-right; compact, non-draggable
-            container.AnchorPoint = Vector2.new(1, 0)
-            container.Position    = UDim2.new(1, -10, 0, 48)
+            wrapper.AnchorPoint = Vector2.new(1, 0)
+            wrapper.Position    = UDim2.new(1, -10, 0, 48)
         else
-            container.AnchorPoint = Vector2.new(0, 0)
-            container.Position    = UDim2.new(1, -320, 0, 12)
+            wrapper.AnchorPoint = Vector2.new(0, 0)
+            wrapper.Position    = UDim2.new(1, -320, 0, 12)
         end
+
+        -- ── Container (horizontal list of blocks) ─────────────────────────
+        local container = Instance.new("Frame")
+        container.Name                  = "WmContainer"
+        container.BackgroundTransparency = 1
+        container.BorderSizePixel       = 0
+        container.ZIndex                = 10
+        container.Size                  = UDim2.fromOffset(10, H)
+        container.Parent                = wrapper
 
         local layout = Instance.new("UIListLayout")
         layout.FillDirection       = Enum.FillDirection.Horizontal
@@ -136,51 +181,59 @@ return function(ctx)
         layout.SortOrder           = Enum.SortOrder.LayoutOrder
         layout.Parent              = container
 
-        -- auto-resize container width
+        -- auto-size container + wrapper
         layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-            container.Size = UDim2.fromOffset(layout.AbsoluteContentSize.X, isMobile and 30 or 36)
+            local w = layout.AbsoluteContentSize.X
+            container.Size = UDim2.fromOffset(w, H)
+            wrapper.Size   = UDim2.fromOffset(w, H + 4)
         end)
 
-        -- ── Stroke animation helper ──────────────────────────────────────
-        local function registerStroke(s, phase)
-            table.insert(strokeList, {stroke=s, phase=phase or 0})
-        end
-        local function getGradColor(phase, t)
-            local p = ((t / SPEED + phase) % 1)
-            local s = math.sin(p * math.pi * 2) * 0.5 + 0.5
-            return C1:Lerp(C2, s)
-        end
-
-        -- ── Block factory ───────────────────────────────────────────────
-        local function makeBlock(w, h, layoutOrder, radius)
+        -- ── Block factory ──────────────────────────────────────────────────
+        local function makeBlock(order, radius)
             local f = Instance.new("Frame")
             f.Name                  = "WmBlock"
-            f.Size                  = UDim2.fromOffset(w, h or (isMobile and 28 or 34))
+            f.Size                  = UDim2.fromOffset(10, H)
             f.BackgroundColor3      = BG_BASE
-            f.BackgroundTransparency= 0.05
+            f.BackgroundTransparency = 0.08
             f.BorderSizePixel       = 0
-            f.LayoutOrder           = layoutOrder
+            f.LayoutOrder           = order
             f.ZIndex                = 10
             f.Parent                = container
-            Corner(f, radius or (isMobile and 7 or 9))
+            Corner(f, radius or 9)
             return f
         end
 
         local function addHover(block)
             if isMobile then return end
+            local base_t = 0.08
             block.MouseEnter:Connect(function()
-                tw(block, TW_FAST, {BackgroundTransparency=0.0, BackgroundColor3=BG_HOVER}):Play()
+                tw(block, TW_FAST, { BackgroundColor3 = BG_HOVER, BackgroundTransparency = 0.0 }):Play()
             end)
             block.MouseLeave:Connect(function()
-                tw(block, TW_FAST, {BackgroundTransparency=0.05, BackgroundColor3=BG_BASE}):Play()
+                tw(block, TW_FAST, { BackgroundColor3 = BG_BASE, BackgroundTransparency = base_t }):Play()
             end)
         end
 
-        -- ── BLOCK 1: Main info (title + version, optional FPS, optional time) ──
-        local mainBlock = makeBlock(10, isMobile and 28 or 34, 1)
+        local function makeDividerPill(parent, order)
+            local d = Instance.new("Frame")
+            d.Size                  = UDim2.fromOffset(1, isMobile and 13 or 17)
+            d.BackgroundColor3      = WHITE
+            d.BackgroundTransparency = 0.80
+            d.BorderSizePixel       = 0
+            d.ZIndex                = 11
+            d.LayoutOrder           = order
+            d.Parent                = parent
+            Corner(d, 2)
+            return d
+        end
+
+        -- ════════════════════════════════════════
+        -- BLOCK 1: Main (Title / Version / FPS / Time)
+        -- ════════════════════════════════════════
+        local mainBlock = makeBlock(1)
         addHover(mainBlock)
-        local mainStroke = Stroke(mainBlock, STROKE_C, isMobile and 1.2 or 1.6, 0.82)
-        registerStroke(mainStroke, 0)
+        local mainStroke = MakeStroke(mainBlock, WHITE, isMobile and 1.2 or 1.6, 0.82)
+        regStroke(mainStroke, 0)
 
         local innerLayout = Instance.new("UIListLayout")
         innerLayout.FillDirection       = Enum.FillDirection.Horizontal
@@ -189,249 +242,189 @@ return function(ctx)
         innerLayout.Padding             = UDim.new(0, isMobile and 6 or 8)
         innerLayout.SortOrder           = Enum.SortOrder.LayoutOrder
         innerLayout.Parent              = mainBlock
-        Pad(mainBlock, isMobile and 8 or 10, isMobile and 8 or 10, 0, 0)
+        MakePad(mainBlock, PAD, PAD, 0, 0)
 
-        -- auto-resize mainBlock
         innerLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
             mainBlock.Size = UDim2.fromOffset(
-                innerLayout.AbsoluteContentSize.X + (isMobile and 16 or 20),
-                isMobile and 28 or 34
+                innerLayout.AbsoluteContentSize.X + PAD * 2,
+                H
             )
         end)
 
-        -- ── Gradient title label ──
+        -- Title label (gradient animated)
         local titleLabel = Instance.new("TextLabel")
-        titleLabel.Name                  = "WmTitle"
-        titleLabel.BackgroundTransparency= 1
-        titleLabel.Text                  = TITLE
-        titleLabel.TextColor3            = Color3.fromRGB(255,255,255)
-        titleLabel.TextSize              = isMobile and 11 or 13
-        titleLabel.FontFace              = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold)
-        titleLabel.TextXAlignment        = Enum.TextXAlignment.Left
-        titleLabel.AutomaticSize         = Enum.AutomaticSize.XY
-        titleLabel.ZIndex                = 11
-        titleLabel.LayoutOrder           = 1
-        titleLabel.Size                  = UDim2.fromOffset(0, isMobile and 18 or 22)
-        titleLabel.Parent                = mainBlock
+        titleLabel.Name                   = "WmTitle"
+        titleLabel.BackgroundTransparency = 1
+        titleLabel.Text                   = TITLE
+        titleLabel.TextColor3             = WHITE
+        titleLabel.TextSize               = FS
+        titleLabel.FontFace               = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold)
+        titleLabel.TextXAlignment         = Enum.TextXAlignment.Left
+        titleLabel.AutomaticSize          = Enum.AutomaticSize.XY
+        titleLabel.ZIndex                 = 11
+        titleLabel.LayoutOrder            = 1
+        titleLabel.Size                   = UDim2.fromOffset(0, H)
+        titleLabel.Parent                 = mainBlock
 
         local titleGrad = Instance.new("UIGradient")
         titleGrad.Color    = ColorSequence.new(C1, C2)
         titleGrad.Rotation = 0
         titleGrad.Parent   = titleLabel
 
-        -- ── Version label ──
+        -- Version + separator
         local versionLabel
         if VERSION ~= "" then
             local sep = Instance.new("TextLabel")
-            sep.Name                  = "WmSep"
-            sep.BackgroundTransparency= 1
-            sep.Text                  = "/"
-            sep.TextColor3            = Color3.fromRGB(255,255,255)
-            sep.TextTransparency      = 0.70
-            sep.TextSize              = isMobile and 10 or 12
-            sep.FontFace              = Font.new("rbxasset://fonts/families/GothamSSm.json")
-            sep.AutomaticSize         = Enum.AutomaticSize.XY
-            sep.ZIndex                = 11
-            sep.LayoutOrder           = 2
-            sep.Size                  = UDim2.fromOffset(0, isMobile and 18 or 22)
-            sep.Parent                = mainBlock
+            sep.Name                   = "WmSep"
+            sep.BackgroundTransparency = 1
+            sep.Text                   = "/"
+            sep.TextColor3             = WHITE
+            sep.TextTransparency       = 0.72
+            sep.TextSize               = FS_SM
+            sep.FontFace               = Font.new("rbxasset://fonts/families/GothamSSm.json")
+            sep.AutomaticSize          = Enum.AutomaticSize.XY
+            sep.ZIndex                 = 11
+            sep.LayoutOrder            = 2
+            sep.Size                   = UDim2.fromOffset(0, H)
+            sep.Parent                 = mainBlock
 
             versionLabel = Instance.new("TextLabel")
-            versionLabel.Name                  = "WmVersion"
-            versionLabel.BackgroundTransparency= 1
-            versionLabel.Text                  = VERSION
-            versionLabel.TextColor3            = Color3.fromRGB(255,255,255)
-            versionLabel.TextTransparency      = 0.45
-            versionLabel.TextSize              = isMobile and 10 or 12
-            versionLabel.FontFace              = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium)
-            versionLabel.AutomaticSize         = Enum.AutomaticSize.XY
-            versionLabel.ZIndex                = 11
-            versionLabel.LayoutOrder           = 3
-            versionLabel.Size                  = UDim2.fromOffset(0, isMobile and 18 or 22)
-            versionLabel.Parent                = mainBlock
+            versionLabel.Name                   = "WmVersion"
+            versionLabel.BackgroundTransparency = 1
+            versionLabel.Text                   = VERSION
+            versionLabel.TextColor3             = WHITE
+            versionLabel.TextTransparency       = 0.45
+            versionLabel.TextSize               = FS_SM
+            versionLabel.FontFace               = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium)
+            versionLabel.AutomaticSize          = Enum.AutomaticSize.XY
+            versionLabel.ZIndex                 = 11
+            versionLabel.LayoutOrder            = 3
+            versionLabel.Size                   = UDim2.fromOffset(0, H)
+            versionLabel.Parent                 = mainBlock
         end
 
-        -- ── Divider pill (thin vertical) ──
-        local function makePill(order)
-            local d = Instance.new("Frame")
-            d.Size                  = UDim2.fromOffset(1, isMobile and 14 or 18)
-            d.BackgroundColor3      = Color3.fromRGB(255,255,255)
-            d.BackgroundTransparency= 0.82
-            d.BorderSizePixel       = 0
-            d.ZIndex                = 11
-            d.LayoutOrder           = order
-            d.Parent                = mainBlock
-            Corner(d, 2)
-            return d
-        end
-
-        -- ── FPS container ──
-        local fpsLabel
-        local fpsDivider
+        -- FPS
+        local fpsLabel, fpsDivider
         if SHOW_FPS then
-            fpsDivider = makePill(4)
+            fpsDivider = makeDividerPill(mainBlock, 4)
 
             local fpsIcon = Instance.new("ImageLabel")
-            fpsIcon.Name                  = "FPSIcon"
-            fpsIcon.Size                  = UDim2.fromOffset(isMobile and 11 or 13, isMobile and 11 or 13)
-            fpsIcon.BackgroundTransparency= 1
-            fpsIcon.Image                 = "rbxassetid://8587689304"  -- fps/monitor icon
-            fpsIcon.ImageColor3           = Color3.fromRGB(255,255,255)
-            fpsIcon.ImageTransparency     = 0.35
-            fpsIcon.ZIndex                = 11
-            fpsIcon.LayoutOrder           = 5
-            fpsIcon.Parent                = mainBlock
+            fpsIcon.Name                   = "FPSIcon"
+            fpsIcon.Size                   = UDim2.fromOffset(isMobile and 11 or 13, isMobile and 11 or 13)
+            fpsIcon.BackgroundTransparency = 1
+            fpsIcon.Image                  = "rbxassetid://8587689304"
+            fpsIcon.ImageColor3            = WHITE
+            fpsIcon.ImageTransparency      = 0.35
+            fpsIcon.ZIndex                 = 11
+            fpsIcon.LayoutOrder            = 5
+            fpsIcon.Parent                 = mainBlock
 
             fpsLabel = Instance.new("TextLabel")
-            fpsLabel.Name                  = "WmFPS"
-            fpsLabel.BackgroundTransparency= 1
-            fpsLabel.Text                  = "-- fps"
-            fpsLabel.TextColor3            = Color3.fromRGB(120, 255, 160)
-            fpsLabel.TextTransparency      = 0.15
-            fpsLabel.TextSize              = isMobile and 10 or 12
-            fpsLabel.FontFace              = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium)
-            fpsLabel.AutomaticSize         = Enum.AutomaticSize.XY
-            fpsLabel.ZIndex                = 11
-            fpsLabel.LayoutOrder           = 6
-            fpsLabel.Size                  = UDim2.fromOffset(0, isMobile and 18 or 22)
-            fpsLabel.Parent                = mainBlock
+            fpsLabel.Name                   = "WmFPS"
+            fpsLabel.BackgroundTransparency = 1
+            fpsLabel.Text                   = "-- fps"
+            fpsLabel.TextColor3             = Color3.fromRGB(100, 255, 140)
+            fpsLabel.TextTransparency       = 0.10
+            fpsLabel.TextSize               = FS_SM
+            fpsLabel.FontFace               = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium)
+            fpsLabel.AutomaticSize          = Enum.AutomaticSize.XY
+            fpsLabel.ZIndex                 = 11
+            fpsLabel.LayoutOrder            = 6
+            fpsLabel.Size                   = UDim2.fromOffset(0, H)
+            fpsLabel.Parent                 = mainBlock
         end
 
-        -- ── Time container ──
-        local timeLabel
-        local timeDivider
+        -- Time
+        local timeLabel, timeDivider
         if SHOW_TIME then
-            timeDivider = makePill(7)
+            timeDivider = makeDividerPill(mainBlock, 7)
 
             local clockIcon = Instance.new("ImageLabel")
-            clockIcon.Name                  = "ClockIcon"
-            clockIcon.Size                  = UDim2.fromOffset(isMobile and 11 or 13, isMobile and 11 or 13)
-            clockIcon.BackgroundTransparency= 1
-            clockIcon.Image                 = "rbxassetid://4034150594"
-            clockIcon.ImageColor3           = Color3.fromRGB(255,255,255)
-            clockIcon.ImageTransparency     = 0.35
-            clockIcon.ZIndex                = 11
-            clockIcon.LayoutOrder           = 8
-            clockIcon.Parent                = mainBlock
+            clockIcon.Name                   = "ClockIcon"
+            clockIcon.Size                   = UDim2.fromOffset(isMobile and 11 or 13, isMobile and 11 or 13)
+            clockIcon.BackgroundTransparency = 1
+            clockIcon.Image                  = "rbxassetid://4034150594"
+            clockIcon.ImageColor3            = WHITE
+            clockIcon.ImageTransparency      = 0.35
+            clockIcon.ZIndex                 = 11
+            clockIcon.LayoutOrder            = 8
+            clockIcon.Parent                 = mainBlock
 
             timeLabel = Instance.new("TextLabel")
-            timeLabel.Name                  = "WmTime"
-            timeLabel.BackgroundTransparency= 1
-            timeLabel.Text                  = "00:00:00"
-            timeLabel.TextColor3            = Color3.fromRGB(255,255,255)
-            timeLabel.TextTransparency      = 0.40
-            timeLabel.TextSize              = isMobile and 10 or 12
-            timeLabel.FontFace              = Font.new("rbxasset://fonts/families/GothamSSm.json")
-            timeLabel.AutomaticSize         = Enum.AutomaticSize.XY
-            timeLabel.ZIndex                = 11
-            timeLabel.LayoutOrder           = 9
-            timeLabel.Size                  = UDim2.fromOffset(0, isMobile and 18 or 22)
-            timeLabel.Parent                = mainBlock
+            timeLabel.Name                   = "WmTime"
+            timeLabel.BackgroundTransparency = 1
+            timeLabel.Text                   = "00:00:00"
+            timeLabel.TextColor3             = WHITE
+            timeLabel.TextTransparency       = 0.38
+            timeLabel.TextSize               = FS_SM
+            timeLabel.FontFace               = Font.new("rbxasset://fonts/families/GothamSSm.json")
+            timeLabel.AutomaticSize          = Enum.AutomaticSize.XY
+            timeLabel.ZIndex                 = 11
+            timeLabel.LayoutOrder            = 9
+            timeLabel.Size                   = UDim2.fromOffset(0, H)
+            timeLabel.Parent                 = mainBlock
         end
 
-        -- ── BLOCK 2: Discord (PC only, optional) ──
-        local discordBlock
-        if DISCORD and not isMobile then
-            discordBlock = makeBlock(isMobile and 30 or 36, isMobile and 28 or 34, 2, 18)
-            local ds = Stroke(discordBlock, STROKE_C, 1.6, 0.82)
-            registerStroke(ds, 0.33)
-            addHover(discordBlock)
-
-            local discordIcon = Instance.new("ImageLabel")
-            discordIcon.Name                  = "DiscordIcon"
-            discordIcon.Size                  = UDim2.fromOffset(isMobile and 14 or 17, isMobile and 11 or 13)
-            discordIcon.AnchorPoint           = Vector2.new(0.5, 0.5)
-            discordIcon.Position              = UDim2.fromScale(0.5, 0.5)
-            discordIcon.BackgroundTransparency= 1
-            discordIcon.Image                 = "rbxassetid://7184515830"  -- discord logo
-            discordIcon.ImageColor3           = Color3.fromRGB(200, 210, 255)
-            discordIcon.ImageTransparency     = 0.1
-            discordIcon.ZIndex                = 11
-            discordIcon.Parent                = discordBlock
-
-            -- Copy to clipboard on click
-            local db = false
-            local clickBtn = Instance.new("TextButton")
-            clickBtn.Name                  = "DiscordBtn"
-            clickBtn.Size                  = UDim2.fromScale(1,1)
-            clickBtn.BackgroundTransparency= 1
-            clickBtn.Text                  = ""
-            clickBtn.ZIndex                = 12
-            clickBtn.Parent                = discordBlock
-            Corner(clickBtn, 18)
-
-            clickBtn.MouseButton1Click:Connect(function()
-                if db then return end
-                db = true
-                if rawget(_G, "setclipboard") then
-                    pcall(setclipboard, DISCORD)
-                end
-                -- flash animation
-                tw(discordBlock, TW_FAST, {BackgroundColor3=Color3.fromRGB(88,101,242)}):Play()
-                task.delay(0.25, function()
-                    tw(discordBlock, TW_MEDIUM, {BackgroundColor3=BG_BASE}):Play()
-                    db = false
-                end)
-            end)
-        end
-
-        -- ── BLOCK 3: Animated logo orb (PC) ──
-        local logoBlock
+        -- ════════════════════════════════════════
+        -- BLOCK 2: Animated logo orb (PC only)
+        -- ════════════════════════════════════════
         local logoSegments = {}
         if not isMobile then
-            logoBlock = makeBlock(36, 34, 3, 18)
-            local ls = Stroke(logoBlock, STROKE_C, 1.6, 0.82)
-            registerStroke(ls, 0.66)
+            local logoBlock = makeBlock(2, 18)
+            local ls = MakeStroke(logoBlock, WHITE, 1.6, 0.82)
+            regStroke(ls, 0.5)
             addHover(logoBlock)
+            logoBlock.Size = UDim2.fromOffset(34, H)
 
             local logoFrame = Instance.new("Frame")
-            logoFrame.Name                  = "LogoFrame"
-            logoFrame.Size                  = UDim2.fromOffset(20, 20)
-            logoFrame.AnchorPoint           = Vector2.new(0.5, 0.5)
-            logoFrame.Position              = UDim2.fromScale(0.5, 0.5)
-            logoFrame.BackgroundTransparency= 1
-            logoFrame.ZIndex                = 11
-            logoFrame.Parent                = logoBlock
+            logoFrame.Name                   = "LogoFrame"
+            logoFrame.Size                   = UDim2.fromOffset(20, 20)
+            logoFrame.AnchorPoint            = Vector2.new(0.5, 0.5)
+            logoFrame.Position               = UDim2.fromScale(0.5, 0.5)
+            logoFrame.BackgroundTransparency = 1
+            logoFrame.ZIndex                 = 11
+            logoFrame.Parent                 = logoBlock
 
             local SEG_COUNT = 4
             local SEG_IMG   = "rbxassetid://7151778302"
             for i = 1, SEG_COUNT do
                 local seg = Instance.new("ImageLabel")
-                seg.Size                  = UDim2.fromScale(1,1)
-                seg.BackgroundTransparency= 1
-                seg.Image                 = SEG_IMG
-                seg.ImageTransparency     = 0.30
-                seg.Rotation              = (i-1) * (360 / SEG_COUNT)
-                seg.ZIndex                = 12
-                seg.Parent                = logoFrame
+                seg.Size                   = UDim2.fromScale(1, 1)
+                seg.BackgroundTransparency = 1
+                seg.Image                  = SEG_IMG
+                seg.ImageTransparency      = 0.28
+                seg.Rotation               = (i - 1) * (360 / SEG_COUNT)
+                seg.ZIndex                 = 12
+                seg.Parent                 = logoFrame
                 Corner(seg, 10)
                 local g = Instance.new("UIGradient")
                 g.Color    = ColorSequence.new(C1, C2)
-                g.Rotation = (i-1) * (360/SEG_COUNT)
+                g.Rotation = (i - 1) * (360 / SEG_COUNT)
                 g.Parent   = seg
-                table.insert(logoSegments, {seg=seg, grad=g})
+                table.insert(logoSegments, { seg = seg, grad = g })
             end
         end
 
-        -- ── Drag (PC only) ───────────────────────────────────────────────
+        -- ════════════════════════════════════════
+        -- DRAG (PC only)
+        -- ════════════════════════════════════════
         if not isMobile then
-            local dragBtn = Instance.new("TextButton")
-            dragBtn.Name                  = "DragArea"
-            dragBtn.Size                  = UDim2.fromScale(1,1)
-            dragBtn.BackgroundTransparency= 1
-            dragBtn.Text                  = ""
-            dragBtn.ZIndex                = 9
-            dragBtn.Parent                = mainBlock
+            local dragArea = Instance.new("TextButton")
+            dragArea.Name                   = "DragArea"
+            dragArea.Size                   = UDim2.fromScale(1, 1)
+            dragArea.BackgroundTransparency = 1
+            dragArea.Text                   = ""
+            dragArea.ZIndex                 = 9
+            dragArea.AutoButtonColor        = false
+            dragArea.Parent                 = mainBlock
 
-            dragBtn.InputBegan:Connect(function(inp)
+            dragArea.InputBegan:Connect(function(inp)
                 if inp.UserInputType == Enum.UserInputType.MouseButton1 then
                     drag.active     = true
                     drag.startMouse = UserInputService:GetMouseLocation()
                     drag.startPos   = UDim2.new(
-                        container.Position.X.Scale,
-                        container.Position.X.Offset,
-                        container.Position.Y.Scale,
-                        container.Position.Y.Offset
+                        wrapper.Position.X.Scale,  wrapper.Position.X.Offset,
+                        wrapper.Position.Y.Scale,  wrapper.Position.Y.Offset
                     )
                 end
             end)
@@ -440,11 +433,12 @@ return function(ctx)
                 if not drag.active then return end
                 if inp.UserInputType ~= Enum.UserInputType.MouseMovement then return end
                 local delta = UserInputService:GetMouseLocation() - drag.startMouse
-                container.Position = UDim2.new(
+                wrapper.Position = UDim2.new(
                     drag.startPos.X.Scale, drag.startPos.X.Offset + delta.X,
                     drag.startPos.Y.Scale, drag.startPos.Y.Offset + delta.Y
                 )
             end)
+
             UserInputService.InputEnded:Connect(function(inp)
                 if inp.UserInputType == Enum.UserInputType.MouseButton1 then
                     drag.active = false
@@ -452,60 +446,90 @@ return function(ctx)
             end)
         end
 
-        -- ── Appear animation ─────────────────────────────────────────────
-        container.GroupTransparency = 1
-        -- We use a CanvasGroup for the appear effect
-        local canvasGroup = Instance.new("CanvasGroup")
-        canvasGroup.Size                  = UDim2.fromScale(1,1)
-        canvasGroup.BackgroundTransparency= 1
-        canvasGroup.GroupTransparency     = 1
-        canvasGroup.BorderSizePixel       = 0
-        canvasGroup.ZIndex                = 1
-        canvasGroup.Parent                = gui
-
-        -- Reparent container into canvasGroup
-        container.Parent = canvasGroup
-        canvasGroup.Position = isMobile
-            and UDim2.new(1,-10,0,48)
-            or  UDim2.new(1,-320,0,12)
-        canvasGroup.AnchorPoint = isMobile
-            and Vector2.new(1,0)
-            or  Vector2.new(0,0)
-        canvasGroup.Size = UDim2.fromOffset(400, isMobile and 36 or 44)
-
-        -- slide + fade in
-        local slideStartY = isMobile and 40 or 4
-        canvasGroup.Position = UDim2.new(
-            canvasGroup.Position.X.Scale,
-            canvasGroup.Position.X.Offset,
-            0,
-            (isMobile and 40 or 4)
+        -- ════════════════════════════════════════
+        -- APPEAR ANIMATION (slide-down + fade via ImageTransparency / TextTransparency)
+        -- We fade the wrapper itself by animating its children.
+        -- ════════════════════════════════════════
+        -- Slide in from slightly above
+        local baseY = isMobile and 48 or 12
+        wrapper.Position = UDim2.new(
+            wrapper.Position.X.Scale,
+            wrapper.Position.X.Offset,
+            0, baseY - 10
         )
+        -- Start all text/image children fully transparent
+        local function setChildrenTransparency(target)
+            for _, d in ipairs(mainBlock:GetDescendants()) do
+                if d:IsA("TextLabel") then
+                    d.TextTransparency = target == 0 and d.TextTransparency or 1
+                end
+                if d:IsA("ImageLabel") then
+                    d.ImageTransparency = target == 0 and d.ImageTransparency or 1
+                end
+            end
+            mainBlock.BackgroundTransparency = target == 0 and 0.08 or 1
+        end
+
+        setChildrenTransparency(1)
+
+        -- Restore original transparencies for each element
+        local origTransparencies = {}
+        for _, d in ipairs(mainBlock:GetDescendants()) do
+            if d:IsA("TextLabel") then
+                origTransparencies[d] = d.TextTransparency == 1 and 0.10 or d.TextTransparency
+            end
+        end
+        -- Store before overwrite
+        local origTextTransp = {
+            title   = titleLabel.TextTransparency,
+            version = versionLabel and versionLabel.TextTransparency or nil,
+            fps     = fpsLabel     and fpsLabel.TextTransparency     or nil,
+            time    = timeLabel    and timeLabel.TextTransparency    or nil,
+        }
+
         task.defer(function()
-            tw(canvasGroup, TW_SLOW, {
-                GroupTransparency = 0,
-                Position = isMobile
-                    and UDim2.new(1,-10,0,48)
-                    or  UDim2.new(1,-320,0,12)
+            -- Slide in
+            tw(wrapper, TW_SLOW, {
+                Position = UDim2.new(
+                    wrapper.Position.X.Scale,
+                    wrapper.Position.X.Offset,
+                    0, baseY
+                )
             }):Play()
+            -- Fade in main block background
+            tw(mainBlock, TW_SLOW, { BackgroundTransparency = 0.08 }):Play()
+            -- Fade in title gradient
+            tw(titleLabel, TW_MEDIUM, { TextTransparency = 0 }):Play()
+            if versionLabel then tw(versionLabel, TW_MEDIUM, { TextTransparency = 0.45 }):Play() end
+            if fpsLabel     then tw(fpsLabel,     TW_MEDIUM, { TextTransparency = 0.10 }):Play() end
+            if timeLabel    then tw(timeLabel,     TW_MEDIUM, { TextTransparency = 0.38 }):Play() end
+            -- Reveal strokes
+            for _, sd in ipairs(strokeList) do
+                tw(sd.stroke, TW_SLOW, { Transparency = 0.82 }):Play()
+            end
+            -- Fade in logo segments
+            for _, ld in ipairs(logoSegments) do
+                tw(ld.seg, TW_MEDIUM, { ImageTransparency = 0.28 }):Play()
+            end
         end)
 
-        -- ── Heartbeat ────────────────────────────────────────────────────
-        local fpsFrames  = 0
-        local fpsAccum   = 0
-        local timeAccum  = 0
+        -- ════════════════════════════════════════
+        -- HEARTBEAT
+        -- ════════════════════════════════════════
+        local fpsFrames = 0
+        local fpsAccum  = 0
         local lastTimeUpdate = 0
 
         hb_conn = RunService.Heartbeat:Connect(function(dt)
             gradTime = gradTime + dt
+            local t = gradTime
 
-            -- Gradient title animation
-            local t  = gradTime
+            -- Animated gradient on title
             local s  = math.sin(t / SPEED * math.pi * 2) * 0.5 + 0.5
             local m1 = C1:Lerp(C2, s)
             local m2 = C2:Lerp(C1, s)
             titleGrad.Color    = ColorSequence.new(m1, m2)
-            titleGrad.Rotation = (t * 25) % 360
+            titleGrad.Rotation = (t * 28) % 360
 
             -- Stroke cycling
             for _, sd in ipairs(strokeList) do
@@ -517,14 +541,13 @@ return function(ctx)
                 ld.grad.Color = ColorSequence.new(m1, m2)
             end
 
-            -- FPS
+            -- FPS counter
             if SHOW_FPS and fpsLabel then
                 fpsFrames = fpsFrames + 1
                 fpsAccum  = fpsAccum + dt
                 if fpsAccum >= 0.5 then
                     local fps = math.floor(fpsFrames / fpsAccum)
                     fpsLabel.Text = tostring(fps) .. " fps"
-                    -- color: green ≥60, yellow ≥30, red <30
                     if fps >= 60 then
                         fpsLabel.TextColor3 = Color3.fromRGB(100, 255, 140)
                     elseif fps >= 30 then
@@ -532,11 +555,12 @@ return function(ctx)
                     else
                         fpsLabel.TextColor3 = Color3.fromRGB(255, 90, 90)
                     end
-                    fpsFrames = 0; fpsAccum = 0
+                    fpsFrames = 0
+                    fpsAccum  = 0
                 end
             end
 
-            -- Time
+            -- Time display
             if SHOW_TIME and timeLabel then
                 local now = tick()
                 if now - lastTimeUpdate >= 1 then
@@ -547,27 +571,54 @@ return function(ctx)
             end
         end)
 
-        -- ── Public API ────────────────────────────────────────────────────
+        -- ════════════════════════════════════════
+        -- PUBLIC API
+        -- ════════════════════════════════════════
         local WmFunctions = {}
 
+        local function fadeIn()
+            tw(wrapper, TW_SLOW, {
+                Position = UDim2.new(
+                    wrapper.Position.X.Scale,
+                    wrapper.Position.X.Offset,
+                    0, baseY
+                )
+            }):Play()
+            tw(mainBlock, TW_MEDIUM, { BackgroundTransparency = 0.08 }):Play()
+            tw(titleLabel, TW_MEDIUM, { TextTransparency = 0 }):Play()
+            if versionLabel then tw(versionLabel, TW_MEDIUM, { TextTransparency = 0.45 }):Play() end
+            if fpsLabel     then tw(fpsLabel,     TW_MEDIUM, { TextTransparency = 0.10 }):Play() end
+            if timeLabel    then tw(timeLabel,     TW_MEDIUM, { TextTransparency = 0.38 }):Play() end
+            for _, sd in ipairs(strokeList) do tw(sd.stroke, TW_MEDIUM, { Transparency = 0.82 }):Play() end
+            for _, ld in ipairs(logoSegments) do tw(ld.seg, TW_MEDIUM, { ImageTransparency = 0.28 }):Play() end
+        end
+
+        local function fadeOut()
+            tw(wrapper, TW_MEDIUM, {
+                Position = UDim2.new(
+                    wrapper.Position.X.Scale,
+                    wrapper.Position.X.Offset,
+                    0, baseY - 8
+                )
+            }):Play()
+            tw(mainBlock, TW_MEDIUM, { BackgroundTransparency = 1 }):Play()
+            tw(titleLabel, TW_MEDIUM, { TextTransparency = 1 }):Play()
+            if versionLabel then tw(versionLabel, TW_MEDIUM, { TextTransparency = 1 }):Play() end
+            if fpsLabel     then tw(fpsLabel,     TW_MEDIUM, { TextTransparency = 1 }):Play() end
+            if timeLabel    then tw(timeLabel,     TW_MEDIUM, { TextTransparency = 1 }):Play() end
+            for _, sd in ipairs(strokeList) do tw(sd.stroke, TW_MEDIUM, { Transparency = 1 }):Play() end
+            for _, ld in ipairs(logoSegments) do tw(ld.seg, TW_MEDIUM, { ImageTransparency = 1 }):Play() end
+        end
+
         function WmFunctions:SetVisible(state)
-            visible = state
-            local target = state and 0 or 1
-            tw(canvasGroup, TW_MEDIUM, {GroupTransparency=target}):Play()
-            if state then
-                -- slide in
-                tw(canvasGroup, TW_SLOW, {
-                    Position = isMobile
-                        and UDim2.new(1,-10,0,48)
-                        or  UDim2.new(1,-320,0,12)
-                }):Play()
-            end
+            isVisible = state
+            if state then fadeIn() else fadeOut() end
         end
 
         function WmFunctions:Destroy()
-            if hb_conn then hb_conn:Disconnect() end
-            tw(canvasGroup, TW_MEDIUM, {GroupTransparency=1}):Play()
+            fadeOut()
             task.delay(0.32, function()
+                if hb_conn then hb_conn:Disconnect() end
                 pcall(function() gui:Destroy() end)
             end)
         end
@@ -586,12 +637,17 @@ return function(ctx)
             SHOW_FPS = state
             if fpsLabel   then fpsLabel.Visible   = state end
             if fpsDivider then fpsDivider.Visible  = state end
+            -- FPS icon
+            local icon = mainBlock:FindFirstChild("FPSIcon")
+            if icon then icon.Visible = state end
         end
 
         function WmFunctions:SetTimeVisible(state)
             SHOW_TIME = state
             if timeLabel   then timeLabel.Visible   = state end
             if timeDivider then timeDivider.Visible  = state end
+            local icon = mainBlock:FindFirstChild("ClockIcon")
+            if icon then icon.Visible = state end
         end
 
         return WmFunctions
