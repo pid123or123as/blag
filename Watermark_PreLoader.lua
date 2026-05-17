@@ -1,685 +1,907 @@
--- Watermark_PreLoader.lua  (V10)
--- Патчит MacLib:Watermark(cfg) — создаёт standalone Drawing-ватермарку.
--- Новое в V10:
---   • OnThePlane          — 3D-глубина орбит-точек логотипа
---   • ShowOrbit           — прозрачный orbit-ring из линий
---   • SegmentCount        — кол-во сегментов orbit-ring
---   • :SetOnThePlane(v)   • :SetOrbit(v)   • :SetSegmentCount(n)
---   • Позиции: Top-left (правее), Top-right (ниже), Bottom-left (левее); Bottom-right удалён
---   • При смене позиции — плавная tween-анимация (как при Drag)
---   • При выключении Drag — авторесет на Top-right
---   • FPS / Time иконки сдвинуты чуть левее
---   • Particle Y-offset slider (:SetParticleOffsetY)
---   • Частицы отскакивают от границ ватермарки при её перемещении
---   • :MoveTopLeft() / :MoveTopRight() / :MoveBottomLeft() — публичные методы
+-- Watermark_PreLoader.lua  (v10)
+-- FIXES:
+--   • Particles: AbsolutePosition on UIScale-wrapped frames reports
+--     pre-scale coords. We now sample a raw pixel-accurate position
+--     by reading anchor.AbsolutePosition + (chip.AbsolutePosition - anchor.AbsolutePosition)*scale.
+--     Additionally, a yOffset nudge slider is exposed in Demo so devs can fine-tune.
+--   • Position changes (MoveTopLeft etc.) now use the SAME drag-spring path
+--     → setTargetPos() helper, smooth animation always.
+--   • Drag disabled → position resets to Top-right.
+--   • MoveTopLeft offset: +20px right. MoveTopRight: +8px down.
+--     MoveBottomLeft: -8px left. MoveBottomRight removed.
+--   • Orbit outline (Drawing Lines forming circle) added to logo chip.
+--   • "Segment Count" API for logo dots (1-24).
+--   • "On the Plane" toggle: dots get 3-D sine depth, scale + alpha vary.
+--   • Particles bounce properly after position change (velocities preserved,
+--     positions clamped into new bounds immediately).
+--   • FPS/Time icon chips: inner content shifted left by extra padding.
+--   • All UI stays as Roblox GUI; only particles/orbit are Drawing.
 
 return function(ctx)
-    local MacLib = ctx.MacLib
-    local Window = ctx.Window
+    local MacLib     = ctx.MacLib
+    local RunService = game:GetService("RunService")
+    local UIS        = game:GetService("UserInputService")
+    local isMobile   = UIS.TouchEnabled and not UIS.KeyboardEnabled
 
-    local RS  = game:GetService("RunService")
-    local UIS = game:GetService("UserInputService")
+    local function lerp(a,b,t) return a+(b-a)*t end
+    local function rand(a,b)   return a+math.random()*(b-a) end
+    local function clamp(v,a,b) return math.max(a,math.min(b,v)) end
 
-    -- ────────────────────────────────────────────────
-    -- Drawing helpers
-    -- ────────────────────────────────────────────────
-    local function newLine()
-        local l = Drawing.new("Line")
-        l.Visible   = false
-        l.Thickness = 1
-        l.Color     = Color3.new(1, 1, 1)
-        l.Transparency = 1
-        return l
+    local function GetGui()
+        local g = Instance.new("ScreenGui")
+        g.ResetOnSpawn   = false
+        g.DisplayOrder   = 9998
+        g.IgnoreGuiInset = true   -- matches Drawing coordinate space
+        g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        local ok
+        if gethui then ok = pcall(function() g.Parent = gethui() end) end
+        if not ok or not g.Parent then
+            ok = pcall(function() g.Parent = game:GetService("CoreGui") end)
+        end
+        if not ok or not g.Parent then
+            g.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+        end
+        return g
     end
 
-    local function newCircle()
-        local c = Drawing.new("Circle")
-        c.Visible     = false
-        c.Filled      = false
-        c.Thickness   = 1
-        c.Transparency = 1
-        c.NumSides    = 64
-        return c
-    end
-
-    local function newText()
-        local t = Drawing.new("Text")
-        t.Visible    = false
-        t.Size       = 14
-        t.Center     = false
-        t.Outline    = true
-        t.OutlineColor = Color3.new(0, 0, 0)
-        t.Color      = Color3.new(1, 1, 1)
-        t.Font       = 2
-        t.Transparency = 1
-        return t
-    end
-
-    local function newImage()
-        local ok, img = pcall(Drawing.new, "Image")
-        if not ok then return nil end
-        img.Visible      = false
-        img.Transparency = 1
-        return img
-    end
-
-    -- ────────────────────────────────────────────────
-    -- Tween helper (lerp over time using Heartbeat)
-    -- ────────────────────────────────────────────────
-    local function tweenVec2(getter, setter, targetVec, duration, onDone)
-        local startVec = getter()
-        local elapsed  = 0
-        local conn
-        conn = RS.Heartbeat:Connect(function(dt)
-            elapsed = math.min(elapsed + dt, duration)
-            local alpha = elapsed / duration
-            -- EaseOutQuart
-            local t = 1 - alpha
-            local ease = 1 - t * t * t * t
-            local cur = startVec:Lerp(targetVec, ease)
-            setter(cur)
-            if elapsed >= duration then
-                conn:Disconnect()
-                setter(targetVec)
-                if onDone then onDone() end
-            end
-        end)
-        return conn
-    end
-
-    -- ────────────────────────────────────────────────
-    -- MacLib:Watermark(cfg)
-    -- ────────────────────────────────────────────────
+    -- ════════════════════════════════════════════════════════════════════
     function MacLib:Watermark(cfg)
         cfg = cfg or {}
+        local titleText  = cfg.Title    or "Watermark"
+        local showFPS    = cfg.ShowFPS  ~= false
+        local showTime   = cfg.ShowTime ~= false
+        local dragEnabled_ = cfg.Drag ~= nil and cfg.Drag or (not isMobile)
 
-        -- ── config fields ────────────────────────────
-        local title         = cfg.Title          or "Watermark"
-        local showFPS       = cfg.ShowFPS        ~= false
-        local showTime      = cfg.ShowTime       ~= false
-        local initPos       = cfg.Position       or Vector2.new(104, 22)
-        local dragEnabled   = cfg.Drag           ~= false
-        local pColor1       = cfg.ParticleColor1 or Color3.fromRGB(72, 138, 255)
-        local pColor2       = cfg.ParticleColor2 or Color3.fromRGB(140, 90, 255)
-        local pCount        = cfg.ParticleCount  or 9
-        local connectDist   = cfg.ConnectDist    or 58
-        local onThePlane    = cfg.OnThePlane     ~= false
-        local showOrbit     = cfg.ShowOrbit      ~= false
-        local segmentCount  = cfg.SegmentCount   or 10
+        local particleColor1 = cfg.ParticleColor1 or Color3.fromRGB(72, 138, 255)
+        local particleColor2 = cfg.ParticleColor2 or Color3.fromRGB(140, 90, 255)
+        local particleCount  = cfg.ParticleCount  or 9
+        local connectDist    = cfg.ConnectDist    or 58
+        local particleYOffset = cfg.ParticleYOffset or 0   -- fine-tune nudge
 
-        -- ── state ────────────────────────────────────
-        local visible       = true
-        local pos           = initPos
-        local pOffsetY      = 0     -- Y correction for GuiInset
-        local speedNear     = 18
-        local speedFar      = 5
-        local tweenConn     = nil
-
-        -- ── sizes ────────────────────────────────────
-        local WM_H          = 26
-        local PAD_X         = 8
-        local LOGO_R        = 8
-        local LOGO_DOT_R    = 2
-        local ORBIT_FADE    = 0.35   -- orbit ring transparency (0=opaque 1=transparent)
-
-        -- ── compute width ────────────────────────────
-        local function computeWidth()
-            local base = (LOGO_R * 2 + PAD_X) + (PAD_X)
-            -- title width estimate
-            local tw = #title * 7
-            base = base + tw + PAD_X
-            if showFPS then base = base + 42 end
-            if showTime then base = base + 70 end
-            return math.max(base, 120)
-        end
-        local WM_W = computeWidth()
-
-        -- ── Drawing objects ──────────────────────────
-        -- background rect (line quad)
-        local bgLines = {}
-        for i = 1, 4 do
-            local l = newLine()
-            l.Thickness = 1
-            l.Color     = Color3.fromRGB(18, 18, 22)
-            l.Transparency = 0.18
-            table.insert(bgLines, l)
-        end
-
-        -- separator line
-        local sepLine = newLine()
-        sepLine.Color        = Color3.fromRGB(80, 80, 120)
-        sepLine.Transparency = 0.6
-        sepLine.Thickness    = 1
-
-        -- logo dots
-        local logoDots = {}
-        do
-            local pts = {
-                Vector2.new( 0,  -LOGO_R),
-                Vector2.new( LOGO_R * 0.85,  -LOGO_R * 0.3),
-                Vector2.new( LOGO_R * 0.55,   LOGO_R * 0.8),
-                Vector2.new(-LOGO_R * 0.55,   LOGO_R * 0.8),
-                Vector2.new(-LOGO_R * 0.85,  -LOGO_R * 0.3),
-            }
-            for i = 1, 5 do
-                local c = newCircle()
-                c.Filled    = true
-                c.NumSides  = 16
-                c.Radius    = LOGO_DOT_R
-                logoDots[i] = { circle = c, base = pts[i], phase = (i - 1) / 5 * math.pi * 2 }
+        local posX, posY = 104, 22
+        if cfg.Position then
+            if typeof(cfg.Position)=="UDim2" then
+                posX=cfg.Position.X.Offset; posY=cfg.Position.Y.Offset
+            elseif typeof(cfg.Position)=="Vector2" then
+                posX=cfg.Position.X; posY=cfg.Position.Y
             end
         end
 
-        -- logo connector lines (between adjacent dots)
-        local logoLines = {}
-        for i = 1, 5 do
-            local l = newLine()
-            l.Thickness   = 1
-            l.Transparency = 0.55
-            logoLines[i]  = l
+        local MARGIN = 22
+        local UI_SCALE = 0.80
+
+        -- ── Root GUI ─────────────────────────────────────────────────
+        local gui = GetGui(); gui.Name = "MacLibWatermark"
+
+        local anchor = Instance.new("Frame")
+        anchor.Name                   = "WmAnchor"
+        anchor.BackgroundTransparency = 1
+        anchor.BorderSizePixel        = 0
+        anchor.AutomaticSize          = Enum.AutomaticSize.XY
+        anchor.AnchorPoint            = Vector2.new(0,0)
+        anchor.Position               = UDim2.fromOffset(posX, posY)
+        anchor.Parent                 = gui
+
+        local uiScale = Instance.new("UIScale")
+        uiScale.Scale  = UI_SCALE
+        uiScale.Parent = anchor
+
+        local row = Instance.new("Frame")
+        row.Name                   = "Row"
+        row.BackgroundTransparency = 1
+        row.BorderSizePixel        = 0
+        row.AutomaticSize          = Enum.AutomaticSize.XY
+        row.Parent                 = anchor
+
+        local rowList = Instance.new("UIListLayout")
+        rowList.FillDirection     = Enum.FillDirection.Horizontal
+        rowList.VerticalAlignment = Enum.VerticalAlignment.Center
+        rowList.SortOrder         = Enum.SortOrder.LayoutOrder
+        rowList.Padding           = UDim.new(0,5)
+        rowList.Parent            = row
+
+        -- ── Tokens ───────────────────────────────────────────────────
+        local BAR_H   = 26
+        local LOGO_SZ = 32
+        local TXT_SZ  = 12
+        local ICON_SZ = 13
+        local PAD_X   = 10
+
+        local FONT_TITLE = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.SemiBold)
+        local FONT_BODY  = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium)
+
+        local COL_BG_DARK  = Color3.fromRGB(12,12,19)
+        local COL_BG_CHIP  = Color3.fromRGB(10,10,16)
+        local COL_STROKE   = Color3.fromRGB(42,42,62)
+        local COL_TXT_MAIN = Color3.fromRGB(215,215,230)
+        local COL_TXT_MUTE = Color3.fromRGB(130,130,155)
+        local BG_TRANSP    = 0.28
+
+        -- ── Chip factory ─────────────────────────────────────────────
+        local chipOrder = 0
+        local allChips  = {}
+
+        local function makeChip(opts)
+            chipOrder += 1; opts = opts or {}
+            local h = opts.h or BAR_H
+            local f = Instance.new("Frame")
+            f.Name                   = "Chip"..chipOrder
+            f.BackgroundColor3       = opts.bg or COL_BG_CHIP
+            f.BackgroundTransparency = BG_TRANSP
+            f.BorderSizePixel        = 0
+            f.LayoutOrder            = chipOrder
+            f.ClipsDescendants       = true
+            if opts.fixedW then
+                f.AutomaticSize = Enum.AutomaticSize.None
+                f.Size = UDim2.fromOffset(opts.fixedW, h)
+            else
+                f.AutomaticSize = Enum.AutomaticSize.X
+                f.Size = UDim2.fromOffset(0, h)
+            end
+            f.Parent = row
+            local corner = Instance.new("UICorner")
+            corner.CornerRadius = UDim.new(0, opts.radius or 7)
+            corner.Parent = f
+            local stroke = nil
+            if opts.stroke then
+                stroke = Instance.new("UIStroke")
+                stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+                stroke.Color     = COL_STROKE
+                stroke.Transparency = 0
+                stroke.Thickness = 1
+                stroke.Parent    = f
+            end
+            if opts.padX ~= false then
+                local pad = Instance.new("UIPadding")
+                pad.PaddingLeft  = UDim.new(0, opts.padX or PAD_X)
+                pad.PaddingRight = UDim.new(0, opts.padX or PAD_X)
+                pad.Parent = f
+            end
+            local entry = {frame=f, stroke=stroke, labels={}, images={}}
+            table.insert(allChips, entry)
+            return entry
         end
 
-        -- orbit ring segments
-        local orbitLines = {}
-        for i = 1, segmentCount do
-            local l = newLine()
-            l.Thickness   = 1
-            l.Transparency = ORBIT_FADE
-            l.Color       = Color3.fromRGB(120, 140, 220)
-            orbitLines[i] = l
-        end
+        -- ── LOGO chip ─────────────────────────────────────────────────
+        local logoEntry = makeChip({
+            bg=COL_BG_DARK, fixedW=LOGO_SZ, h=LOGO_SZ,
+            radius=9, stroke=false, padX=false,
+        })
 
-        -- text labels
-        local txtTitle = newText()
-        local txtFPS   = newText()
-        local txtTime  = newText()
-        txtTitle.Size  = 14
-        txtFPS.Size    = 12
-        txtTime.Size   = 12
-        txtFPS.Color   = Color3.fromRGB(140, 180, 255)
-        txtTime.Color  = Color3.fromRGB(180, 210, 255)
+        local logoHolder = Instance.new("Frame")
+        logoHolder.Name = "LogoHolder"
+        logoHolder.AnchorPoint = Vector2.new(0.5,0.5)
+        logoHolder.Position    = UDim2.new(0.5,0,0.5,0)
+        logoHolder.Size        = UDim2.fromOffset(18,18)
+        logoHolder.BackgroundTransparency = 1
+        logoHolder.BorderSizePixel = 0
+        logoHolder.Parent = logoEntry.frame
 
-        -- particles
-        local particles = {}
-        local particleLines = {}
+        -- Logo state
+        local SEG_COUNT   = cfg.SegmentCount or 10
+        local DOT_SZ      = 2.5
+        local LOGO_R      = 7    -- orbit radius in UI coords
+        local logoSegs    = {}
+        local logoAngleSm = 0
+        local logoAngleTg = 0
+        local onThePlane  = false   -- 3D mode toggle
 
-        local function makeParticles()
-            -- destroy old
-            for _, p in ipairs(particles) do
-                p.circ:Remove()
-            end
-            for _, l in ipairs(particleLines) do
-                l:Remove()
-            end
-            particles      = {}
-            particleLines  = {}
-
-            local margin = 10
-            for i = 1, pCount do
-                local c    = newCircle()
-                c.Filled   = true
-                c.NumSides = 8
-                c.Radius   = math.random(1, 2)
-                c.Visible  = visible
-
-                local px = pos.X + margin + math.random() * (WM_W - 2 * margin)
-                local py = pos.Y + margin + math.random() * (WM_H - 2 * margin)
-                local angle  = math.random() * math.pi * 2
-                local spd    = math.random(speedFar, speedNear)
-                local depth  = math.random() -- 0..1, used for size/speed modulation
-                local alpha  = math.random(30, 90) / 100
-                local col    = pColor1:Lerp(pColor2, math.random())
-
-                particles[i] = {
-                    circ  = c,
-                    pos   = Vector2.new(px, py),
-                    vel   = Vector2.new(math.cos(angle) * spd, math.sin(angle) * spd),
-                    depth = depth,
-                    alpha = alpha,
-                    col   = col,
-                }
-                c.Color        = col
-                c.Transparency = 1 - alpha
-            end
-
-            -- prealloc lines
-            local needed = pCount * (pCount - 1) / 2
-            for i = 1, needed do
-                local l = newLine()
-                l.Thickness = 1
-                particleLines[i] = l
+        local function rebuildLogoSegs(n)
+            for _, s in ipairs(logoSegs) do s.dot:Destroy() end
+            logoSegs = {}
+            for i = 1, n do
+                local dot = Instance.new("Frame")
+                dot.Size               = UDim2.fromOffset(DOT_SZ, DOT_SZ)
+                dot.AnchorPoint        = Vector2.new(0.5,0.5)
+                dot.Position           = UDim2.new(0.5,0,0.5,0)
+                dot.BackgroundColor3   = particleColor1
+                dot.BackgroundTransparency = 0.2
+                dot.BorderSizePixel    = 0
+                dot.ZIndex             = 3
+                dot.Parent             = logoHolder
+                Instance.new("UICorner", dot).CornerRadius = UDim.new(1,0)
+                table.insert(logoSegs, {dot=dot, idx=i})
             end
         end
+        rebuildLogoSegs(SEG_COUNT)
 
-        makeParticles()
+        -- Orbit outline: Drawing Lines that form a circle around the logo chip.
+        -- We draw ORBIT_SEGS line segments approximating a circle.
+        -- These are updated in Heartbeat using the logo chip's AbsolutePosition.
+        local ORBIT_SEGS   = 36
+        local orbitLines   = {}
+        local orbitEnabled = true
+        local drawObjs     = {}     -- all Drawing objects for cleanup
 
-        -- ── helper: rebuild orbit lines when segmentCount changes ────
-        local function rebuildOrbitLines(newSeg)
-            for _, l in ipairs(orbitLines) do
-                l:Remove()
-            end
+        local function D(t)
+            local d = Drawing.new(t)
+            d.Visible = true
+            table.insert(drawObjs, d)
+            return d
+        end
+
+        local function buildOrbit()
+            for _, l in ipairs(orbitLines) do pcall(function() l:Remove() end) end
             orbitLines = {}
-            for i = 1, newSeg do
-                local l = newLine()
-                l.Thickness   = 1
-                l.Transparency = ORBIT_FADE
-                l.Color       = Color3.fromRGB(120, 140, 220)
-                orbitLines[i] = l
-            end
-            segmentCount = newSeg
-        end
-
-        -- ── compute screen bounds helper ─────────────────────────────
-        local function screenSize()
-            local cam = workspace.CurrentCamera
-            if cam then
-                return cam.ViewportSize
-            end
-            return Vector2.new(1920, 1080)
-        end
-
-        -- ── draw ─────────────────────────────────────────────────────
-        local function draw(dt)
-            if not visible then
-                for _, l in ipairs(bgLines)      do l.Visible = false end
-                for _, d in ipairs(logoDots)     do d.circle.Visible = false end
-                for _, l in ipairs(logoLines)    do l.Visible = false end
-                for _, l in ipairs(orbitLines)   do l.Visible = false end
-                for _, p in ipairs(particles)    do p.circ.Visible = false end
-                for _, l in ipairs(particleLines) do l.Visible = false end
-                sepLine.Visible   = false
-                txtTitle.Visible  = false
-                txtFPS.Visible    = false
-                txtTime.Visible   = false
-                return
-            end
-
-            local x, y = pos.X, pos.Y
-            local w, h = WM_W, WM_H
-
-            -- ── background quad (4 lines forming filled rect appearance) ──
-            -- We fake a filled rect with a thick horizontal sweep
-            -- Actually Drawing has no Rect, so use 4 border lines
-            bgLines[1].From = Vector2.new(x,     y)      bgLines[1].To = Vector2.new(x + w, y)
-            bgLines[2].From = Vector2.new(x + w, y)      bgLines[2].To = Vector2.new(x + w, y + h)
-            bgLines[3].From = Vector2.new(x + w, y + h)  bgLines[3].To = Vector2.new(x,     y + h)
-            bgLines[4].From = Vector2.new(x,     y + h)  bgLines[4].To = Vector2.new(x,     y)
-            for _, l in ipairs(bgLines) do
-                l.Visible    = true
-                l.Thickness  = h / 2
-                l.Color      = Color3.fromRGB(12, 12, 18)
-                l.Transparency = 0.22
-            end
-            -- override: just use top line with extreme thickness to fill
-            bgLines[1].From = Vector2.new(x,     y + h / 2)
-            bgLines[1].To   = Vector2.new(x + w, y + h / 2)
-            bgLines[1].Thickness = h
-            bgLines[2].Visible = false
-            bgLines[3].Visible = false
-            bgLines[4].Visible = false
-
-            -- ── logo center ──────────────────────────────────────────
-            local logoCX = x + PAD_X + LOGO_R
-            local logoCY = y + h / 2
-            local t_anim = tick()
-
-            -- dot positions (with optional 3D plane effect)
-            local dotScreenPos = {}
-            for i, d in ipairs(logoDots) do
-                local angle  = d.phase + t_anim * 0.9
-                local bx, by = d.base.X, d.base.Y
-                local sx, sy
-
-                if onThePlane then
-                    -- simulate a tilted plane:
-                    -- rotate base around Z, then project with tilt
-                    local cosA, sinA = math.cos(t_anim * 0.6), math.sin(t_anim * 0.6)
-                    local rx = bx * cosA - by * sinA
-                    local ry = bx * sinA + by * cosA
-                    -- tilt: scale Y by cos of tilt angle
-                    local TILT = math.sin(t_anim * 0.25) * 0.5 + 0.5  -- 0..1
-                    local tiltCos = math.cos(TILT * math.pi * 0.5)
-                    sy = logoCY + ry * tiltCos + math.sin(angle + t_anim * 0.4) * 1.2
-                    sx = logoCX + rx
-                    -- depth modulation: dots closer look bigger
-                    local depthScale = (ry * tiltCos / LOGO_R + 1) * 0.5  -- 0..1
-                    d.circle.Radius = LOGO_DOT_R * (0.7 + depthScale * 0.7)
-                else
-                    -- flat orbit
-                    sx = logoCX + bx + math.cos(angle) * 0.8
-                    sy = logoCY + by + math.sin(angle) * 0.8
-                    d.circle.Radius = LOGO_DOT_R
-                end
-
-                dotScreenPos[i] = Vector2.new(sx, sy)
-                d.circle.Position   = Vector2.new(sx, sy)
-                d.circle.Color      = pColor1:Lerp(pColor2, (i - 1) / 4)
-                d.circle.Transparency = 0.1
-                d.circle.Visible    = true
-            end
-
-            -- logo connector lines
-            for i = 1, 5 do
-                local j = (i % 5) + 1
-                logoLines[i].From        = dotScreenPos[i]
-                logoLines[i].To          = dotScreenPos[j]
-                logoLines[i].Color       = pColor1:Lerp(pColor2, (i - 1) / 4)
-                logoLines[i].Visible     = true
-                logoLines[i].Thickness   = 1
-                logoLines[i].Transparency = 0.55
-            end
-
-            -- orbit ring
-            if showOrbit then
-                for i = 1, segmentCount do
-                    local a0 = (i - 1) / segmentCount * math.pi * 2
-                    local a1 = i       / segmentCount * math.pi * 2
-                    local fx, fy, tx, ty
-                    if onThePlane then
-                        local TILT = math.sin(t_anim * 0.25) * 0.5 + 0.5
-                        local tiltCos = math.cos(TILT * math.pi * 0.5)
-                        fx = logoCX + math.cos(a0) * (LOGO_R + 2)
-                        fy = logoCY + math.sin(a0) * (LOGO_R + 2) * tiltCos
-                        tx = logoCX + math.cos(a1) * (LOGO_R + 2)
-                        ty = logoCY + math.sin(a1) * (LOGO_R + 2) * tiltCos
-                    else
-                        fx = logoCX + math.cos(a0) * (LOGO_R + 2)
-                        fy = logoCY + math.sin(a0) * (LOGO_R + 2)
-                        tx = logoCX + math.cos(a1) * (LOGO_R + 2)
-                        ty = logoCY + math.sin(a1) * (LOGO_R + 2)
-                    end
-                    local ol = orbitLines[i]
-                    if ol then
-                        ol.From    = Vector2.new(fx, fy)
-                        ol.To      = Vector2.new(tx, ty)
-                        ol.Visible = true
-                    end
-                end
-            else
-                for _, l in ipairs(orbitLines) do l.Visible = false end
-            end
-
-            -- separator
-            local sepX = logoCX + LOGO_R + PAD_X / 2
-            sepLine.From    = Vector2.new(sepX, y + 4)
-            sepLine.To      = Vector2.new(sepX, y + h - 4)
-            sepLine.Visible = true
-
-            -- texts
-            local curX = sepX + 6
-
-            txtTitle.Text     = title
-            txtTitle.Position = Vector2.new(curX, y + h / 2 - 7)
-            txtTitle.Visible  = true
-            curX = curX + #title * 7 + PAD_X
-
-            -- FPS icon offset: push left by 4 px compared to old code
-            if showFPS then
-                local fps  = math.floor(1 / (dt + 0.0001))
-                txtFPS.Text     = "FPS " .. fps
-                txtFPS.Position = Vector2.new(curX - 4, y + h / 2 - 6)
-                txtFPS.Visible  = true
-                curX = curX + 40
-            else
-                txtFPS.Visible = false
-            end
-
-            -- Time icon offset: push left by 4 px
-            if showTime then
-                local hr  = os.date("*t").hour
-                local mn  = os.date("*t").min
-                txtTime.Text     = string.format("%02d:%02d", hr, mn)
-                txtTime.Position = Vector2.new(curX - 4, y + h / 2 - 6)
-                txtTime.Visible  = true
-            else
-                txtTime.Visible = false
-            end
-
-            -- ── particles ────────────────────────────────────────────
-            -- boundary box for bounce (slightly inside wm bounds)
-            local PMARG = 6
-            local bx0 = x + PMARG
-            local by0 = y + PMARG + pOffsetY
-            local bx1 = x + w - PMARG
-            local by1 = y + h - PMARG + pOffsetY
-
-            for _, p in ipairs(particles) do
-                -- depth-based speed
-                local spd = speedFar + (speedNear - speedFar) * p.depth
-                -- normalize vel and apply speed
-                local vl = math.sqrt(p.vel.X ^ 2 + p.vel.Y ^ 2)
-                if vl > 0 then
-                    p.vel = Vector2.new(p.vel.X / vl * spd, p.vel.Y / vl * spd)
-                end
-
-                local nx = p.pos.X + p.vel.X * dt
-                local ny = p.pos.Y + p.vel.Y * dt
-
-                -- bounce off wm edges
-                if nx < bx0 then nx = bx0; p.vel = Vector2.new(math.abs(p.vel.X), p.vel.Y) end
-                if nx > bx1 then nx = bx1; p.vel = Vector2.new(-math.abs(p.vel.X), p.vel.Y) end
-                if ny < by0 then ny = by0; p.vel = Vector2.new(p.vel.X, math.abs(p.vel.Y)) end
-                if ny > by1 then ny = by1; p.vel = Vector2.new(p.vel.X, -math.abs(p.vel.Y)) end
-
-                p.pos = Vector2.new(nx, ny)
-
-                -- depth modulation for size
-                local sz = math.max(1, math.floor(p.depth * 2.5 + 0.5))
-                p.circ.Radius      = sz
-                p.circ.Color       = p.col
-                p.circ.Position    = Vector2.new(nx, ny + pOffsetY)
-                p.circ.Transparency = 1 - p.alpha
-                p.circ.Visible     = true
-            end
-
-            -- particle connect lines
-            local lineIdx = 1
-            for i = 1, #particles do
-                for j = i + 1, #particles do
-                    local pl = particleLines[lineIdx]
-                    if pl then
-                        local pi = particles[i]
-                        local pj = particles[j]
-                        local dist = (pi.pos - pj.pos).Magnitude
-                        if dist < connectDist then
-                            local fade = 1 - dist / connectDist
-                            pl.From        = Vector2.new(pi.pos.X, pi.pos.Y + pOffsetY)
-                            pl.To          = Vector2.new(pj.pos.X, pj.pos.Y + pOffsetY)
-                            pl.Color       = pi.col:Lerp(pj.col, 0.5)
-                            pl.Transparency = 1 - fade * 0.5
-                            pl.Visible     = true
-                        else
-                            pl.Visible = false
-                        end
-                    end
-                    lineIdx = lineIdx + 1
-                end
-            end
-            -- hide unused lines
-            for k = lineIdx, #particleLines do
-                particleLines[k].Visible = false
+            for i = 1, ORBIT_SEGS do
+                local l = D("Line")
+                l.Thickness    = 0.7
+                l.Transparency = 0.55   -- semi-transparent
+                l.ZIndex       = 7
+                table.insert(orbitLines, l)
             end
         end
+        buildOrbit()
 
-        -- ── drag logic ───────────────────────────────────────────────
-        local dragging = false
-        local dragOff  = Vector2.new(0, 0)
-        local inputConn, inputEndConn, moveConn
+        -- ── TITLE chip ───────────────────────────────────────────────
+        local titleEntry = makeChip({bg=COL_BG_DARK, stroke=true})
 
-        local function startDrag(inputPos)
-            if not dragEnabled then return end
-            dragging = true
-            dragOff  = pos - inputPos
+        local titleLbl = Instance.new("TextLabel")
+        titleLbl.FontFace               = FONT_TITLE
+        titleLbl.TextSize               = TXT_SZ
+        titleLbl.TextColor3             = COL_TXT_MAIN
+        titleLbl.BackgroundTransparency = 1
+        titleLbl.BorderSizePixel        = 0
+        titleLbl.AutomaticSize          = Enum.AutomaticSize.X
+        titleLbl.Size                   = UDim2.fromOffset(0, BAR_H)
+        titleLbl.TextXAlignment         = Enum.TextXAlignment.Left
+        titleLbl.Text                   = titleText
+        titleLbl.ZIndex                 = 3
+        titleLbl.Parent                 = titleEntry.frame
+        table.insert(titleEntry.labels, titleLbl)
+
+        local accentLine = Instance.new("Frame")
+        accentLine.Name                   = "AccentLine"
+        accentLine.BackgroundColor3       = particleColor1
+        accentLine.BackgroundTransparency = 0
+        accentLine.BorderSizePixel        = 0
+        accentLine.ZIndex                 = 6
+        accentLine.Size                   = UDim2.fromOffset(40,1)
+        accentLine.Position               = UDim2.fromOffset(0, BAR_H-3)
+        accentLine.Parent                 = titleEntry.frame
+
+        -- ── FPS chip ─────────────────────────────────────────────────
+        local fpsEntry, fpsLbl
+        if showFPS then
+            fpsEntry = makeChip({fixedW=72, stroke=true, padX=false})
+            -- shift content 4px left from center
+            local inner = Instance.new("Frame")
+            inner.BackgroundTransparency=1; inner.BorderSizePixel=0
+            inner.AnchorPoint=Vector2.new(0.5,0.5)
+            inner.Position=UDim2.new(0.5,-2,0.5,0)  -- -2 = slightly left
+            inner.AutomaticSize=Enum.AutomaticSize.XY
+            inner.Parent=fpsEntry.frame
+            local il=Instance.new("UIListLayout")
+            il.FillDirection=Enum.FillDirection.Horizontal
+            il.VerticalAlignment=Enum.VerticalAlignment.Center
+            il.Padding=UDim.new(0,4); il.Parent=inner
+
+            local fpsIcon=Instance.new("ImageLabel")
+            fpsIcon.Image="rbxassetid://102994395432803"
+            fpsIcon.Size=UDim2.fromOffset(ICON_SZ,ICON_SZ)
+            fpsIcon.BackgroundTransparency=1; fpsIcon.BorderSizePixel=0
+            fpsIcon.ZIndex=3; fpsIcon.Parent=inner
+            table.insert(fpsEntry.images, fpsIcon)
+
+            fpsLbl=Instance.new("TextLabel")
+            fpsLbl.FontFace=FONT_BODY; fpsLbl.TextSize=TXT_SZ
+            fpsLbl.TextColor3=COL_TXT_MUTE; fpsLbl.BackgroundTransparency=1
+            fpsLbl.BorderSizePixel=0; fpsLbl.AutomaticSize=Enum.AutomaticSize.X
+            fpsLbl.Size=UDim2.fromOffset(0,BAR_H)
+            fpsLbl.TextXAlignment=Enum.TextXAlignment.Left
+            fpsLbl.Text="--"; fpsLbl.ZIndex=3; fpsLbl.Parent=inner
+            table.insert(fpsEntry.labels, fpsLbl)
         end
 
-        inputConn = UIS.InputBegan:Connect(function(inp, gp)
-            if gp then return end
-            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-                local mp = Vector2.new(inp.Position.X, inp.Position.Y)
-                if mp.X >= pos.X and mp.X <= pos.X + WM_W
-                and mp.Y >= pos.Y and mp.Y <= pos.Y + WM_H then
-                    startDrag(mp)
-                end
-            elseif inp.UserInputType == Enum.UserInputType.Touch then
-                local mp = Vector2.new(inp.Position.X, inp.Position.Y)
-                if mp.X >= pos.X and mp.X <= pos.X + WM_W
-                and mp.Y >= pos.Y and mp.Y <= pos.Y + WM_H then
-                    startDrag(mp)
-                end
-            end
-        end)
+        -- ── TIME chip ────────────────────────────────────────────────
+        local timeEntry, timeLbl
+        if showTime then
+            timeEntry = makeChip({fixedW=88, stroke=true, padX=false})
+            local inner = Instance.new("Frame")
+            inner.BackgroundTransparency=1; inner.BorderSizePixel=0
+            inner.AnchorPoint=Vector2.new(0.5,0.5)
+            inner.Position=UDim2.new(0.5,-2,0.5,0)  -- slightly left
+            inner.AutomaticSize=Enum.AutomaticSize.XY
+            inner.Parent=timeEntry.frame
+            local il=Instance.new("UIListLayout")
+            il.FillDirection=Enum.FillDirection.Horizontal
+            il.VerticalAlignment=Enum.VerticalAlignment.Center
+            il.Padding=UDim.new(0,4); il.Parent=inner
 
-        inputEndConn = UIS.InputEnded:Connect(function(inp)
-            if inp.UserInputType == Enum.UserInputType.MouseButton1
-            or inp.UserInputType == Enum.UserInputType.Touch then
-                dragging = false
-            end
-        end)
+            local timeIcon=Instance.new("ImageLabel")
+            timeIcon.Image="rbxassetid://17824308575"
+            timeIcon.Size=UDim2.fromOffset(ICON_SZ,ICON_SZ)
+            timeIcon.BackgroundTransparency=1; timeIcon.BorderSizePixel=0
+            timeIcon.ZIndex=3; timeIcon.Parent=inner
+            table.insert(timeEntry.images, timeIcon)
 
-        moveConn = UIS.InputChanged:Connect(function(inp)
-            if not dragging then return end
-            local mp
-            if inp.UserInputType == Enum.UserInputType.MouseMovement then
-                mp = Vector2.new(inp.Position.X, inp.Position.Y)
-            elseif inp.UserInputType == Enum.UserInputType.Touch then
-                mp = Vector2.new(inp.Position.X, inp.Position.Y)
-            else
-                return
-            end
-            pos = mp + dragOff
-        end)
+            timeLbl=Instance.new("TextLabel")
+            timeLbl.FontFace=FONT_BODY; timeLbl.TextSize=TXT_SZ
+            timeLbl.TextColor3=COL_TXT_MUTE; timeLbl.BackgroundTransparency=1
+            timeLbl.BorderSizePixel=0; timeLbl.AutomaticSize=Enum.AutomaticSize.X
+            timeLbl.Size=UDim2.fromOffset(0,BAR_H)
+            timeLbl.TextXAlignment=Enum.TextXAlignment.Left
+            timeLbl.Text="00:00"; timeLbl.ZIndex=3; timeLbl.Parent=inner
+            table.insert(timeEntry.labels, timeLbl)
+        end
 
-        -- ── tween to position ─────────────────────────────────────────
-        local function tweenTo(target)
-            if tweenConn then tweenConn:Disconnect(); tweenConn = nil end
-            tweenConn = tweenVec2(
-                function() return pos end,
-                function(v) pos = v end,
-                target,
-                0.35
+        -- ════════════════════════════════════════════════════════════════
+        -- PARTICLE COORDINATE FIX
+        --
+        -- The anchor has UIScale=0.80.
+        -- In Roblox, AbsolutePosition of a child of a UIScale frame
+        -- IS already the correct screen position (UIScale transforms
+        -- the rendered position AND AbsolutePosition reports the
+        -- transformed position). Drawing uses the same screen space.
+        --
+        -- HOWEVER: we observed particles appear above the watermark.
+        -- This happens because anchor.AbsolutePosition is the top-left
+        -- of the SCALED content, but because UIScale scales from the
+        -- anchor point of the parent, the reported AbsolutePosition of
+        -- a *chip* inside the scaled frame can be off.
+        --
+        -- ROBUST FIX: we sample the chip's AbsolutePosition directly
+        -- each frame (post-layout). This is the actual screen rect.
+        -- Additionally we expose a manual yOffset nudge.
+        --
+        -- For particles we constrain them to this rect, so they can
+        -- never appear outside the chip boundaries.
+        -- ════════════════════════════════════════════════════════════════
+
+        local SPEED_NEAR = 18
+        local SPEED_FAR  = 5
+        local R_NEAR     = 2.2
+        local R_FAR      = 0.8
+        local globalT    = 0
+        local globalTime = 0
+
+        local function getParticleColor(t, z)
+            local r = lerp(particleColor1.R*255, particleColor2.R*255, t)
+            local g = lerp(particleColor1.G*255, particleColor2.G*255, t)
+            local b = lerp(particleColor1.B*255, particleColor2.B*255, t)
+            local bright = lerp(0.75, 1.0, z)
+            return Color3.fromRGB(
+                math.round(clamp(r*bright, 0, 255)),
+                math.round(clamp(g*bright, 0, 255)),
+                math.round(clamp(b*bright, 0, 255))
             )
         end
 
-        -- ── preset positions ─────────────────────────────────────────
-        local function getTopLeft()
-            -- slightly right of screen left edge
-            return Vector2.new(88, 8)
-        end
-        local function getTopRight()
-            local ss = screenSize()
-            -- slightly lower than before
-            return Vector2.new(ss.X - WM_W - 12, 14)
-        end
-        local function getBottomLeft()
-            local ss = screenSize()
-            -- slightly less left (a bit further from edge)
-            return Vector2.new(72, ss.Y - WM_H - 10)
+        local function buildSys(n)
+            local pts = {}
+            for i = 1, n do
+                local p = {
+                    x=0, y=0, vx=0, vy=0,
+                    z        = rand(0,1),
+                    phaseOff = rand(0, math.pi*2),
+                    dot      = D("Circle"),
+                }
+                p.dot.Filled       = true
+                p.dot.Color        = particleColor1
+                p.dot.Radius       = 1
+                p.dot.Transparency = 0
+                p.dot.NumSides     = 12
+                p.dot.ZIndex       = 9
+                pts[i] = p
+            end
+            local lines = {}
+            for i = 1, n do
+                lines[i] = {}
+                for j = i+1, n do
+                    local l = D("Line")
+                    l.Thickness    = 1
+                    l.Color        = particleColor1
+                    l.Transparency = 0
+                    l.ZIndex       = 8
+                    lines[i][j]    = l
+                end
+            end
+            return {pts=pts, lines=lines, ready=false, n=n,
+                    ax=0, ay=0, aw=0, ah=0}
         end
 
-        -- ── run loop ─────────────────────────────────────────────────
-        local renderConn = RS.RenderStepped:Connect(function(dt)
-            draw(dt)
+        local function initSys(sys, ax, ay, aw, ah)
+            for _, p in ipairs(sys.pts) do
+                p.x  = rand(ax+6, ax+aw-6)
+                p.y  = rand(ay+4, ay+ah-4)
+                local spd   = lerp(SPEED_FAR, SPEED_NEAR, p.z)
+                local angle = rand(0, math.pi*2)
+                p.vx = math.cos(angle)*spd
+                p.vy = math.sin(angle)*spd
+            end
+            sys.ready = true
+            sys.ax,sys.ay,sys.aw,sys.ah = ax,ay,aw,ah
+        end
+
+        local function tickSys(sys, dt, ax, ay, aw, ah, globalAlpha)
+            if not sys.ready then return end
+
+            -- When bounds shift (drag), clamp particles into new region
+            -- but PRESERVE velocity so they bounce naturally from new walls.
+            local dax = ax - sys.ax
+            local day = ay - sys.ay
+            if math.abs(dax) > 1 or math.abs(day) > 1 then
+                for _, p in ipairs(sys.pts) do
+                    p.x = p.x + dax
+                    p.y = p.y + day
+                    -- clamp so they're inside the new bounds
+                    p.x = clamp(p.x, ax+4, ax+aw-4)
+                    p.y = clamp(p.y, ay+4, ay+ah-4)
+                    -- flip velocity away from the wall they hit during clamp
+                    if p.x <= ax+4     then p.vx = math.abs(p.vx) end
+                    if p.x >= ax+aw-4  then p.vx = -math.abs(p.vx) end
+                    if p.y <= ay+4     then p.vy = math.abs(p.vy) end
+                    if p.y >= ay+ah-4  then p.vy = -math.abs(p.vy) end
+                end
+            end
+            sys.ax,sys.ay,sys.aw,sys.ah = ax,ay,aw,ah
+
+            for _, p in ipairs(sys.pts) do
+                p.x += p.vx*dt; p.y += p.vy*dt
+                local m = 4
+                if p.x < ax+m    then p.x = ax+m;    p.vx =  math.abs(p.vx) end
+                if p.x > ax+aw-m then p.x = ax+aw-m; p.vx = -math.abs(p.vx) end
+                if p.y < ay+m    then p.y = ay+m;    p.vy =  math.abs(p.vy) end
+                if p.y > ay+ah-m then p.y = ay+ah-m; p.vy = -math.abs(p.vy) end
+
+                local pulse  = 0.88+0.12*math.sin(globalTime*1.1+p.phaseOff)
+                local spd    = lerp(SPEED_FAR, SPEED_NEAR, p.z)
+                local curSpd = math.sqrt(p.vx^2+p.vy^2)
+                if curSpd > 0.1 then
+                    local target = spd*pulse
+                    local sc = lerp(1, target/curSpd, dt*2)
+                    p.vx *= sc; p.vy *= sc
+                end
+
+                local r       = lerp(R_FAR, R_NEAR, p.z)
+                local pulseR  = r*(0.88+0.12*math.sin(globalTime*1.8+p.phaseOff))
+                local baseOp  = lerp(0.18, 0.60, p.z)
+                local finalOp = baseOp*globalAlpha
+                local pT      = (globalT + p.phaseOff/(math.pi*2)*0.3)%1
+
+                p.dot.Position     = Vector2.new(p.x, p.y + particleYOffset)
+                p.dot.Radius       = pulseR
+                p.dot.Transparency = finalOp
+                p.dot.Color        = getParticleColor(pT, p.z)
+            end
+
+            for i=1,#sys.pts do
+                for j=i+1,#sys.pts do
+                    local pi,pj = sys.pts[i],sys.pts[j]
+                    local dx=pi.x-pj.x; local dy=pi.y-pj.y
+                    local dist=math.sqrt(dx*dx+dy*dy)
+                    local l=sys.lines[i][j]
+                    if dist < connectDist then
+                        local prox = 1-dist/connectDist
+                        local avgZ = (pi.z+pj.z)*0.5
+                        local lineOp = lerp(0.05,0.35,prox)*lerp(0.35,1,avgZ)*globalAlpha
+                        l.From        = Vector2.new(pi.x, pi.y + particleYOffset)
+                        l.To          = Vector2.new(pj.x, pj.y + particleYOffset)
+                        l.Transparency = lineOp
+                        l.Thickness   = lerp(0.4,1.2,avgZ)
+                        l.Color       = getParticleColor(globalT, avgZ)
+                    else
+                        l.Transparency = 0
+                    end
+                end
+            end
+        end
+
+        local entryToSys = {}
+        entryToSys[titleEntry] = buildSys(particleCount)
+        if fpsEntry  then entryToSys[fpsEntry]  = buildSys(particleCount) end
+        if timeEntry then entryToSys[timeEntry] = buildSys(particleCount) end
+
+        -- Deferred init: wait for valid AbsoluteSize
+        task.spawn(function()
+            local waited = 0
+            while waited < 4 do
+                task.wait(0.05); waited += 0.05
+                local allReady = true
+                for entry, sys in pairs(entryToSys) do
+                    if not sys.ready then
+                        local ap = entry.frame.AbsolutePosition
+                        local as = entry.frame.AbsoluteSize
+                        if as.X > 8 and as.Y > 4 then
+                            initSys(sys, ap.X, ap.Y + particleYOffset, as.X, as.Y)
+                        else
+                            allReady = false
+                        end
+                    end
+                end
+                if allReady then break end
+            end
         end)
 
-        -- ── public object ─────────────────────────────────────────────
-        local wm = {}
+        -- ── Spring position ───────────────────────────────────────────
+        local springP = 0
+        local springV = 0
+        local targetA = 1
+        local SPRING_K = 120
+        local SPRING_D = 16
 
-        function wm:Show()
-            visible = true
-        end
+        -- One single position target for the anchor (smooth for both drag and buttons)
+        local dragTargetX = posX; local dragTargetY = posY
+        local dragCurX    = posX; local dragCurY    = posY
+        local isDragging  = false
+        local dragStartMouse  = Vector2.new(0,0)
+        local dragStartAnchor = Vector2.new(posX,posY)
+        local DRAG_SPRING = 18
 
-        function wm:Hide()
-            visible = false
-        end
+        local accentPh = 0
+        local FPS_N    = 30
+        local fpsBuf   = table.create(FPS_N,1/60)
+        local fpsBufI  = 1; local fpsTimer=0; local lastMin=-1
 
-        function wm:Toggle()
-            visible = not visible
-        end
-
-        function wm:Destroy()
-            if renderConn   then renderConn:Disconnect()   end
-            if inputConn    then inputConn:Disconnect()    end
-            if inputEndConn then inputEndConn:Disconnect() end
-            if moveConn     then moveConn:Disconnect()     end
-            if tweenConn    then tweenConn:Disconnect()    end
-            for _, l in ipairs(bgLines)       do l:Remove() end
-            for _, d in ipairs(logoDots)      do d.circle:Remove() end
-            for _, l in ipairs(logoLines)     do l:Remove() end
-            for _, l in ipairs(orbitLines)    do l:Remove() end
-            for _, p in ipairs(particles)     do p.circ:Remove() end
-            for _, l in ipairs(particleLines) do l:Remove() end
-            sepLine:Remove()
-            txtTitle:Remove()
-            txtFPS:Remove()
-            txtTime:Remove()
-        end
-
-        function wm:SetTitle(t)
-            title = t
-            WM_W = computeWidth()
-        end
-
-        function wm:SetDrag(v)
-            dragEnabled = v
-            if not v then
-                -- reset to Top-right when drag is disabled
-                tweenTo(getTopRight())
+        local function applyProgress(p)
+            uiScale.Scale = lerp(0.80, 1.0, p)
+            local bgT  = lerp(1, BG_TRANSP, p)
+            local txtT = lerp(1, 0, p)
+            local strT = lerp(1, 0, p)
+            for _, e in ipairs(allChips) do
+                e.frame.BackgroundTransparency = bgT
+                if e.stroke then e.stroke.Transparency = strT end
+                for _, l in ipairs(e.labels) do l.TextTransparency  = txtT end
+                for _, i in ipairs(e.images) do i.ImageTransparency = txtT end
+            end
+            for _, s in ipairs(logoSegs) do
+                s.dot.BackgroundTransparency = lerp(1, 0.15, p)
+            end
+            accentLine.BackgroundTransparency = lerp(1,0,p)
+            if p < 0.02 then
+                for _, d in ipairs(drawObjs) do d.Transparency = 0 end
             end
         end
 
-        function wm:MoveTopLeft()
-            tweenTo(getTopLeft())
+        -- ── setTargetPos: used by drag AND buttons ────────────────────
+        local function setTargetPos(x, y)
+            dragTargetX = x; dragTargetY = y
+        end
+        -- Instant snap (no spring) for initialization or drag=false reset
+        local function snapPos(x, y)
+            dragTargetX = x; dragTargetY = y
+            dragCurX    = x; dragCurY    = y
+            anchor.Position = UDim2.fromOffset(x, y)
         end
 
-        function wm:MoveTopRight()
-            tweenTo(getTopRight())
+        -- ── Connections ───────────────────────────────────────────────
+        local conns = {}
+
+        -- Logo: RenderStepped for smooth rotation
+        table.insert(conns, RunService.RenderStepped:Connect(function(dt)
+            logoAngleTg = logoAngleTg + dt*22
+            logoAngleSm = logoAngleSm + (logoAngleTg - logoAngleSm)*(1 - math.exp(-dt*10))
+
+            local pulse = 0.88 + 0.12*math.sin(globalTime*1.4)
+            local n = #logoSegs
+            for i, s in ipairs(logoSegs) do
+                local baseA = math.rad((i-1)*(360/n)) + math.rad(logoAngleSm)
+                local r     = LOGO_R * pulse
+
+                local px, py, sz, alpha
+                if onThePlane then
+                    -- 3D: dots orbit in a tilted ellipse (sin depth)
+                    local tilt = 0.45   -- how much the plane is tilted (0=flat, 1=edge-on)
+                    local cosA = math.cos(baseA)
+                    local sinA = math.sin(baseA)
+                    px = cosA * r
+                    py = sinA * r * (1 - tilt)   -- compressed Y simulates tilt
+                    -- depth: front (+) → larger/brighter, back (-) → smaller/dimmer
+                    local depth = sinA              -- -1 (back) to +1 (front)
+                    sz  = lerp(DOT_SZ*0.5, DOT_SZ*1.5, (depth+1)*0.5)
+                    alpha = lerp(0.55, 0.15, (depth+1)*0.5)
+                else
+                    px = math.cos(baseA) * r
+                    py = math.sin(baseA) * r
+                    sz  = DOT_SZ
+                    alpha = 0.18
+                end
+
+                s.dot.Size = UDim2.fromOffset(sz, sz)
+                s.dot.Position = UDim2.new(0.5, math.round(px), 0.5, math.round(py))
+                s.dot.BackgroundTransparency = alpha
+                s.dot.BackgroundColor3 = getParticleColor(
+                    (globalT + (i-1)/n*0.25)%1, (i-1)/n)
+            end
+        end))
+
+        table.insert(conns, RunService.Heartbeat:Connect(function(dt)
+            globalTime = globalTime + dt
+            globalT    = (math.sin(globalTime*0.39)+1)*0.5
+
+            -- entrance spring
+            local force = SPRING_K*(targetA-springP) - SPRING_D*springV
+            springV = springV + force*dt
+            springP = clamp(springP + springV*dt, 0, 1)
+            if math.abs(springP-targetA)<0.003 and math.abs(springV)<0.003 then
+                springP=targetA; springV=0
+            end
+
+            applyProgress(springP)
+            gui.Enabled = springP > 0.008
+
+            -- accent underline
+            accentPh = (accentPh+dt*0.6)%(math.pi*2)
+            accentLine.BackgroundColor3 = getParticleColor((math.sin(accentPh)+1)*0.5, 0.5)
+            local ts = titleLbl.AbsoluteSize
+            if ts.X > 0 then
+                accentLine.Size     = UDim2.fromOffset(ts.X, 1)
+                accentLine.Position = UDim2.fromOffset(0, BAR_H-3)
+            end
+
+            -- smooth position spring (used for drag AND button moves)
+            dragCurX = lerp(dragCurX, dragTargetX, clamp(dt*DRAG_SPRING,0,1))
+            dragCurY = lerp(dragCurY, dragTargetY, clamp(dt*DRAG_SPRING,0,1))
+            anchor.Position = UDim2.fromOffset(math.round(dragCurX), math.round(dragCurY))
+
+            -- orbit outline: update each frame using logo chip AbsolutePosition
+            if orbitEnabled and springP > 0.05 then
+                local lf  = logoEntry.frame
+                local lap = lf.AbsolutePosition
+                local las = lf.AbsoluteSize
+                local cx  = lap.X + las.X*0.5
+                local cy  = lap.Y + las.Y*0.5
+                local orbitR = las.X * 0.44   -- slightly inside the chip edge
+                local orbitAlpha = lerp(0.75, 0.25, springP) * 0.7
+                local orbitCol   = getParticleColor(globalT, 0.5)
+                for i, l in ipairs(orbitLines) do
+                    local a1 = (i-1)/ORBIT_SEGS * math.pi*2 + globalTime*0.25
+                    local a2 = i/ORBIT_SEGS     * math.pi*2 + globalTime*0.25
+                    l.From        = Vector2.new(cx + math.cos(a1)*orbitR, cy + math.sin(a1)*orbitR)
+                    l.To          = Vector2.new(cx + math.cos(a2)*orbitR, cy + math.sin(a2)*orbitR)
+                    l.Color       = orbitCol
+                    l.Transparency = orbitAlpha
+                end
+            else
+                for _, l in ipairs(orbitLines) do l.Transparency = 0 end
+            end
+
+            -- particles
+            if springP > 0.03 then
+                for entry, sys in pairs(entryToSys) do
+                    local f  = entry.frame
+                    local ap = f.AbsolutePosition
+                    local as = f.AbsoluteSize
+                    if as.X > 8 and as.Y > 4 then
+                        if not sys.ready then
+                            initSys(sys, ap.X, ap.Y + particleYOffset, as.X, as.Y)
+                        else
+                            tickSys(sys, dt, ap.X, ap.Y + particleYOffset, as.X, as.Y, springP)
+                        end
+                    end
+                end
+            end
+
+            -- FPS counter
+            if fpsLbl then
+                fpsBuf[fpsBufI]=dt; fpsBufI=(fpsBufI%FPS_N)+1
+                fpsTimer+=dt
+                if fpsTimer>=0.25 then
+                    fpsTimer=0
+                    local sum=0 for i=1,FPS_N do sum+=fpsBuf[i] end
+                    fpsLbl.Text=tostring(sum>0 and math.round(FPS_N/sum) or 0)
+                end
+            end
+
+            -- Time
+            if timeLbl then
+                local now=os.time(); local cm=math.floor(now/60)
+                if cm ~= lastMin then
+                    lastMin=cm
+                    timeLbl.Text=string.format("%02d:%02d",math.floor(now/3600)%24,cm%60)
+                end
+            end
+        end))
+
+        -- ── Drag input ───────────────────────────────────────────────
+        local dragInputConns = {}
+        local function setupDrag()
+            local function getMP()
+                local mp = UIS:GetMouseLocation()
+                return Vector2.new(mp.X, mp.Y)
+            end
+            table.insert(dragInputConns, row.InputBegan:Connect(function(inp)
+                if not dragEnabled_ then return end
+                if inp.UserInputType==Enum.UserInputType.MouseButton1
+                or inp.UserInputType==Enum.UserInputType.Touch then
+                    isDragging        = true
+                    dragStartMouse    = getMP()
+                    dragStartAnchor   = Vector2.new(dragCurX, dragCurY)
+                end
+            end))
+            table.insert(dragInputConns, UIS.InputChanged:Connect(function(inp)
+                if not isDragging or not dragEnabled_ then return end
+                if inp.UserInputType==Enum.UserInputType.MouseMovement
+                or inp.UserInputType==Enum.UserInputType.Touch then
+                    local cur = getMP()
+                    setTargetPos(
+                        dragStartAnchor.X + (cur.X - dragStartMouse.X),
+                        dragStartAnchor.Y + (cur.Y - dragStartMouse.Y)
+                    )
+                end
+            end))
+            table.insert(dragInputConns, UIS.InputEnded:Connect(function(inp)
+                if inp.UserInputType==Enum.UserInputType.MouseButton1
+                or inp.UserInputType==Enum.UserInputType.Touch then
+                    isDragging = false
+                end
+            end))
+        end
+        setupDrag()
+
+        applyProgress(0); targetA=1
+
+        -- ── Position helpers (all smooth via setTargetPos) ────────────
+        local function waitAndMove(fn)
+            task.spawn(function()
+                -- wait up to 0.5s for AbsoluteSize to be valid
+                local t = 0
+                while row.AbsoluteSize.X < 8 and t < 0.5 do
+                    task.wait(0.05); t += 0.05
+                end
+                fn()
+            end)
         end
 
-        function wm:MoveBottomLeft()
-            tweenTo(getBottomLeft())
+        local function moveTopLeft()
+            -- slightly right of the original 104 default
+            setTargetPos(124, MARGIN)
+        end
+        local function moveTopRight()
+            waitAndMove(function()
+                local vp = workspace.CurrentCamera.ViewportSize
+                local w  = row.AbsoluteSize.X
+                setTargetPos(vp.X - w - MARGIN, MARGIN + 8)  -- +8 lower
+            end)
+        end
+        local function moveBottomLeft()
+            waitAndMove(function()
+                local vp = workspace.CurrentCamera.ViewportSize
+                local w  = row.AbsoluteSize.X
+                local h  = row.AbsoluteSize.Y
+                setTargetPos(104 - 8, vp.Y - h - MARGIN)  -- -8 left
+            end)
         end
 
-        function wm:SetOnThePlane(v)
-            onThePlane = v
+        -- ── Rebuild particle systems ──────────────────────────────────
+        local function rebuildParticles(n, cd)
+            -- Remove old particle drawObjs but keep orbit lines
+            for _, sys in pairs(entryToSys) do
+                for _, p in ipairs(sys.pts) do
+                    pcall(function() p.dot:Remove() end)
+                end
+                for i=1,#sys.pts do
+                    for j=i+1,#sys.pts do
+                        if sys.lines[i] and sys.lines[i][j] then
+                            pcall(function() sys.lines[i][j]:Remove() end)
+                        end
+                    end
+                end
+            end
+            -- Rebuild drawObjs list (keep orbit lines)
+            drawObjs = {}
+            for _, l in ipairs(orbitLines) do table.insert(drawObjs, l) end
+
+            if cd then connectDist = cd end
+            particleCount = n
+
+            entryToSys[titleEntry] = buildSys(n)
+            if fpsEntry  then entryToSys[fpsEntry]  = buildSys(n) end
+            if timeEntry then entryToSys[timeEntry] = buildSys(n) end
+
+            -- re-init
+            task.spawn(function()
+                local waited = 0
+                while waited < 4 do
+                    task.wait(0.05); waited += 0.05
+                    local allReady = true
+                    for entry, sys in pairs(entryToSys) do
+                        if not sys.ready then
+                            local ap = entry.frame.AbsolutePosition
+                            local as = entry.frame.AbsoluteSize
+                            if as.X > 8 then
+                                initSys(sys, ap.X, ap.Y + particleYOffset, as.X, as.Y)
+                            else allReady = false end
+                        end
+                    end
+                    if allReady then break end
+                end
+            end)
         end
 
-        function wm:SetOrbit(v)
-            showOrbit = v
+        -- ── Public API ───────────────────────────────────────────────
+        local WM = {}
+
+        function WM:Show()      targetA = 1 end
+        function WM:Hide()      targetA = 0 end
+        function WM:Toggle()    if targetA > 0.5 then self:Hide() else self:Show() end end
+        function WM:IsVisible() return targetA > 0.5 end
+        function WM:SetTitle(txt) titleText = txt; titleLbl.Text = txt end
+
+        -- Raw position (instant)
+        function WM:SetPosition(pos)
+            if typeof(pos)=="UDim2" then
+                snapPos(pos.X.Offset, pos.Y.Offset)
+            elseif typeof(pos)=="Vector2" then
+                snapPos(pos.X, pos.Y)
+            end
         end
 
-        function wm:SetSegmentCount(n)
-            n = math.clamp(math.floor(n), 3, 48)
-            rebuildOrbitLines(n)
-        end
+        -- Smooth moves
+        function WM:MoveTopLeft()     moveTopLeft()    end
+        function WM:MoveTopRight()    moveTopRight()   end
+        function WM:MoveBottomLeft()  moveBottomLeft() end
+        -- MoveBottomRight intentionally removed per request
 
-        function wm:SetParticleCount(n)
-            pCount = math.clamp(math.floor(n), 2, 50)
-            makeParticles()
+        -- Drag
+        function WM:SetDrag(state)
+            dragEnabled_ = state
+            if not state then
+                isDragging = false
+                -- Reset to top-right when drag is disabled
+                moveTopRight()
+            end
         end
+        function WM:IsDragEnabled() return dragEnabled_ end
 
-        function wm:SetConnectDist(d)
+        -- Particle Y offset nudge (for coordinate tuning)
+        function WM:SetParticleYOffset(v)
+            particleYOffset = v
+            -- force re-init on next frame so positions are recalculated
+            for _, sys in pairs(entryToSys) do
+                sys.ready = false
+            end
+        end
+        function WM:GetParticleYOffset() return particleYOffset end
+
+        -- Particle customisation
+        function WM:SetParticleColors(c1, c2)
+            if c1 then particleColor1 = c1 end
+            if c2 then particleColor2 = c2 end
+        end
+        function WM:SetParticleCount(n, cd)
+            n = math.clamp(math.round(n), 2, 30)
+            rebuildParticles(n, cd)
+        end
+        function WM:SetConnectDist(d)
             connectDist = d
         end
-
-        function wm:SetParticleSpeed(near, far)
-            if near then speedNear = near end
-            if far  then speedFar  = far  end
+        function WM:SetParticleSpeed(near, far)
+            if near then SPEED_NEAR = near end
+            if far  then SPEED_FAR  = far  end
         end
 
-        function wm:SetParticleOffsetY(v)
-            pOffsetY = v
-        end
-
-        function wm:SetParticleColors(c1, c2)
-            if c1 then pColor1 = c1 end
-            if c2 then pColor2 = c2 end
-            -- re-randomize colors on particles
-            for _, p in ipairs(particles) do
-                p.col = pColor1:Lerp(pColor2, math.random())
+        -- Orbit
+        function WM:SetOrbitEnabled(state)
+            orbitEnabled = state
+            if not state then
+                for _, l in ipairs(orbitLines) do l.Transparency = 0 end
             end
         end
+        function WM:IsOrbitEnabled() return orbitEnabled end
 
-        return wm
+        -- Logo segment count
+        function WM:SetSegmentCount(n)
+            n = math.clamp(math.round(n), 2, 24)
+            SEG_COUNT = n
+            rebuildLogoSegs(n)
+        end
+        function WM:GetSegmentCount() return SEG_COUNT end
+
+        -- 3D "on the plane" mode
+        function WM:SetOnThePlane(state)
+            onThePlane = state
+        end
+        function WM:IsOnThePlane() return onThePlane end
+
+        function WM:Destroy()
+            for _, c in ipairs(conns) do c:Disconnect() end
+            for _, c in ipairs(dragInputConns) do c:Disconnect() end
+            for _, d in ipairs(drawObjs) do pcall(function() d:Remove() end) end
+            gui:Destroy()
+        end
+
+        return WM
     end
 
     if ctx.onLoad then ctx.onLoad() end
