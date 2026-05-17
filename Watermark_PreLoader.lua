@@ -525,11 +525,39 @@ return function(ctx)
         local fpsTimer = 0
         local lastMin = -1
 
-        local function getVisualSize()
+        local function getVisualSize(scaleOverride)
             local unscaled = row.AbsoluteSize
-            local scale = uiScale.Scale
+            local scale = scaleOverride or uiScale.Scale
             if scale <= 0 then scale = 0.0001 end
             return Vector2.new(unscaled.X * scale, unscaled.Y * scale)
+        end
+
+        local function waitForStableLayout(timeout, targetScale)
+            local started = os.clock()
+            local stableFrames = 0
+            local lastX, lastY = -1, -1
+            targetScale = targetScale or UI_SCALE_VISIBLE
+
+            while os.clock() - started < (timeout or 2) do
+                RunService.Heartbeat:Wait()
+
+                local size = getVisualSize(targetScale)
+                local x = math.round(size.X)
+                local y = math.round(size.Y)
+                local ready = x > 20 and y > 10 and gui.Parent ~= nil
+
+                if ready and x == lastX and y == lastY then
+                    stableFrames += 1
+                else
+                    stableFrames = 0
+                end
+
+                lastX, lastY = x, y
+
+                if stableFrames >= 5 then
+                    break
+                end
+            end
         end
 
         local function savePos(px, py)
@@ -622,9 +650,10 @@ return function(ctx)
 
         local function moveTopRight()
             waitAndMove(function()
+                waitForStableLayout(2, UI_SCALE_VISIBLE)
                 local cam = workspace.CurrentCamera
                 local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
-                local sz = getVisualSize()
+                local sz = getVisualSize(UI_SCALE_VISIBLE)
                 setTargetPos(vp.X - sz.X - MARGIN_X, MARGIN_Y)
             end)
         end
@@ -819,11 +848,7 @@ return function(ctx)
         targetA = 1
 
         task.spawn(function()
-            local waited = 0
-            while row.AbsoluteSize.X < 8 and waited < 1 do
-                task.wait(0.05)
-                waited += 0.05
-            end
+            waitForStableLayout(2, UI_SCALE_VISIBLE)
 
             local savedNX = MacLib:GetData("WM_PosNX", nil)
             local savedNY = MacLib:GetData("WM_PosNY", nil)
@@ -831,7 +856,10 @@ return function(ctx)
                 local px, py = normToPixel(savedNX, savedNY)
                 snapPos(px, py)
             else
-                moveTopRight()
+                local cam = workspace.CurrentCamera
+                local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+                local sz = getVisualSize(UI_SCALE_VISIBLE)
+                snapPos(vp.X - sz.X - MARGIN_X, MARGIN_Y)
             end
         end)
 
