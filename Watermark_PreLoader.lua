@@ -1,4 +1,4 @@
--- Watermark_PreLoader.lua  (v11)
+-- Watermark_PreLoader.lua  (v12)
 return function(ctx)
     local MacLib     = ctx.MacLib
     local RunService = game:GetService("RunService")
@@ -9,7 +9,7 @@ return function(ctx)
     local function rand(a,b)   return a+math.random()*(b-a) end
     local function clamp(v,a,b) return math.max(a,math.min(b,v)) end
 
-    local GUI_INSET_Y = 58   -- Roblox topbar inset; Drawing starts at 0, GUI at 28
+    local GUI_INSET_Y = 58
 
     local function GetGui()
         local g = Instance.new("ScreenGui")
@@ -27,7 +27,7 @@ return function(ctx)
         end
         return g
     end
-print('2')
+
     -- ════════════════════════════════════════════════════════════════════
     function MacLib:Watermark(cfg)
         cfg = cfg or {}
@@ -38,15 +38,9 @@ print('2')
 
         local particleColor1       = cfg.ParticleColor1       or Color3.fromRGB(72, 138, 255)
         local particleColor2       = cfg.ParticleColor2       or Color3.fromRGB(140, 90, 255)
-        local particleCount        = cfg.ParticleCount        or 9
-        local connectDist          = cfg.ConnectDist          or 58
-        local particleTransparency = cfg.ParticleTransparency or 0.0   -- 0=opaque extra, 1=fully transparent
-
-        local posX, posY = 124, 22
-        if cfg.Position then
-            if typeof(cfg.Position)=="UDim2" then posX=cfg.Position.X.Offset; posY=cfg.Position.Y.Offset
-            elseif typeof(cfg.Position)=="Vector2" then posX=cfg.Position.X; posY=cfg.Position.Y end
-        end
+        local particleCount        = cfg.ParticleCount        or 8
+        local connectDist          = cfg.ConnectDist          or 30
+        local particleTransparency = cfg.ParticleTransparency or 0.20
 
         local MARGIN   = 22
         local UI_SCALE = 0.80
@@ -60,7 +54,7 @@ print('2')
         anchor.BorderSizePixel        = 0
         anchor.AutomaticSize          = Enum.AutomaticSize.XY
         anchor.AnchorPoint            = Vector2.new(0,0)
-        anchor.Position               = UDim2.fromOffset(posX, posY)
+        anchor.Position               = UDim2.fromOffset(0, MARGIN+8)
         anchor.Parent                 = gui
 
         local uiScale = Instance.new("UIScale")
@@ -158,14 +152,14 @@ print('2')
         logoHolder.BorderSizePixel   = 0
         logoHolder.Parent            = logoEntry.frame
 
-        -- Logo dots (segments)
-        local SEG_COUNT   = cfg.SegmentCount or 10
+        -- Logo segments
+        local SEG_COUNT   = cfg.SegmentCount or 17
         local DOT_SZ      = 2.5
         local LOGO_R      = 7
         local logoSegs    = {}
         local logoAngleSm = 0
         local logoAngleTg = 0
-        local onThePlane  = false
+        local onThePlane  = cfg.OnThePlane ~= nil and cfg.OnThePlane or true
 
         local function rebuildLogoSegs(n)
             for _, s in ipairs(logoSegs) do s.dot:Destroy() end
@@ -195,25 +189,17 @@ print('2')
             return d
         end
 
-        -- Orbit outline: lines connecting the logo SEGMENT DOTS.
-        -- Drawn in Drawing space; positions taken from each dot's AbsolutePosition.
-        -- Forms an irregular closed polygon following the actual dot positions.
+        -- Orbit outline lines (connect segment dots)
         local orbitLines   = {}
-        local orbitEnabled = true
-
-        local function buildOrbit()
-            for _, l in ipairs(orbitLines) do pcall(function() l:Remove() end) end
-            orbitLines = {}
-            -- one line per segment (connecting seg[i] → seg[i+1], last → first)
-        end
-        buildOrbit()
+        local orbitEnabled = cfg.OrbitEnabled ~= nil and cfg.OrbitEnabled or true
 
         local function ensureOrbitLines()
             local need = #logoSegs
             while #orbitLines < need do
                 local l = D("Line")
-                l.Thickness    = 0.8
-                l.Transparency = 0.5
+                l.Thickness    = 1.1
+                l.Transparency = 0.55
+                l.Color        = Color3.fromRGB(255,255,255)
                 l.ZIndex       = 8
                 table.insert(orbitLines, l)
             end
@@ -312,16 +298,12 @@ print('2')
 
         -- ════════════════════════════════════════════════════════════════
         -- PARTICLE SYSTEM
-        --
-        -- Coordinate fix: IgnoreGuiInset=true means GUI Y=0 aligns with
-        -- screen top (same as Drawing Y=0). But Roblox adds a 28px inset
-        -- to AbsolutePosition reported by frames when the ScreenGui uses
-        -- IgnoreGuiInset=true in some executor environments.
-        -- We compensate by adding GUI_INSET_Y=28 to all Y sampling.
+        -- GUI_INSET_Y=58 compensates for executor/inset offset so that
+        -- Drawing coordinates align with IgnoreGuiInset=true GUI frames.
         -- ════════════════════════════════════════════════════════════════
 
-        local SPEED_NEAR = 18
-        local SPEED_FAR  = 5
+        local SPEED_NEAR = cfg.SpeedNear or 50
+        local SPEED_FAR  = cfg.SpeedFar  or 25
         local R_NEAR     = 2.2
         local R_FAR      = 0.8
         local globalT    = 0
@@ -348,12 +330,12 @@ print('2')
                     phaseOff = rand(0, math.pi*2),
                     dot      = D("Circle"),
                 }
-                p.dot.Filled      = true
-                p.dot.Color       = particleColor1
-                p.dot.Radius      = 1
+                p.dot.Filled       = true
+                p.dot.Color        = particleColor1
+                p.dot.Radius       = 1
                 p.dot.Transparency = 0
-                p.dot.NumSides    = 12
-                p.dot.ZIndex      = 9
+                p.dot.NumSides     = 12
+                p.dot.ZIndex       = 9
                 pts[i] = p
             end
             local lines = {}
@@ -386,7 +368,6 @@ print('2')
 
         local function tickSys(sys, dt, ax, ay, aw, ah, globalAlpha)
             if not sys.ready then return end
-            -- Move with bounds when dragging
             local dax = ax - sys.ax; local day = ay - sys.ay
             if math.abs(dax)>1 or math.abs(day)>1 then
                 for _, p in ipairs(sys.pts) do
@@ -420,7 +401,6 @@ print('2')
 
                 local r      = lerp(R_FAR, R_NEAR, p.z)
                 local pulseR = r*(0.88+0.12*math.sin(globalTime*1.8+p.phaseOff))
-                -- base opacity with user transparency setting
                 local baseOp  = lerp(0.18, 0.60, p.z)
                 local finalOp = baseOp * globalAlpha * (1 - particleTransparency)
                 local pT      = (globalT + p.phaseOff/(math.pi*2)*0.3)%1
@@ -453,14 +433,13 @@ print('2')
             end
         end
 
-        -- Build systems: logo chip + title + fps + time
+        -- Only title / fps / time chips get particles (no logo chip)
         local entryToSys = {}
-        entryToSys[logoEntry]  = buildSys(particleCount)
         entryToSys[titleEntry] = buildSys(particleCount)
         if fpsEntry  then entryToSys[fpsEntry]  = buildSys(particleCount) end
         if timeEntry then entryToSys[timeEntry] = buildSys(particleCount) end
 
-        -- Deferred init
+        -- Deferred init: wait for valid AbsoluteSize
         task.spawn(function()
             local waited = 0
             while waited < 4 do
@@ -483,11 +462,11 @@ print('2')
         local springP = 0; local springV = 0; local targetA = 1
         local SPRING_K = 120; local SPRING_D = 16
 
-        local dragTargetX = posX; local dragTargetY = posY
-        local dragCurX    = posX; local dragCurY    = posY
+        local dragTargetX = 0; local dragTargetY = MARGIN+8
+        local dragCurX    = 0; local dragCurY    = MARGIN+8
         local isDragging  = false
         local dragStartMouse  = Vector2.new(0,0)
-        local dragStartAnchor = Vector2.new(posX,posY)
+        local dragStartAnchor = Vector2.new(0,0)
         local DRAG_SPRING = 18
 
         local accentPh  = 0
@@ -516,6 +495,33 @@ print('2')
         local function snapPos(x,y)
             dragTargetX=x; dragTargetY=y; dragCurX=x; dragCurY=y
             anchor.Position=UDim2.fromOffset(x,y)
+        end
+
+        -- Position helpers — all use spring via setTargetPos
+        local function waitAndMove(fn)
+            task.spawn(function()
+                local t=0
+                while row.AbsoluteSize.X < 8 and t < 0.5 do task.wait(0.05); t+=0.05 end
+                fn()
+            end)
+        end
+
+        local function moveTopLeft()
+            setTargetPos(50, MARGIN+40)
+        end
+        local function moveTopRight()
+            waitAndMove(function()
+                local vp = workspace.CurrentCamera.ViewportSize
+                local w  = row.AbsoluteSize.X
+                setTargetPos(vp.X - w - MARGIN, MARGIN+8)
+            end)
+        end
+        local function moveBottomLeft()
+            waitAndMove(function()
+                local vp = workspace.CurrentCamera.ViewportSize
+                local h  = row.AbsoluteSize.Y
+                setTargetPos(50, vp.Y-h-MARGIN)
+            end)
         end
 
         -- ── Connections ───────────────────────────────────────────────
@@ -565,17 +571,14 @@ print('2')
             applyProgress(springP)
             gui.Enabled = springP > 0.008
 
-            -- smooth pos spring
+            -- smooth position spring
             dragCurX = lerp(dragCurX, dragTargetX, clamp(dt*DRAG_SPRING,0,1))
             dragCurY = lerp(dragCurY, dragTargetY, clamp(dt*DRAG_SPRING,0,1))
             anchor.Position = UDim2.fromOffset(math.round(dragCurX), math.round(dragCurY))
 
-            -- orbit outline: lines connecting actual logo segment dot positions
-            -- Each dot's AbsolutePosition is a real screen coord; add GUI_INSET_Y.
+            -- orbit outline: lines through actual screen positions of segment dots
             ensureOrbitLines()
             if orbitEnabled and springP > 0.05 and #logoSegs >= 2 then
-                local orbitCol   = getParticleColor(globalT, 0.6)
-                local orbitAlpha = 0.45 * (1-particleTransparency)
                 for i = 1, #logoSegs do
                     local s1 = logoSegs[i]
                     local s2 = logoSegs[(i%#logoSegs)+1]
@@ -583,16 +586,11 @@ print('2')
                     local ap2 = s2.dot.AbsolutePosition
                     local sz1 = s1.dot.AbsoluteSize
                     local sz2 = s2.dot.AbsoluteSize
-                    local p1x = ap1.X + sz1.X*0.5
-                    local p1y = ap1.Y + sz1.Y*0.5 + GUI_INSET_Y
-                    local p2x = ap2.X + sz2.X*0.5
-                    local p2y = ap2.Y + sz2.Y*0.5 + GUI_INSET_Y
                     local l = orbitLines[i]
                     if l then
-                        l.From        = Vector2.new(p1x, p1y)
-                        l.To          = Vector2.new(p2x, p2y)
-                        l.Color       = orbitCol
-                        l.Transparency = orbitAlpha
+                        l.From  = Vector2.new(ap1.X+sz1.X*0.5, ap1.Y+sz1.Y*0.5+GUI_INSET_Y)
+                        l.To    = Vector2.new(ap2.X+sz2.X*0.5, ap2.Y+sz2.Y*0.5+GUI_INSET_Y)
+                        l.Transparency = 0.55 * particleTransparency > 0.9 and 0 or 0.55
                     end
                 end
             else
@@ -681,38 +679,16 @@ print('2')
             end))
         end
         setupDrag()
+
+        -- Start at Top-right on first frame
         applyProgress(0); targetA=1
-
-        -- ── Position helpers ──────────────────────────────────────────
-        local function waitAndMove(fn)
-            task.spawn(function()
-                local t=0
-                while row.AbsoluteSize.X < 8 and t < 0.5 do task.wait(0.05); t+=0.05 end
-                fn()
-            end)
-        end
-
-        local function moveTopLeft()
-            setTargetPos(50, MARGIN+40)  -- left but lower
-        end
-        local function moveTopRight()
-            waitAndMove(function()
-                local vp=workspace.CurrentCamera.ViewportSize
-                local w=row.AbsoluteSize.X
-                setTargetPos(vp.X-w-MARGIN, MARGIN+8)
-            end)
-        end
-        local function moveBottomLeft()
-            waitAndMove(function()
-                local vp=workspace.CurrentCamera.ViewportSize
-                local h=row.AbsoluteSize.Y
-                setTargetPos(50, vp.Y-h-MARGIN)  -- same X as top-left (further left)
-            end)
-        end
+        task.spawn(function()
+            task.wait()   -- one frame so AbsoluteSize is ready
+            moveTopRight()
+        end)
 
         -- ── Rebuild particle systems ───────────────────────────────────
         local function rebuildAllParticles(n)
-            -- remove old
             for _, sys in pairs(entryToSys) do
                 for _, p in ipairs(sys.pts) do pcall(function() p.dot:Remove() end) end
                 for i=1,#sys.pts do
@@ -733,7 +709,7 @@ print('2')
             drawObjs = kept
 
             particleCount = n
-            entryToSys[logoEntry]  = buildSys(n)
+            entryToSys = {}
             entryToSys[titleEntry] = buildSys(n)
             if fpsEntry  then entryToSys[fpsEntry]  = buildSys(n) end
             if timeEntry then entryToSys[timeEntry] = buildSys(n) end
