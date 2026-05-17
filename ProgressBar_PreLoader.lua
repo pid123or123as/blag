@@ -1,30 +1,3 @@
---[[
-    MacLib PreLoader Module — ProgressBar
-    
-    Использование:
-        MacLib:Preloader("https://raw.githubusercontent.com/.../ProgressBar_Element.lua", {
-            onLoad = function()
-                local pb = mySection:ProgressBar({
-                    Name    = "Health",
-                    Default = 80,
-                    Minimum = 0,
-                    Maximum = 100,
-                    Color   = Color3.fromRGB(60, 200, 100),
-                    Callback = function(v) print("PB:", v) end,
-                }, "PB_Health")
-            end,
-        })
-    
-    После загрузки section:ProgressBar(settings, flag) доступен на любой секции.
-    
-    Методы элемента:
-        pb:SetValue(number)       -- установить значение
-        pb:GetValue()             -- получить текущее значение
-        pb:SetColor(Color3)       -- изменить цвет заливки
-        pb:UpdateName(string)     -- изменить заголовок
-        pb:SetVisibility(bool)    -- показать/скрыть
-]]
-
 return function(ctx)
     local MacLib     = ctx.MacLib
     local TweenService = game:GetService("TweenService")
@@ -118,6 +91,7 @@ return function(ctx)
             IgnoreConfig = false,
             Settings     = settings,
             Value        = settings.Default or min,
+            _frame       = frame,   -- прямая ссылка для CreateCustomElement
         }
 
         local activeTween
