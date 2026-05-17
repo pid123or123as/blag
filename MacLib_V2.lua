@@ -6833,38 +6833,45 @@ function MacLib:Window(Settings)
 	end
 
 	function MacLib:CreateCustomElement(sectionObj, typeName, settings, flag)
-		assert(_customBuilders[typeName],
-			"CreateCustomElement: type '" .. tostring(typeName) ..
-			"' not registered. Call MacLib:RegisterElement first.")
-		-- FIX: snapshot children BEFORE build so we can find the NEW frame afterwards
-		local childrenBefore = {}
-		if sectionObj._frame then
-			for _, c in ipairs(sectionObj._frame:GetChildren()) do
-				childrenBefore[c] = true
-			end
-		end
-		local elementFns = _customBuilders[typeName](sectionObj._frame or sectionObj, settings or {}, flag)
-		-- FIX: find the newly added root frame by diffing children instead of FindFirstChild
-		-- This avoids the nil-LayoutOrder crash when two elements of the same type exist
-		if sectionObj._frame and elementFns then
-			local rootFrame = elementFns._frame  -- prefer direct reference if builder sets it
-			if not rootFrame then
-				for _, c in ipairs(sectionObj._frame:GetChildren()) do
-					if not childrenBefore[c] and c.Name == typeName then
-						rootFrame = c
-						break
-					end
-				end
-			end
-			-- rootFrame.LayoutOrder is already set by the builder via _nextOrder();
-			-- no override needed here. Slot is in the correct position.
-		end
-		if flag ~= nil and elementFns ~= nil then
-			elementFns.Class = elementFns.Class or typeName
-			MacLib.Options[flag] = elementFns
-		end
-		return elementFns
-	end
+    assert(customBuilders[typeName], ...)
+
+    local childrenBefore = {}
+    if sectionObj.frame then
+        for _, c in ipairs(sectionObj.frame:GetChildren()) do
+            childrenBefore[c] = true
+        end
+    end
+
+    -- ✅ FIX: резервируем LayoutOrder ДО вызова билдера
+    local reservedOrder
+    if sectionObj.nextOrder then
+        reservedOrder = sectionObj.nextOrder()
+    end
+
+    local elementFns = customBuilders[typeName](sectionObj.frame, settings, flag)
+
+    -- ✅ FIX: применяем зарезервированный порядок к новому frame
+    if reservedOrder and sectionObj.frame and elementFns then
+        local rootFrame = elementFns._frame or elementFns.frame
+        if not rootFrame then
+            for _, c in ipairs(sectionObj.frame:GetChildren()) do
+                if not childrenBefore[c] then
+                    rootFrame = c
+                    break
+                end
+            end
+        end
+        if rootFrame then
+            rootFrame.LayoutOrder = reservedOrder
+        end
+    end
+
+    if flag ~= nil and elementFns ~= nil then
+        elementFns.Class = elementFns.Class or typeName
+        MacLib.Options[flag] = elementFns
+    end
+    return elementFns
+end
 	-- === EXTENDED API ===
 
 	--[[
