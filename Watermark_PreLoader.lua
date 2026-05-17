@@ -1,4 +1,4 @@
--- Watermark_PreLoader.lua  (v12)
+-- Watermark_PreLoader.lua  (v13)
 return function(ctx)
     local MacLib     = ctx.MacLib
     local RunService = game:GetService("RunService")
@@ -31,9 +31,9 @@ return function(ctx)
     -- ════════════════════════════════════════════════════════════════════
     function MacLib:Watermark(cfg)
         cfg = cfg or {}
-        local titleText   = cfg.Title    or "Watermark"
-        local showFPS     = cfg.ShowFPS  ~= false
-        local showTime    = cfg.ShowTime ~= false
+        local titleText    = cfg.Title    or "Watermark"
+        local showFPS      = cfg.ShowFPS  ~= false
+        local showTime     = cfg.ShowTime ~= false
         local dragEnabled_ = cfg.Drag ~= nil and cfg.Drag or (not isMobile)
 
         local particleColor1       = cfg.ParticleColor1       or Color3.fromRGB(72, 138, 255)
@@ -45,6 +45,11 @@ return function(ctx)
         local MARGIN   = 22
         local UI_SCALE = 0.80
 
+        -- ── Position state ────────────────────────────────────────────
+        -- Stored as fractions of viewport (0..1) so position is
+        -- resolution-independent and can be persisted via MacLib:SetData.
+        local posNX, posNY   -- normalised [0..1], nil until first layout
+
         -- ── Root GUI ──────────────────────────────────────────────────
         local gui = GetGui(); gui.Name = "MacLibWatermark"
 
@@ -54,7 +59,7 @@ return function(ctx)
         anchor.BorderSizePixel        = 0
         anchor.AutomaticSize          = Enum.AutomaticSize.XY
         anchor.AnchorPoint            = Vector2.new(0,0)
-        anchor.Position               = UDim2.fromOffset(0, MARGIN+8)
+        anchor.Position               = UDim2.fromOffset(0, 0)
         anchor.Parent                 = gui
 
         local uiScale = Instance.new("UIScale")
@@ -180,7 +185,7 @@ return function(ctx)
         end
         rebuildLogoSegs(SEG_COUNT)
 
-        -- ── All Drawing objects ───────────────────────────────────────
+        -- ── Drawing objects ───────────────────────────────────────────
         local drawObjs = {}
         local function D(t)
             local d = Drawing.new(t)
@@ -189,7 +194,7 @@ return function(ctx)
             return d
         end
 
-        -- Orbit outline lines (connect segment dots)
+        -- Orbit outline
         local orbitLines   = {}
         local orbitEnabled = cfg.OrbitEnabled ~= nil and cfg.OrbitEnabled or true
 
@@ -197,10 +202,10 @@ return function(ctx)
             local need = #logoSegs
             while #orbitLines < need do
                 local l = D("Line")
-                l.Thickness    = 1.1
-                l.Transparency = 0.55
+                l.Thickness    = 0.8
+                l.Transparency = 0.72   -- more transparent than segments
                 l.Color        = Color3.fromRGB(255,255,255)
-                l.ZIndex       = 8
+                l.ZIndex       = 7      -- behind segment dots (ZIndex 3 GUI + Drawing 9)
                 table.insert(orbitLines, l)
             end
             while #orbitLines > need do
@@ -298,8 +303,6 @@ return function(ctx)
 
         -- ════════════════════════════════════════════════════════════════
         -- PARTICLE SYSTEM
-        -- GUI_INSET_Y=58 compensates for executor/inset offset so that
-        -- Drawing coordinates align with IgnoreGuiInset=true GUI frames.
         -- ════════════════════════════════════════════════════════════════
 
         local SPEED_NEAR = cfg.SpeedNear or 50
@@ -433,13 +436,11 @@ return function(ctx)
             end
         end
 
-        -- Only title / fps / time chips get particles (no logo chip)
         local entryToSys = {}
         entryToSys[titleEntry] = buildSys(particleCount)
         if fpsEntry  then entryToSys[fpsEntry]  = buildSys(particleCount) end
         if timeEntry then entryToSys[timeEntry] = buildSys(particleCount) end
 
-        -- Deferred init: wait for valid AbsoluteSize
         task.spawn(function()
             local waited = 0
             while waited < 4 do
@@ -458,12 +459,12 @@ return function(ctx)
             end
         end)
 
-        -- ── Spring / position ─────────────────────────────────────────
+        -- ── Spring ────────────────────────────────────────────────────
         local springP = 0; local springV = 0; local targetA = 1
         local SPRING_K = 120; local SPRING_D = 16
 
-        local dragTargetX = 0; local dragTargetY = MARGIN+8
-        local dragCurX    = 0; local dragCurY    = MARGIN+8
+        local dragTargetX = 0; local dragTargetY = 0
+        local dragCurX    = 0; local dragCurY    = 0
         local isDragging  = false
         local dragStartMouse  = Vector2.new(0,0)
         local dragStartAnchor = Vector2.new(0,0)
@@ -473,6 +474,40 @@ return function(ctx)
         local FPS_N     = 30
         local fpsBuf    = table.create(FPS_N,1/60)
         local fpsBufI   = 1; local fpsTimer=0; local lastMin=-1
+
+        -- Saves normalised position to MacLib custom data
+        local function savePos(px, py)
+            posNX = px; posNY = py
+            MacLib:SetData("WM_PosNX", px)
+            MacLib:SetData("WM_PosNY", py)
+        end
+
+        -- Converts normalised position → pixel, clamped so watermark stays on screen
+        local function normToPixel(nx, ny)
+            local vp = workspace.CurrentCamera.ViewportSize
+            local w  = math.max(row.AbsoluteSize.X, 10)
+            local h  = math.max(row.AbsoluteSize.Y, 10)
+            local px = math.round(clamp(nx * vp.X, 0, vp.X - w))
+            local py = math.round(clamp(ny * vp.Y, 0, vp.Y - h))
+            return px, py
+        end
+
+        -- Converts pixel → normalised
+        local function pixelToNorm(px, py)
+            local vp = workspace.CurrentCamera.ViewportSize
+            return px / vp.X, py / vp.Y
+        end
+
+        local function setTargetPos(x, y)
+            dragTargetX = x; dragTargetY = y
+            savePos(pixelToNorm(x, y))
+        end
+
+        local function snapPos(x, y)
+            dragTargetX=x; dragTargetY=y; dragCurX=x; dragCurY=y
+            anchor.Position = UDim2.fromOffset(x, y)
+            savePos(pixelToNorm(x, y))
+        end
 
         local function applyProgress(p)
             uiScale.Scale = lerp(0.80, 1.0, p)
@@ -491,13 +526,7 @@ return function(ctx)
             accentLine.BackgroundTransparency = lerp(1,0,p)
         end
 
-        local function setTargetPos(x,y) dragTargetX=x; dragTargetY=y end
-        local function snapPos(x,y)
-            dragTargetX=x; dragTargetY=y; dragCurX=x; dragCurY=y
-            anchor.Position=UDim2.fromOffset(x,y)
-        end
-
-        -- Position helpers — all use spring via setTargetPos
+        -- ── Position helpers ──────────────────────────────────────────
         local function waitAndMove(fn)
             task.spawn(function()
                 local t=0
@@ -513,6 +542,7 @@ return function(ctx)
             waitAndMove(function()
                 local vp = workspace.CurrentCamera.ViewportSize
                 local w  = row.AbsoluteSize.X
+                -- Use actual pixel width of row (already includes UIScale effect on AbsoluteSize)
                 setTargetPos(vp.X - w - MARGIN, MARGIN+8)
             end)
         end
@@ -520,14 +550,13 @@ return function(ctx)
             waitAndMove(function()
                 local vp = workspace.CurrentCamera.ViewportSize
                 local h  = row.AbsoluteSize.Y
-                setTargetPos(50, vp.Y-h-MARGIN)
+                setTargetPos(50, vp.Y - h - MARGIN)
             end)
         end
 
         -- ── Connections ───────────────────────────────────────────────
         local conns = {}
 
-        -- Logo RenderStepped
         table.insert(conns, RunService.RenderStepped:Connect(function(dt)
             logoAngleTg = logoAngleTg + dt*22
             logoAngleSm = logoAngleSm + (logoAngleTg-logoAngleSm)*(1-math.exp(-dt*10))
@@ -561,7 +590,6 @@ return function(ctx)
             globalTime = globalTime + dt
             globalT    = (math.sin(globalTime*0.39)+1)*0.5
 
-            -- entrance spring
             local force = SPRING_K*(targetA-springP) - SPRING_D*springV
             springV = springV + force*dt
             springP = clamp(springP+springV*dt, 0, 1)
@@ -571,12 +599,17 @@ return function(ctx)
             applyProgress(springP)
             gui.Enabled = springP > 0.008
 
-            -- smooth position spring
             dragCurX = lerp(dragCurX, dragTargetX, clamp(dt*DRAG_SPRING,0,1))
             dragCurY = lerp(dragCurY, dragTargetY, clamp(dt*DRAG_SPRING,0,1))
             anchor.Position = UDim2.fromOffset(math.round(dragCurX), math.round(dragCurY))
 
-            -- orbit outline: lines through actual screen positions of segment dots
+            -- save normalised pos when dragging (throttled — every 0.2s is fine,
+            -- but here we just always save; SetData is cheap)
+            if isDragging then
+                savePos(pixelToNorm(math.round(dragCurX), math.round(dragCurY)))
+            end
+
+            -- Orbit outline
             ensureOrbitLines()
             if orbitEnabled and springP > 0.05 and #logoSegs >= 2 then
                 for i = 1, #logoSegs do
@@ -590,14 +623,13 @@ return function(ctx)
                     if l then
                         l.From  = Vector2.new(ap1.X+sz1.X*0.5, ap1.Y+sz1.Y*0.5+GUI_INSET_Y)
                         l.To    = Vector2.new(ap2.X+sz2.X*0.5, ap2.Y+sz2.Y*0.5+GUI_INSET_Y)
-                        l.Transparency = 0.55 * particleTransparency > 0.9 and 0 or 0.55
                     end
                 end
             else
                 for _, l in ipairs(orbitLines) do l.Transparency = 0 end
             end
 
-            -- accent underline
+            -- Accent underline
             accentPh = (accentPh+dt*0.6)%(math.pi*2)
             accentLine.BackgroundColor3 = getParticleColor((math.sin(accentPh)+1)*0.5, 0.5)
             local ts = titleLbl.AbsoluteSize
@@ -606,7 +638,7 @@ return function(ctx)
                 accentLine.Position = UDim2.fromOffset(0, BAR_H-3)
             end
 
-            -- particles
+            -- Particles
             if springP > 0.03 then
                 for entry, sys in pairs(entryToSys) do
                     local f  = entry.frame
@@ -680,14 +712,32 @@ return function(ctx)
         end
         setupDrag()
 
-        -- Start at Top-right on first frame
+        -- ── Initial position ──────────────────────────────────────────
+        -- Try to restore saved normalised position via MacLib:GetData.
+        -- If none saved, default to Top-right (computed after layout).
         applyProgress(0); targetA=1
+
         task.spawn(function()
-            task.wait()   -- one frame so AbsoluteSize is ready
-            moveTopRight()
+            -- Wait for row to have a valid size
+            local waited = 0
+            while row.AbsoluteSize.X < 8 and waited < 1 do
+                task.wait(0.05); waited += 0.05
+            end
+
+            local savedNX = MacLib:GetData("WM_PosNX", nil)
+            local savedNY = MacLib:GetData("WM_PosNY", nil)
+
+            if savedNX and savedNY then
+                -- Restore resolution-independent position
+                local px, py = normToPixel(savedNX, savedNY)
+                snapPos(px, py)
+            else
+                -- Default: Top-right
+                moveTopRight()
+            end
         end)
 
-        -- ── Rebuild particle systems ───────────────────────────────────
+        -- ── Rebuild particles ──────────────────────────────────────────
         local function rebuildAllParticles(n)
             for _, sys in pairs(entryToSys) do
                 for _, p in ipairs(sys.pts) do pcall(function() p.dot:Remove() end) end
@@ -699,7 +749,6 @@ return function(ctx)
                     end
                 end
             end
-            -- keep only orbit lines in drawObjs
             local kept={}
             for _, d in ipairs(drawObjs) do
                 local isOrbit=false
@@ -749,6 +798,13 @@ return function(ctx)
         function WM:MoveTopLeft()    moveTopLeft()    end
         function WM:MoveTopRight()   moveTopRight()   end
         function WM:MoveBottomLeft() moveBottomLeft() end
+
+        -- Resets saved position so next launch defaults to Top-right again
+        function WM:ResetPosition()
+            MacLib:SetData("WM_PosNX", nil)
+            MacLib:SetData("WM_PosNY", nil)
+            moveTopRight()
+        end
 
         function WM:SetDrag(state)
             dragEnabled_=state
