@@ -9,12 +9,12 @@ return function(ctx)
     local function rand(a,b)   return a+math.random()*(b-a) end
     local function clamp(v,a,b) return math.max(a,math.min(b,v)) end
 
-    local GUI_INSET_Y = 28   -- Roblox topbar inset; Drawing starts at 0, GUI at 28
+    local GUI_INSET_Y = 38   -- Roblox topbar inset; Drawing starts at 0, GUI at 28
 
     local function GetGui()
         local g = Instance.new("ScreenGui")
         g.ResetOnSpawn   = false
-        g.DisplayOrder   = 9998
+        g.DisplayOrder   = 1999823
         g.IgnoreGuiInset = true
         g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
         local ok
