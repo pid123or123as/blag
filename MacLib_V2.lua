@@ -7797,4 +7797,234 @@ end
 			end
 		end)
 	end
+
+	-- ============================================================
+	-- V11 EXTENDED API
+	-- ============================================================
+
+	--[[
+		MacLib:Extend(name, fn)
+		Добавляет (или заменяет) метод прямо в таблицу MacLib.
+		Используется внешними модулями, чтобы патчить MacLib так же,
+		как это делает KeySystem (MacLib:KeySystem = ...).
+		Аналог Object.assign / prototype extension.
+
+		Пример:
+		  MacLib:Extend("KeySystem", function(self, cfg)
+		    -- build overlay, return { Show, Hide, Destroy, SetKey }
+		  end)
+		  local ks = MacLib:KeySystem({...})
+	]]
+	function MacLib:Extend(name, fn)
+		assert(type(name) == "string", "[MacLib:Extend] name must be a string")
+		assert(type(fn) == "function", "[MacLib:Extend] fn must be a function")
+		MacLib[name] = function(self, ...)
+			return fn(self, ...)
+		end
+	end
+
+	--[[
+		MacLib:ExtendSection(name, fn)
+		Алиас / обёртка над MacLib:PatchSection.
+		Добавляет метод во все существующие и будущие секции.
+		Предпочтительный API для расширений вместо прямого PatchSection.
+
+		Пример:
+		  MacLib:ExtendSection("ProgressBar", function(self, settings, flag)
+		    return MacLib:CreateCustomElement(self, "ProgressBar", settings, flag)
+		  end)
+		  section:ProgressBar({ Name = "Load", Default = 0 }, "PB")
+	]]
+	function MacLib:ExtendSection(name, fn)
+		assert(type(name) == "string", "[MacLib:ExtendSection] name must be a string")
+		assert(type(fn) == "function", "[MacLib:ExtendSection] fn must be a function")
+		MacLib:PatchSection(name, fn)
+	end
+
+	--[[
+		MacLib:Hook(name, hookFn)
+		Перехватывает существующий метод MacLib.
+		hookFn получает (original, ...) — original это исходная функция.
+		Позволяет реализовывать pre/post-логику без разрушения оригинала.
+
+		Пример (post-hook — логировать каждый Notify):
+		  MacLib:Hook("Notify", function(original, self, settings)
+		    settings.Title = "[Hooked] " .. (settings.Title or "")
+		    return original(self, settings)
+		  end)
+
+		Пример (pre-hook — блокировать пустые уведомления):
+		  MacLib:Hook("Notify", function(original, self, settings)
+		    if not settings.Description or settings.Description == "" then return end
+		    return original(self, settings)
+		  end)
+	]]
+	function MacLib:Hook(name, hookFn)
+		assert(type(name) == "string",   "[MacLib:Hook] name must be a string")
+		assert(type(hookFn) == "function", "[MacLib:Hook] hookFn must be a function")
+		local original = MacLib[name]
+		assert(type(original) == "function",
+			"[MacLib:Hook] '" .. name .. "' is not an existing MacLib method — cannot hook")
+		MacLib[name] = function(self, ...)
+			return hookFn(original, self, ...)
+		end
+	end
+
+	--[[
+		MacLib:WatchOption(flag, fn)
+		Подписывается на изменение значения элемента по флагу,
+		НЕ заменяя исходный Callback. Все watcher-ы вызываются
+		после оригинального Callback через task.spawn.
+
+		fn(value, alpha?) — сигнатура совпадает с Callback элемента.
+
+		Поддерживаемые типы: Toggle, Slider, Input, Dropdown, Colorpicker.
+		Для остальных типов watcher не будет вызван.
+
+		Возвращает функцию disconnect(), которая снимает watcher.
+
+		Пример:
+		  local stop = MacLib:WatchOption("SpeedFlag", function(v)
+		    print("Speed changed to", v)
+		  end)
+		  -- позже:
+		  stop()
+	]]
+	MacLib._watchers = MacLib._watchers or {}
+
+	function MacLib:WatchOption(flag, fn)
+		assert(type(flag) == "string",  "[MacLib:WatchOption] flag must be a string")
+		assert(type(fn)   == "function","[MacLib:WatchOption] fn must be a function")
+
+		MacLib._watchers[flag] = MacLib._watchers[flag] or {}
+		local id = {} -- unique key
+		MacLib._watchers[flag][id] = fn
+
+		local opt = MacLib.Options[flag]
+		if opt and not opt._watcherPatched then
+			opt._watcherPatched = true
+			local origCB = opt.Settings and opt.Settings.Callback
+			if opt.Settings then
+				opt.Settings.Callback = function(...)
+					local args = {...}
+					if origCB then origCB(table.unpack(args)) end
+					local watchers = MacLib._watchers[flag]
+					if watchers then
+						for _, wfn in next, watchers do
+							task.spawn(wfn, table.unpack(args))
+						end
+					end
+				end
+			end
+		end
+
+		return function()
+			if MacLib._watchers[flag] then
+				MacLib._watchers[flag][id] = nil
+			end
+		end
+	end
+
+	--[[
+		MacLib:BatchSet(tbl)
+		Массово применяет значения к flagged-элементам.
+		tbl — таблица вида { [flag] = value, ... }.
+		Использует UpdateState / UpdateValue / UpdateSelection /
+		UpdateText / SetColor в зависимости от класса элемента.
+		silent = true предотвращает вызов Callback при установке.
+
+		Пример:
+		  MacLib:BatchSet({
+		    Enabled  = true,      -- Toggle
+		    Speed    = 75,        -- Slider
+		    Fruit    = "Mango",   -- Dropdown
+		    Nickname = "Player",  -- Input
+		  })
+	]]
+	function MacLib:BatchSet(tbl, silent)
+		assert(type(tbl) == "table", "[MacLib:BatchSet] tbl must be a table")
+		for flag, value in next, tbl do
+			local opt = MacLib.Options[flag]
+			if not opt then continue end
+			local class = opt.Class
+			local ok = pcall(function()
+				if class == "Toggle" then
+					opt:UpdateState(value, silent)
+				elseif class == "Slider" then
+					opt:UpdateValue(value, silent)
+				elseif class == "Dropdown" then
+					opt:UpdateSelection(value)
+				elseif class == "Input" then
+					if opt.UpdateText then opt:UpdateText(value)
+					elseif opt.GetInput then opt.Settings.Placeholder = value end
+				elseif class == "Colorpicker" then
+					if type(value) == "table" then
+						if value.color then opt:SetColor(value.color) end
+						if value.alpha ~= nil then opt:SetAlpha(value.alpha) end
+					elseif typeof(value) == "Color3" then
+						opt:SetColor(value)
+					end
+				end
+			end)
+			if not ok then
+				warn("[MacLib:BatchSet] Failed to set flag '" .. tostring(flag) .. "'")
+			end
+		end
+	end
+
+	--[[
+		MacLib:RemoveOption(flag)
+		Удаляет элемент из реестра MacLib.Options.
+		Если у элемента есть поле .frame или .rootFrame — уничтожает UI.
+		Также снимает все WatchOption-подписки для этого флага.
+
+		Возвращает true если элемент был найден и удалён, иначе false.
+
+		Пример:
+		  MacLib:RemoveOption("MyToggle")
+	]]
+	function MacLib:RemoveOption(flag)
+		assert(type(flag) == "string", "[MacLib:RemoveOption] flag must be a string")
+		local opt = MacLib.Options[flag]
+		if not opt then return false end
+
+		-- Уничтожить UI если есть rootFrame / frame
+		local frame = opt.frame or opt.rootFrame
+		if frame and typeof(frame) == "Instance" and frame.Parent then
+			pcall(function() frame:Destroy() end)
+		end
+
+		-- Снять watchers
+		if MacLib._watchers and MacLib._watchers[flag] then
+			MacLib._watchers[flag] = nil
+		end
+
+		-- Удалить из реестра
+		MacLib.Options[flag] = nil
+		return true
+	end
+
+	--[[
+		MacLib:GetOptions()
+		Возвращает копию таблицы всех flagged-элементов (MacLib.Options).
+		Безопасна для итерации — изменение результата не влияет на реестр.
+
+		Пример:
+		  local opts = MacLib:GetOptions()
+		  for flag, element in next, opts do
+		    print(flag, element.Class)
+		  end
+	]]
+	function MacLib:GetOptions()
+		local copy = {}
+		for k, v in next, MacLib.Options do
+			copy[k] = v
+		end
+		return copy
+	end
+
+	-- ============================================================
+	-- END V11 EXTENDED API
+	-- ============================================================
+
 return MacLib
