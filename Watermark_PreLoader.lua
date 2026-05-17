@@ -1,14 +1,15 @@
--- Watermark_PreLoader.lua  (v4 — ScreenGui + Drawing effects)
--- ScreenGui: основа UI (чипы, текст, иконки)
--- Drawing: фоновые частицы/линии поверх всего (эффект элитного чита)
--- Spring-анимация через Heartbeat lerp, FPS rolling avg, fixed-width chips
+-- Watermark_PreLoader.lua  (v5)
+-- Layout: [Logo circle] [Syllinse Project chip] [FPS chip] [Time chip]
+-- Effects: constellation particles (Drawing lines+circles) confined inside each chip bounds
+-- Spring animation via Heartbeat lerp
 
 return function(ctx)
-    local MacLib       = ctx.MacLib
-    local TweenService = game:GetService("TweenService")
-    local RunService   = game:GetService("RunService")
+    local MacLib     = ctx.MacLib
+    local RunService = game:GetService("RunService")
 
     local function lerp(a, b, t) return a + (b - a) * t end
+    local function clamp(v, mn, mx) return math.max(mn, math.min(mx, v)) end
+    local function rand(a, b) return a + math.random() * (b - a) end
 
     local function GetGui()
         local g = Instance.new("ScreenGui")
@@ -18,49 +19,54 @@ return function(ctx)
         g.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
         local ok
         if gethui then ok = pcall(function() g.Parent = gethui() end) end
-        if not ok or not g.Parent then ok = pcall(function() g.Parent = game:GetService("CoreGui") end) end
+        if not ok or not g.Parent then
+            ok = pcall(function() g.Parent = game:GetService("CoreGui") end)
+        end
         if not ok or not g.Parent then
             g.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
         end
         return g
     end
 
-    -- ──────────────────────────────────────────────────────────────────────
+    -- ══════════════════════════════════════════════════════════════════════
     function MacLib:Watermark(cfg)
         cfg = cfg or {}
         local titleText = cfg.Title    or "Watermark"
         local showFPS   = cfg.ShowFPS  ~= false
         local showTime  = cfg.ShowTime ~= false
-        local initPos   = cfg.Position or UDim2.fromOffset(22, 22)
 
-        -- ── ScreenGui ────────────────────────────────────────────────────
+        -- parse position
+        local initX, initY = 22, 22
+        if cfg.Position then
+            if typeof(cfg.Position) == "UDim2" then
+                initX = cfg.Position.X.Offset
+                initY = cfg.Position.Y.Offset
+            elseif typeof(cfg.Position) == "Vector2" then
+                initX = cfg.Position.X
+                initY = cfg.Position.Y
+            end
+        end
+
+        -- ── GUI ───────────────────────────────────────────────────────────
         local gui = GetGui()
         gui.Name = "MacLibWatermark"
 
-        -- Anchor frame (draggable position)
         local anchor = Instance.new("Frame")
         anchor.Name                   = "WmAnchor"
+        anchor.Position               = UDim2.fromOffset(initX, initY)
         anchor.AnchorPoint            = Vector2.new(0, 0)
         anchor.BackgroundTransparency = 1
         anchor.BorderSizePixel        = 0
         anchor.AutomaticSize          = Enum.AutomaticSize.XY
         anchor.Parent                 = gui
 
-        -- Set initial position from cfg
-        if typeof(initPos) == "UDim2" then
-            anchor.Position = initPos
-        elseif typeof(initPos) == "Vector2" then
-            anchor.Position = UDim2.fromOffset(initPos.X, initPos.Y)
-        end
-
-        -- UIScale for spring animation
         local uiScale = Instance.new("UIScale")
-        uiScale.Scale  = 1
+        uiScale.Scale  = 0.82
         uiScale.Parent = anchor
 
-        -- Row container
+        -- Row that holds all chips
         local row = Instance.new("Frame")
-        row.Name                   = "WmRow"
+        row.Name                   = "Row"
         row.BackgroundTransparency = 1
         row.BorderSizePixel        = 0
         row.AutomaticSize          = Enum.AutomaticSize.XY
@@ -70,142 +76,160 @@ return function(ctx)
         rowList.FillDirection     = Enum.FillDirection.Horizontal
         rowList.VerticalAlignment = Enum.VerticalAlignment.Center
         rowList.SortOrder         = Enum.SortOrder.LayoutOrder
-        rowList.Padding           = UDim.new(0, 0)  -- chips share borders, no gap
+        rowList.Padding           = UDim.new(0, 5)   -- gap between chips
         rowList.Parent            = row
 
-        -- ── Constants ─────────────────────────────────────────────────────
-        local H          = 30
-        local PAD_X      = 11
-        local ICON_SZ    = 14
-        local FONT_BODY  = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium)
-        local FONT_TITLE = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.SemiBold)
-        local TXT_SZ     = 13
+        -- ── Design tokens ────────────────────────────────────────────────
+        local BAR_H        = 32
+        local LOGO_SZ      = 36      -- logo circle diameter
+        local FONT_TITLE   = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.SemiBold)
+        local FONT_BODY    = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium)
+        local TXT_SZ       = 13
+        local ICON_SZ      = 14
+        local PAD_X        = 14     -- inner horizontal padding per chip
+        local PAD_CENTER   = 6      -- extra inner pad to shift content toward center
 
-        -- Color palette (Neverlose-style dark + blue)
-        local COL_BG_TITLE  = Color3.fromRGB(14, 14, 20)
-        local COL_BG_CHIP   = Color3.fromRGB(10, 10, 14)
-        local COL_ACCENT    = Color3.fromRGB(72, 138, 255)
-        local COL_STROKE    = Color3.fromRGB(38, 38, 52)
-        local COL_TEXT_MAIN = Color3.fromRGB(220, 220, 232)
-        local COL_TEXT_MUTE = Color3.fromRGB(138, 138, 155)
-        local COL_SEP       = Color3.fromRGB(38, 38, 52)
+        local COL_BG_TITLE = Color3.fromRGB(13, 13, 20)
+        local COL_BG_CHIP  = Color3.fromRGB(11, 11, 17)
+        local COL_BG_LOGO  = Color3.fromRGB(16, 16, 26)
+        local COL_ACCENT   = Color3.fromRGB(72, 138, 255)
+        local COL_ACCENT2  = Color3.fromRGB(108, 82, 255)
+        local COL_STROKE   = Color3.fromRGB(45, 45, 65)
+        local COL_TXT_MAIN = Color3.fromRGB(218, 218, 232)
+        local COL_TXT_MUTE = Color3.fromRGB(135, 135, 158)
+        local BG_TRANSP    = 0.32   -- frosted glass transparency
 
-        -- Outer border radius
-        local RADIUS = 7
-
-        -- ── Chip factory ──────────────────────────────────────────────────
-        local allChips = {}  -- { frame, content frames/labels }
-        local chipCount = 0
+        -- ── Helper: make a chip frame ─────────────────────────────────────
+        local chipOrder   = 0
+        local allChips    = {}   -- { frame, labels={}, images={}, absPos=fn }
 
         local function makeChip(opts)
-            chipCount += 1
+            chipOrder += 1
             opts = opts or {}
 
-            local chip = Instance.new("Frame")
-            chip.Name                   = "Chip" .. chipCount
-            chip.BackgroundColor3       = opts.bg or COL_BG_CHIP
-            chip.BackgroundTransparency = 0
-            chip.BorderSizePixel        = 0
-            chip.LayoutOrder            = chipCount
-            chip.AutomaticSize          = opts.fixedW and Enum.AutomaticSize.None or Enum.AutomaticSize.X
-            chip.Size                   = opts.fixedW
-                                          and UDim2.fromOffset(opts.fixedW, H)
-                                          or  UDim2.fromOffset(0, H)
-            chip.ClipsDescendants       = false
-            chip.Parent                 = row
+            local frame = Instance.new("Frame")
+            frame.Name                   = "Chip" .. chipOrder
+            frame.BackgroundColor3       = opts.bg or COL_BG_CHIP
+            frame.BackgroundTransparency = BG_TRANSP
+            frame.BorderSizePixel        = 0
+            frame.LayoutOrder            = chipOrder
+            frame.AutomaticSize          = opts.fixedW and Enum.AutomaticSize.None
+                                                       or Enum.AutomaticSize.X
+            frame.Size                   = opts.fixedW
+                and UDim2.fromOffset(opts.fixedW, opts.h or BAR_H)
+                or  UDim2.fromOffset(0, opts.h or BAR_H)
+            frame.ClipsDescendants       = true
+            frame.Parent                 = row
 
-            -- Left separator line (except first chip)
-            if chipCount > 1 then
-                local sep = Instance.new("Frame")
-                sep.Name              = "Sep"
-                sep.AnchorPoint       = Vector2.new(0, 0)
-                sep.Position          = UDim2.fromOffset(0, 0)
-                sep.Size              = UDim2.fromOffset(1, H)
-                sep.BackgroundColor3  = COL_SEP
-                sep.BackgroundTransparency = 0
-                sep.BorderSizePixel   = 0
-                sep.ZIndex            = 2
-                sep.Parent            = chip
+            -- Corner radius
+            local corner = Instance.new("UICorner")
+            corner.CornerRadius = UDim.new(0, opts.radius or 8)
+            corner.Parent       = frame
+
+            -- Stroke (only on some chips)
+            local stroke = nil
+            if opts.stroke then
+                stroke = Instance.new("UIStroke")
+                stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+                stroke.Color           = COL_STROKE
+                stroke.Transparency    = 0
+                stroke.Thickness       = 1
+                stroke.Parent          = frame
             end
 
-            -- Horizontal padding
+            -- Inner padding
             local pad = Instance.new("UIPadding")
-            pad.PaddingLeft  = UDim.new(0, chipCount > 1 and PAD_X + 1 or PAD_X)
-            pad.PaddingRight = UDim.new(0, PAD_X)
-            pad.Parent       = chip
+            pad.PaddingLeft  = UDim.new(0, PAD_X + PAD_CENTER)
+            pad.PaddingRight = UDim.new(0, PAD_X + PAD_CENTER)
+            pad.Parent       = frame
 
-            local entry = { frame = chip, labels = {}, images = {} }
+            local entry = {
+                frame   = frame,
+                stroke  = stroke,
+                labels  = {},
+                images  = {},
+            }
             table.insert(allChips, entry)
             return entry
         end
 
-        -- ── Outer wrapper for rounded corners on the whole bar ───────────
-        -- We wrap all chips in a Frame with UICorner
-        -- The row frame itself is the clipping container
-        local outerWrap = Instance.new("Frame")
-        outerWrap.Name                   = "WmOuter"
-        outerWrap.BackgroundTransparency = 1
-        outerWrap.BorderSizePixel        = 0
-        outerWrap.AutomaticSize          = Enum.AutomaticSize.XY
-        outerWrap.ClipsDescendants       = true
-        outerWrap.Parent                 = anchor
+        -- ── LOGO chip (circle) ────────────────────────────────────────────
+        -- Sits before the title chip, more rounded
+        local logoEntry = makeChip({
+            bg     = COL_BG_LOGO,
+            fixedW = LOGO_SZ,
+            h      = LOGO_SZ,
+            radius = LOGO_SZ,   -- fully circular
+            stroke = false,
+        })
+        -- remove padding on logo so segments fill the circle
+        for _, c in ipairs(logoEntry.frame:GetChildren()) do
+            if c:IsA("UIPadding") then c:Destroy() end
+        end
 
-        -- Move row inside outerWrap
-        row.Parent = outerWrap
+        -- Logo segments (30 rotating ImageLabels)
+        local SEG_COUNT = 30
+        local logoSegments = {}
+        for i = 1, SEG_COUNT do
+            local seg = Instance.new("ImageLabel")
+            seg.Size                   = UDim2.new(1, 0, 1, 0)
+            seg.BackgroundTransparency = 1
+            seg.Image                  = "rbxassetid://7151778302"
+            seg.ImageTransparency      = 0.45
+            seg.Rotation               = (i - 1) * (360 / SEG_COUNT)
+            seg.ZIndex                 = 2
+            seg.Parent                 = logoEntry.frame
 
-        local outerCorner = Instance.new("UICorner")
-        outerCorner.CornerRadius = UDim.new(0, RADIUS)
-        outerCorner.Parent       = outerWrap
+            Instance.new("UICorner", seg).CornerRadius = UDim.new(0.5, 0)
 
-        -- Outer stroke (1px border around entire bar)
-        local outerStroke = Instance.new("UIStroke")
-        outerStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        outerStroke.Color           = COL_STROKE
-        outerStroke.Transparency    = 0
-        outerStroke.Thickness       = 1
-        outerStroke.Parent          = outerWrap
+            local grad = Instance.new("UIGradient")
+            local hue1 = ((i - 1) / SEG_COUNT)
+            local hue2 = ((i)     / SEG_COUNT)
+            grad.Color    = ColorSequence.new(
+                Color3.fromHSV(0.60 + hue1 * 0.08, 0.85, 1),  -- blue range
+                Color3.fromHSV(0.72 + hue2 * 0.06, 0.80, 1)   -- purple range
+            )
+            grad.Rotation = (i - 1) * (360 / SEG_COUNT)
+            grad.Parent   = seg
 
-        -- ── Accent bottom line (animated, sits outside ClipsDescendants) ─
-        -- We put it on a separate Frame overlaid at the bottom
+            table.insert(logoSegments, { seg = seg, grad = grad })
+        end
+
+        -- ── TITLE chip ────────────────────────────────────────────────────
+        local titleEntry = makeChip({ bg = COL_BG_TITLE, stroke = true })
+
+        local titleLbl = Instance.new("TextLabel")
+        titleLbl.FontFace               = FONT_TITLE
+        titleLbl.TextSize               = TXT_SZ
+        titleLbl.TextColor3             = COL_TXT_MAIN
+        titleLbl.BackgroundTransparency = 1
+        titleLbl.BorderSizePixel        = 0
+        titleLbl.AutomaticSize          = Enum.AutomaticSize.X
+        titleLbl.Size                   = UDim2.fromOffset(0, BAR_H)
+        titleLbl.TextXAlignment         = Enum.TextXAlignment.Center
+        titleLbl.Text                   = titleText
+        titleLbl.ZIndex                 = 3
+        titleLbl.Parent                 = titleEntry.frame
+        table.insert(titleEntry.labels, titleLbl)
+
+        -- Thin accent bottom line on title chip
         local accentBar = Instance.new("Frame")
-        accentBar.Name              = "AccentBar"
+        accentBar.Name              = "Accent"
         accentBar.AnchorPoint       = Vector2.new(0, 1)
         accentBar.Position          = UDim2.new(0, 0, 1, 0)
         accentBar.Size              = UDim2.new(1, 0, 0, 1)
         accentBar.BackgroundColor3  = COL_ACCENT
         accentBar.BackgroundTransparency = 0
         accentBar.BorderSizePixel   = 0
-        accentBar.ZIndex            = 10
-        accentBar.Parent            = outerWrap
+        accentBar.ZIndex            = 4
+        accentBar.Parent            = titleEntry.frame
 
-        -- ── Build chips ───────────────────────────────────────────────────
-
-        -- CHIP 1: Title
-        local titleEntry = makeChip({ bg = COL_BG_TITLE })
-
-        local titleLbl = Instance.new("TextLabel")
-        titleLbl.Name                   = "TitleLbl"
-        titleLbl.FontFace               = FONT_TITLE
-        titleLbl.TextSize               = TXT_SZ
-        titleLbl.TextColor3             = COL_TEXT_MAIN
-        titleLbl.BackgroundTransparency = 1
-        titleLbl.BorderSizePixel        = 0
-        titleLbl.AutomaticSize          = Enum.AutomaticSize.X
-        titleLbl.Size                   = UDim2.fromOffset(0, H)
-        titleLbl.TextXAlignment         = Enum.TextXAlignment.Left
-        titleLbl.Text                   = titleText
-        titleLbl.ZIndex                 = 3
-        titleLbl.Parent                 = titleEntry.frame
-        table.insert(titleEntry.labels, titleLbl)
-
-        -- CHIP 2: FPS (icon + number, fixed width)
-        local fpsEntry, fpsLbl, fpsIcon
+        -- ── FPS chip ──────────────────────────────────────────────────────
+        local fpsEntry, fpsIcon, fpsLbl
         if showFPS then
-            fpsEntry = makeChip({ fixedW = 84 })
+            fpsEntry = makeChip({ fixedW = 80, stroke = true })
 
-            -- icon
             fpsIcon = Instance.new("ImageLabel")
-            fpsIcon.Name                   = "FpsIcon"
             fpsIcon.Image                  = "rbxassetid://102994395432803"
             fpsIcon.Size                   = UDim2.fromOffset(ICON_SZ, ICON_SZ)
             fpsIcon.AnchorPoint            = Vector2.new(0, 0.5)
@@ -214,34 +238,29 @@ return function(ctx)
             fpsIcon.BorderSizePixel        = 0
             fpsIcon.ZIndex                 = 3
             fpsIcon.Parent                 = fpsEntry.frame
+            table.insert(fpsEntry.images, fpsIcon)
 
-            -- number label
             fpsLbl = Instance.new("TextLabel")
-            fpsLbl.Name                   = "FpsLbl"
             fpsLbl.FontFace               = FONT_BODY
             fpsLbl.TextSize               = TXT_SZ
-            fpsLbl.TextColor3             = COL_TEXT_MUTE
+            fpsLbl.TextColor3             = COL_TXT_MUTE
             fpsLbl.BackgroundTransparency = 1
             fpsLbl.BorderSizePixel        = 0
-            fpsLbl.AutomaticSize          = Enum.AutomaticSize.None
-            fpsLbl.Size                   = UDim2.new(1, -(ICON_SZ + 4), 1, 0)
-            fpsLbl.Position               = UDim2.fromOffset(ICON_SZ + 4, 0)
-            fpsLbl.TextXAlignment         = Enum.TextXAlignment.Left
+            fpsLbl.Size                   = UDim2.new(1, -(ICON_SZ + 5), 1, 0)
+            fpsLbl.Position               = UDim2.fromOffset(ICON_SZ + 5, 0)
+            fpsLbl.TextXAlignment         = Enum.TextXAlignment.Center
             fpsLbl.Text                   = "--"
             fpsLbl.ZIndex                 = 3
             fpsLbl.Parent                 = fpsEntry.frame
-
             table.insert(fpsEntry.labels, fpsLbl)
-            table.insert(fpsEntry.images, fpsIcon)
         end
 
-        -- CHIP 3: Time (icon + clock, fixed width)
-        local timeEntry, timeLbl, timeIcon
+        -- ── TIME chip ─────────────────────────────────────────────────────
+        local timeEntry, timeIcon, timeLbl
         if showTime then
-            timeEntry = makeChip({ fixedW = 120 })
+            timeEntry = makeChip({ fixedW = 98, stroke = true })
 
             timeIcon = Instance.new("ImageLabel")
-            timeIcon.Name                   = "TimeIcon"
             timeIcon.Image                  = "rbxassetid://17824308575"
             timeIcon.Size                   = UDim2.fromOffset(ICON_SZ, ICON_SZ)
             timeIcon.AnchorPoint            = Vector2.new(0, 0.5)
@@ -250,30 +269,28 @@ return function(ctx)
             timeIcon.BorderSizePixel        = 0
             timeIcon.ZIndex                 = 3
             timeIcon.Parent                 = timeEntry.frame
+            table.insert(timeEntry.images, timeIcon)
 
             timeLbl = Instance.new("TextLabel")
-            timeLbl.Name                   = "TimeLbl"
             timeLbl.FontFace               = FONT_BODY
             timeLbl.TextSize               = TXT_SZ
-            timeLbl.TextColor3             = COL_TEXT_MUTE
+            timeLbl.TextColor3             = COL_TXT_MUTE
             timeLbl.BackgroundTransparency = 1
             timeLbl.BorderSizePixel        = 0
-            timeLbl.AutomaticSize          = Enum.AutomaticSize.None
-            timeLbl.Size                   = UDim2.new(1, -(ICON_SZ + 4), 1, 0)
-            timeLbl.Position               = UDim2.fromOffset(ICON_SZ + 4, 0)
-            timeLbl.TextXAlignment         = Enum.TextXAlignment.Left
-            timeLbl.Text                   = "00:00:00"
+            timeLbl.Size                   = UDim2.new(1, -(ICON_SZ + 5), 1, 0)
+            timeLbl.Position               = UDim2.fromOffset(ICON_SZ + 5, 0)
+            timeLbl.TextXAlignment         = Enum.TextXAlignment.Center
+            timeLbl.Text                   = "00:00"
             timeLbl.ZIndex                 = 3
             timeLbl.Parent                 = timeEntry.frame
-
             table.insert(timeEntry.labels, timeLbl)
-            table.insert(timeEntry.images, timeIcon)
         end
 
-        -- ── Drawing effects layer ─────────────────────────────────────────
-        -- Rendered on top of ScreenGui via Drawing (ZIndex > GUI).
-        -- Effect: animated shimmer lines that follow the watermark position.
-        -- These are purely decorative — the main UI is ScreenGui.
+        -- ════════════════════════════════════════════════════════════════════
+        -- CONSTELLATION PARTICLES  (Drawing, confined to chip bounds)
+        -- Particles = small circles; Lines connect nearby ones.
+        -- Each chip gets its own independent particle system.
+        -- ════════════════════════════════════════════════════════════════════
         local drawObjs = {}
         local function newDraw(t)
             local d = Drawing.new(t)
@@ -281,150 +298,208 @@ return function(ctx)
             return d
         end
 
-        -- 3 thin horizontal shimmer lines above/below the bar
-        local shimLines = {}
-        for i = 1, 3 do
-            local l = newDraw("Line")
-            l.Thickness    = 1
-            l.Transparency = 1  -- start invisible, animated
-            l.ZIndex       = 5
-            table.insert(shimLines, l)
+        -- Config
+        local PARTICLE_COUNT  = 6     -- particles per chip
+        local CONNECT_DIST    = 55    -- max distance to draw a line
+        local PARTICLE_SPEED  = 18    -- pixels/sec
+        local PARTICLE_R      = 1.5   -- dot radius
+        local PARTICLE_TRANSP = 0.60  -- dot transparency (0=opaque)
+        local LINE_TRANSP     = 0.78  -- line base transparency
+
+        -- Particle system per chip
+        local chipParticles = {}
+
+        local function initParticlesForChip(entry)
+            local particles = {}
+            for i = 1, PARTICLE_COUNT do
+                local p = {
+                    x = 0, y = 0,   -- will be set after first frame (AbsolutePosition)
+                    vx = rand(-PARTICLE_SPEED, PARTICLE_SPEED),
+                    vy = rand(-PARTICLE_SPEED, PARTICLE_SPEED),
+                    dot = newDraw("Circle"),
+                }
+                p.dot.Filled      = true
+                p.dot.Color       = COL_ACCENT
+                p.dot.Radius      = PARTICLE_R
+                p.dot.Transparency = 1   -- start hidden
+                p.dot.ZIndex      = 7
+                table.insert(particles, p)
+            end
+
+            -- pre-create connection lines (max pairs = N*(N-1)/2)
+            local lines = {}
+            for i = 1, PARTICLE_COUNT do
+                lines[i] = {}
+                for j = i+1, PARTICLE_COUNT do
+                    local l = newDraw("Line")
+                    l.Thickness    = 1
+                    l.Color        = COL_ACCENT
+                    l.Transparency = 1
+                    l.ZIndex       = 6
+                    lines[i][j] = l
+                end
+            end
+
+            return { particles = particles, lines = lines, initialized = false }
         end
 
-        -- Glow dot at the accent line (left corner)
-        local glowDot = newDraw("Circle")
-        glowDot.Filled      = true
-        glowDot.Radius      = 3
-        glowDot.ZIndex      = 6
-        glowDot.Transparency = 1
-        glowDot.Color       = COL_ACCENT
+        -- Only title and stat chips get particles (not logo — too small)
+        local chipSystemMap = {}
+        chipSystemMap[titleEntry] = initParticlesForChip(titleEntry)
+        if fpsEntry  then chipSystemMap[fpsEntry]  = initParticlesForChip(fpsEntry)  end
+        if timeEntry then chipSystemMap[timeEntry] = initParticlesForChip(timeEntry) end
 
         -- ── Animation state ───────────────────────────────────────────────
-        local visible    = true
-        local alpha      = 0       -- 0=hidden 1=shown
-        local targetA    = 1
-        local SPRING_IN  = 14
-        local SPRING_OUT = 20
+        local visible   = true
+        local alpha     = 0
+        local targetA   = 1
+        local SPRING_IN = 12
+        local SPRING_OUT= 18
 
-        -- Accent bar animation (hue shift Blue→Purple→Blue)
+        -- Logo rotation
+        local logoAngle = 0
+
+        -- Accent color pulse
         local accentPhase = 0
 
-        -- Drawing shimmer animation
-        local shimPhase = 0
-
-        -- FPS rolling average
+        -- FPS
         local FPS_N    = 30
         local fpsBuf   = table.create(FPS_N, 1/60)
         local fpsBufI  = 1
         local fpsTimer = 0
 
         -- Time
-        local lastSec = -1
+        local lastSec  = -1
 
-        -- ── Apply alpha to all ScreenGui objects ──────────────────────────
+        -- ── Apply alpha to ScreenGui elements ─────────────────────────────
         local function applyAlpha(a)
-            -- UIScale: spring overshoot on appear (scale 0.82→1.04→1)
-            -- We just use lerp here; the overshoot comes from the lerp speed difference
-            uiScale.Scale = lerp(0.82, 1, a)
+            uiScale.Scale = lerp(0.84, 1.0, a)
 
-            -- Fade all chips
-            local bgT    = lerp(1, 0, a)              -- 1=invisible 0=opaque
-            local textT  = lerp(1, 0, a)
-            local strokeT = lerp(1, 0, a)
+            local bgT   = lerp(1, BG_TRANSP, a)
+            local txtT  = lerp(1, 0, a)
+            local strT  = lerp(1, 0, a)
+            local imgT  = lerp(1, 0, a)
+            local accT  = lerp(1, 0, a)
 
             for _, entry in ipairs(allChips) do
                 entry.frame.BackgroundTransparency = bgT
-                -- separator lines inside chip (if any)
-                for _, child in ipairs(entry.frame:GetChildren()) do
-                    if child.Name == "Sep" then
-                        child.BackgroundTransparency = bgT
-                    end
-                end
+                if entry.stroke then entry.stroke.Transparency = strT end
                 for _, lbl in ipairs(entry.labels) do
-                    lbl.TextTransparency = textT
+                    lbl.TextTransparency = txtT
                 end
                 for _, img in ipairs(entry.images) do
-                    img.ImageTransparency = textT
+                    img.ImageTransparency = imgT
                 end
             end
 
-            outerStroke.Transparency = strokeT
-            accentBar.BackgroundTransparency = textT
-
-            -- Drawing objects
-            for i, sl in ipairs(shimLines) do
-                sl.Transparency = math.min(1, lerp(1, 0.60 + i * 0.1, a))
-            end
-            glowDot.Transparency = lerp(1, 0.15, a)
-        end
-
-        -- ── Get absolute screen position of outerWrap ─────────────────────
-        local function getBarPos()
-            -- AbsolutePosition gives screen coords in ScreenGui space
-            local ap = outerWrap.AbsolutePosition
-            local as = outerWrap.AbsoluteSize
-            return ap, as
-        end
-
-        -- ── Update Drawing positions ──────────────────────────────────────
-        local function updateDrawing(dt)
-            shimPhase = (shimPhase + dt * 1.2) % (math.pi * 2)
-            accentPhase = (accentPhase + dt * 0.6) % (math.pi * 2)
-
-            local ok, ap, as = pcall(getBarPos)
-            if not ok then return end
-
-            -- Animated accent bar color (Blue ↔ Blue-Purple pulse)
-            local t = (math.sin(accentPhase) + 1) * 0.5
-            accentBar.BackgroundColor3 = Color3.fromRGB(
-                math.round(lerp(72, 100, t)),
-                math.round(lerp(138, 90, t)),
-                math.round(lerp(255, 255, t))
-            )
-
-            -- Shimmer lines: thin horizontal lines that drift across bar top
-            -- They appear just above the bar and fade out
-            local barY = ap.Y
-            local barX = ap.X
-            local barW = as.X
-
-            for i, sl in ipairs(shimLines) do
-                local phase = shimPhase + (i - 1) * 2.1
-                local t2 = (math.sin(phase) + 1) * 0.5
-                local xOff = barW * t2
-                local lineLen = barW * 0.25
-
-                sl.From  = Vector2.new(barX + xOff,              barY - 1)
-                sl.To    = Vector2.new(barX + xOff + lineLen,    barY - 1)
-                sl.Color = Color3.fromRGB(
-                    math.round(lerp(72, 180, t2)),
-                    math.round(lerp(138, 100, t2)),
-                    255
-                )
+            -- logo segments
+            for _, s in ipairs(logoSegments) do
+                s.seg.ImageTransparency = lerp(1, 0.45, a)
             end
 
-            -- Glow dot: bounces along accent bar bottom
-            local dotPhase = shimPhase * 0.5
-            local dotX = barX + ((math.sin(dotPhase) + 1) * 0.5) * barW
-            glowDot.Position = Vector2.new(dotX, barY + as.Y)
+            accentBar.BackgroundTransparency = accT
         end
 
-        -- ── Main heartbeat ────────────────────────────────────────────────
+        -- ── Update constellation for one chip ─────────────────────────────
+        local function updateConstellation(entry, sys, dt, globalAlpha)
+            local frame = entry.frame
+            local ap = frame.AbsolutePosition
+            local as = frame.AbsoluteSize
+
+            -- Initialize particle positions on first valid frame
+            if not sys.initialized and as.X > 2 then
+                sys.initialized = true
+                for _, p in ipairs(sys.particles) do
+                    p.x = ap.X + rand(4, as.X - 4)
+                    p.y = ap.Y + rand(4, as.Y - 4)
+                end
+            end
+            if not sys.initialized then return end
+
+            -- Move particles, bounce off chip walls
+            for _, p in ipairs(sys.particles) do
+                p.x += p.vx * dt
+                p.y += p.vy * dt
+
+                -- bounce inside chip bounds with small margin
+                local margin = 3
+                if p.x < ap.X + margin then
+                    p.x = ap.X + margin; p.vx = math.abs(p.vx)
+                elseif p.x > ap.X + as.X - margin then
+                    p.x = ap.X + as.X - margin; p.vx = -math.abs(p.vx)
+                end
+                if p.y < ap.Y + margin then
+                    p.y = ap.Y + margin; p.vy = math.abs(p.vy)
+                elseif p.y > ap.Y + as.Y - margin then
+                    p.y = ap.Y + as.Y - margin; p.vy = -math.abs(p.vy)
+                end
+
+                -- Update dot
+                p.dot.Position    = Vector2.new(p.x, p.y)
+                p.dot.Transparency = lerp(1, PARTICLE_TRANSP, globalAlpha)
+            end
+
+            -- Update connection lines
+            local particles = sys.particles
+            for i = 1, #particles do
+                for j = i+1, #particles do
+                    local pi = particles[i]
+                    local pj = particles[j]
+                    local dx = pi.x - pj.x
+                    local dy = pi.y - pj.y
+                    local dist = math.sqrt(dx*dx + dy*dy)
+
+                    local l = sys.lines[i][j]
+                    if dist < CONNECT_DIST then
+                        -- closer = more opaque
+                        local t = 1 - dist / CONNECT_DIST
+                        l.From         = Vector2.new(pi.x, pi.y)
+                        l.To           = Vector2.new(pj.x, pj.y)
+                        l.Transparency = lerp(1, lerp(LINE_TRANSP, LINE_TRANSP - 0.3, t), globalAlpha)
+                        l.Color        = COL_ACCENT
+                    else
+                        l.Transparency = 1
+                    end
+                end
+            end
+        end
+
+        -- ── Heartbeat ─────────────────────────────────────────────────────
         local conn
         conn = RunService.Heartbeat:Connect(function(dt)
-            -- Spring toward target alpha
+            -- Spring
             local speed = targetA > alpha and SPRING_IN or SPRING_OUT
             alpha = lerp(alpha, targetA, math.min(1, dt * speed))
-            if math.abs(alpha - targetA) < 0.005 then alpha = targetA end
+            if math.abs(alpha - targetA) < 0.004 then alpha = targetA end
 
             applyAlpha(alpha)
-
-            -- Hide ScreenGui when fully faded
             gui.Enabled = alpha > 0.01
 
-            -- Drawing effects (only when visible)
-            if alpha > 0.01 then
-                updateDrawing(dt)
+            -- Logo slow rotation
+            logoAngle = (logoAngle + dt * 12) % 360
+            for i, s in ipairs(logoSegments) do
+                s.seg.Rotation = (i - 1) * (360 / SEG_COUNT) + logoAngle
+            end
+
+            -- Accent bar color pulse
+            accentPhase = (accentPhase + dt * 0.7) % (math.pi * 2)
+            local t = (math.sin(accentPhase) + 1) * 0.5
+            accentBar.BackgroundColor3 = Color3.fromRGB(
+                math.round(lerp(72, 108, t)),
+                math.round(lerp(138, 82, t)),
+                255
+            )
+
+            -- Constellation particles
+            if alpha > 0.05 then
+                for entry, sys in pairs(chipSystemMap) do
+                    updateConstellation(entry, sys, dt, alpha)
+                end
+            else
+                -- Hide all drawing objects when invisible
+                for _, d in ipairs(drawObjs) do
+                    d.Transparency = 1
+                end
             end
 
             -- FPS rolling average
@@ -441,21 +516,20 @@ return function(ctx)
                 end
             end
 
-            -- Time (per-second)
+            -- Time HH:MM (no seconds)
             if timeLbl then
                 local now = os.time()
-                if now ~= lastSec then
-                    lastSec = now
-                    timeLbl.Text = string.format("%02d:%02d:%02d",
-                        math.floor(now/3600)%24,
-                        math.floor(now/60)%60,
-                        now%60)
+                local curMin = math.floor(now / 60)
+                if curMin ~= lastSec then
+                    lastSec = curMin
+                    local h = math.floor(now / 3600) % 24
+                    local m = math.floor(now / 60)   % 60
+                    timeLbl.Text = string.format("%02d:%02d", h, m)
                 end
             end
         end)
 
-        -- Initial spring: start at scale 0, fade in
-        uiScale.Scale = 0.82
+        -- Initial state
         applyAlpha(0)
         targetA = 1
 
@@ -463,17 +537,11 @@ return function(ctx)
         local WM = {}
 
         function WM:Show()
-            if not visible then
-                visible = true
-                targetA = 1
-            end
+            if not visible then visible = true; targetA = 1 end
         end
 
         function WM:Hide()
-            if visible then
-                visible = false
-                targetA = 0
-            end
+            if visible then visible = false; targetA = 0 end
         end
 
         function WM:Toggle()
@@ -501,7 +569,9 @@ return function(ctx)
 
         function WM:Destroy()
             conn:Disconnect()
-            for _, d in ipairs(drawObjs) do pcall(function() d:Remove() end) end
+            for _, d in ipairs(drawObjs) do
+                pcall(function() d:Remove() end)
+            end
             gui:Destroy()
         end
 
