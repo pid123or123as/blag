@@ -6836,16 +6836,28 @@ function MacLib:Window(Settings)
 		assert(_customBuilders[typeName],
 			"CreateCustomElement: type '" .. tostring(typeName) ..
 			"' not registered. Call MacLib:RegisterElement first.")
-		-- Резервируем LayoutOrder заранее (до async создания), чтобы элемент занял правильное место
-		local reservedOrder = nil
-		if sectionObj._frame and type(sectionObj._nextOrder) == "function" then
-			reservedOrder = sectionObj._nextOrder()
+		-- FIX: snapshot children BEFORE build so we can find the NEW frame afterwards
+		local childrenBefore = {}
+		if sectionObj._frame then
+			for _, c in ipairs(sectionObj._frame:GetChildren()) do
+				childrenBefore[c] = true
+			end
 		end
 		local elementFns = _customBuilders[typeName](sectionObj._frame or sectionObj, settings or {}, flag)
-		-- Применяем зарезервированный порядок к корневому frame элемента
-		if reservedOrder and elementFns and sectionObj._frame then
-			local rootFrame = sectionObj._frame:FindFirstChild(typeName)
-			if rootFrame then rootFrame.LayoutOrder = reservedOrder end
+		-- FIX: find the newly added root frame by diffing children instead of FindFirstChild
+		-- This avoids the nil-LayoutOrder crash when two elements of the same type exist
+		if sectionObj._frame and elementFns then
+			local rootFrame = elementFns._frame  -- prefer direct reference if builder sets it
+			if not rootFrame then
+				for _, c in ipairs(sectionObj._frame:GetChildren()) do
+					if not childrenBefore[c] and c.Name == typeName then
+						rootFrame = c
+						break
+					end
+				end
+			end
+			-- rootFrame.LayoutOrder is already set by the builder via _nextOrder();
+			-- no override needed here. Slot is in the correct position.
 		end
 		if flag ~= nil and elementFns ~= nil then
 			elementFns.Class = elementFns.Class or typeName
