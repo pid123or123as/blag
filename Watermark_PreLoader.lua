@@ -1,21 +1,21 @@
--- Watermark_PreLoader.lua  (v10)
--- FIXES:
---   • Particles: AbsolutePosition on UIScale-wrapped frames reports
---     pre-scale coords. We now sample a raw pixel-accurate position
---     by reading anchor.AbsolutePosition + (chip.AbsolutePosition - anchor.AbsolutePosition)*scale.
---     Additionally, a yOffset nudge slider is exposed in Demo so devs can fine-tune.
---   • Position changes (MoveTopLeft etc.) now use the SAME drag-spring path
---     → setTargetPos() helper, smooth animation always.
---   • Drag disabled → position resets to Top-right.
---   • MoveTopLeft offset: +20px right. MoveTopRight: +8px down.
---     MoveBottomLeft: -8px left. MoveBottomRight removed.
---   • Orbit outline (Drawing Lines forming circle) added to logo chip.
---   • "Segment Count" API for logo dots (1-24).
---   • "On the Plane" toggle: dots get 3-D sine depth, scale + alpha vary.
---   • Particles bounce properly after position change (velocities preserved,
---     positions clamped into new bounds immediately).
---   • FPS/Time icon chips: inner content shifted left by extra padding.
---   • All UI stays as Roblox GUI; only particles/orbit are Drawing.
+-- Watermark_PreLoader.lua  (v11)
+-- CHANGES from v10:
+--   • Orbit outline: lines connect BETWEEN the logo segments (dots),
+--     not around the chip background. Lines go dot-to-dot in sequence,
+--     forming an organic (non-uniform) polygon that follows the actual
+--     dot positions — intentionally uneven.
+--   • ParticleYOffset removed (was hardcoded 28). The fixed offset of
+--     28px is now baked into the coordinate read directly.
+--     particles use chip.AbsolutePosition + 28 as the screen Y base.
+--     (If this is still wrong, use WM:SetParticleYOffset(n) — kept as API)
+--   • Particle transparency: default baseOp raised (less visible), plus
+--     WM:SetParticleAlpha(n) / Demo slider "Particle Opacity" (0–1)
+--   • Logo chip also gets its own particle system (same as title/fps/time chips)
+--   • Extra particles: "Particle Density" slider — adds a second, sparser
+--     independent particle layer on top of the base layer (different speeds,
+--     larger dots). Each chip has TWO independent particle systems.
+--   • Top-left position: more left AND lower  (X=88, Y=42)
+--   • Bottom-left position: further left (X=96 → 80)
 
 return function(ctx)
     local MacLib     = ctx.MacLib
@@ -31,7 +31,7 @@ return function(ctx)
         local g = Instance.new("ScreenGui")
         g.ResetOnSpawn   = false
         g.DisplayOrder   = 9998
-        g.IgnoreGuiInset = true   -- matches Drawing coordinate space
+        g.IgnoreGuiInset = true
         g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
         local ok
         if gethui then ok = pcall(function() g.Parent = gethui() end) end
@@ -47,16 +47,19 @@ return function(ctx)
     -- ════════════════════════════════════════════════════════════════════
     function MacLib:Watermark(cfg)
         cfg = cfg or {}
-        local titleText  = cfg.Title    or "Watermark"
-        local showFPS    = cfg.ShowFPS  ~= false
-        local showTime   = cfg.ShowTime ~= false
-        local dragEnabled_ = cfg.Drag ~= nil and cfg.Drag or (not isMobile)
+        local titleText   = cfg.Title    or "Watermark"
+        local showFPS     = cfg.ShowFPS  ~= false
+        local showTime    = cfg.ShowTime ~= false
+        local dragEnabled_ = (cfg.Drag ~= nil) and cfg.Drag or (not isMobile)
 
         local particleColor1 = cfg.ParticleColor1 or Color3.fromRGB(72, 138, 255)
         local particleColor2 = cfg.ParticleColor2 or Color3.fromRGB(140, 90, 255)
         local particleCount  = cfg.ParticleCount  or 9
         local connectDist    = cfg.ConnectDist    or 58
-        local particleYOffset = cfg.ParticleYOffset or 0   -- fine-tune nudge
+        -- baked offset: 28px to account for GuiInset in the coordinate system
+        local particleYOffset = cfg.ParticleYOffset or 28
+        -- base opacity multiplier for all particles (0=invisible, 1=full)
+        local globalParticleAlpha = cfg.ParticleAlpha or 0.45
 
         local posX, posY = 104, 22
         if cfg.Position then
@@ -67,7 +70,7 @@ return function(ctx)
             end
         end
 
-        local MARGIN = 22
+        local MARGIN   = 22
         local UI_SCALE = 0.80
 
         -- ── Root GUI ─────────────────────────────────────────────────
@@ -180,11 +183,11 @@ return function(ctx)
         -- Logo state
         local SEG_COUNT   = cfg.SegmentCount or 10
         local DOT_SZ      = 2.5
-        local LOGO_R      = 7    -- orbit radius in UI coords
+        local LOGO_R      = 7
         local logoSegs    = {}
         local logoAngleSm = 0
         local logoAngleTg = 0
-        local onThePlane  = false   -- 3D mode toggle
+        local onThePlane  = false
 
         local function rebuildLogoSegs(n)
             for _, s in ipairs(logoSegs) do s.dot:Destroy() end
@@ -205,13 +208,15 @@ return function(ctx)
         end
         rebuildLogoSegs(SEG_COUNT)
 
-        -- Orbit outline: Drawing Lines that form a circle around the logo chip.
-        -- We draw ORBIT_SEGS line segments approximating a circle.
-        -- These are updated in Heartbeat using the logo chip's AbsolutePosition.
-        local ORBIT_SEGS   = 36
-        local orbitLines   = {}
+        -- ── Orbit outline: Drawing Lines connecting the logo DOTS ─────
+        -- Lines go between consecutive logo segments (dot to dot),
+        -- forming a polygon that follows the actual dot screen positions.
+        -- Since dots move on a (possibly tilted) orbit, the polygon is
+        -- intentionally uneven — that's the designed aesthetic.
+        -- We also close the loop (last dot → first dot).
+        local orbitLines  = {}
         local orbitEnabled = true
-        local drawObjs     = {}     -- all Drawing objects for cleanup
+        local drawObjs    = {}
 
         local function D(t)
             local d = Drawing.new(t)
@@ -220,18 +225,19 @@ return function(ctx)
             return d
         end
 
-        local function buildOrbit()
+        local function buildOrbitLines(n)
             for _, l in ipairs(orbitLines) do pcall(function() l:Remove() end) end
             orbitLines = {}
-            for i = 1, ORBIT_SEGS do
+            -- n segments need n lines (one per adjacent pair, loop closed)
+            for i = 1, n do
                 local l = D("Line")
-                l.Thickness    = 0.7
-                l.Transparency = 0.55   -- semi-transparent
+                l.Thickness    = 0.8
+                l.Transparency = 0.50  -- semi-transparent
                 l.ZIndex       = 7
                 table.insert(orbitLines, l)
             end
         end
-        buildOrbit()
+        buildOrbitLines(SEG_COUNT)
 
         -- ── TITLE chip ───────────────────────────────────────────────
         local titleEntry = makeChip({bg=COL_BG_DARK, stroke=true})
@@ -264,11 +270,10 @@ return function(ctx)
         local fpsEntry, fpsLbl
         if showFPS then
             fpsEntry = makeChip({fixedW=72, stroke=true, padX=false})
-            -- shift content 4px left from center
             local inner = Instance.new("Frame")
             inner.BackgroundTransparency=1; inner.BorderSizePixel=0
             inner.AnchorPoint=Vector2.new(0.5,0.5)
-            inner.Position=UDim2.new(0.5,-2,0.5,0)  -- -2 = slightly left
+            inner.Position=UDim2.new(0.5,-2,0.5,0)
             inner.AutomaticSize=Enum.AutomaticSize.XY
             inner.Parent=fpsEntry.frame
             local il=Instance.new("UIListLayout")
@@ -300,7 +305,7 @@ return function(ctx)
             local inner = Instance.new("Frame")
             inner.BackgroundTransparency=1; inner.BorderSizePixel=0
             inner.AnchorPoint=Vector2.new(0.5,0.5)
-            inner.Position=UDim2.new(0.5,-2,0.5,0)  -- slightly left
+            inner.Position=UDim2.new(0.5,-2,0.5,0)
             inner.AutomaticSize=Enum.AutomaticSize.XY
             inner.Parent=timeEntry.frame
             local il=Instance.new("UIListLayout")
@@ -326,34 +331,22 @@ return function(ctx)
         end
 
         -- ════════════════════════════════════════════════════════════════
-        -- PARTICLE COORDINATE FIX
-        --
-        -- The anchor has UIScale=0.80.
-        -- In Roblox, AbsolutePosition of a child of a UIScale frame
-        -- IS already the correct screen position (UIScale transforms
-        -- the rendered position AND AbsolutePosition reports the
-        -- transformed position). Drawing uses the same screen space.
-        --
-        -- HOWEVER: we observed particles appear above the watermark.
-        -- This happens because anchor.AbsolutePosition is the top-left
-        -- of the SCALED content, but because UIScale scales from the
-        -- anchor point of the parent, the reported AbsolutePosition of
-        -- a *chip* inside the scaled frame can be off.
-        --
-        -- ROBUST FIX: we sample the chip's AbsolutePosition directly
-        -- each frame (post-layout). This is the actual screen rect.
-        -- Additionally we expose a manual yOffset nudge.
-        --
-        -- For particles we constrain them to this rect, so they can
-        -- never appear outside the chip boundaries.
+        -- PARTICLE SYSTEM
+        -- Each chip gets TWO independent particle systems:
+        --   sys_A  → "base" particles  (count = particleCount, smaller, faster)
+        --   sys_B  → "density" layer   (count = densityCount,  larger,  slower)
         -- ════════════════════════════════════════════════════════════════
-
-        local SPEED_NEAR = 18
-        local SPEED_FAR  = 5
-        local R_NEAR     = 2.2
-        local R_FAR      = 0.8
-        local globalT    = 0
-        local globalTime = 0
+        local SPEED_NEAR  = 18
+        local SPEED_FAR   = 5
+        local R_NEAR      = 2.2
+        local R_FAR       = 0.8
+        local SPEED_NEAR2 = 8    -- density layer speeds
+        local SPEED_FAR2  = 2
+        local R_NEAR2     = 3.5
+        local R_FAR2      = 1.5
+        local densityCount = cfg.DensityCount or 4
+        local globalTime   = 0
+        local globalT      = 0
 
         local function getParticleColor(t, z)
             local r = lerp(particleColor1.R*255, particleColor2.R*255, t)
@@ -361,13 +354,13 @@ return function(ctx)
             local b = lerp(particleColor1.B*255, particleColor2.B*255, t)
             local bright = lerp(0.75, 1.0, z)
             return Color3.fromRGB(
-                math.round(clamp(r*bright, 0, 255)),
-                math.round(clamp(g*bright, 0, 255)),
-                math.round(clamp(b*bright, 0, 255))
+                math.round(clamp(r*bright,0,255)),
+                math.round(clamp(g*bright,0,255)),
+                math.round(clamp(b*bright,0,255))
             )
         end
 
-        local function buildSys(n)
+        local function buildSys(n, speedNear, speedFar, rNear, rFar)
             local pts = {}
             for i = 1, n do
                 local p = {
@@ -375,6 +368,8 @@ return function(ctx)
                     z        = rand(0,1),
                     phaseOff = rand(0, math.pi*2),
                     dot      = D("Circle"),
+                    sNear = speedNear, sFar = speedFar,
+                    rNear = rNear,     rFar = rFar,
                 }
                 p.dot.Filled       = true
                 p.dot.Color        = particleColor1
@@ -404,7 +399,7 @@ return function(ctx)
             for _, p in ipairs(sys.pts) do
                 p.x  = rand(ax+6, ax+aw-6)
                 p.y  = rand(ay+4, ay+ah-4)
-                local spd   = lerp(SPEED_FAR, SPEED_NEAR, p.z)
+                local spd   = lerp(p.sFar, p.sNear, p.z)
                 local angle = rand(0, math.pi*2)
                 p.vx = math.cos(angle)*spd
                 p.vy = math.sin(angle)*spd
@@ -413,25 +408,18 @@ return function(ctx)
             sys.ax,sys.ay,sys.aw,sys.ah = ax,ay,aw,ah
         end
 
-        local function tickSys(sys, dt, ax, ay, aw, ah, globalAlpha)
+        local function tickSys(sys, dt, ax, ay, aw, ah, alpha)
             if not sys.ready then return end
-
-            -- When bounds shift (drag), clamp particles into new region
-            -- but PRESERVE velocity so they bounce naturally from new walls.
             local dax = ax - sys.ax
             local day = ay - sys.ay
-            if math.abs(dax) > 1 or math.abs(day) > 1 then
+            if math.abs(dax)>1 or math.abs(day)>1 then
                 for _, p in ipairs(sys.pts) do
-                    p.x = p.x + dax
-                    p.y = p.y + day
-                    -- clamp so they're inside the new bounds
-                    p.x = clamp(p.x, ax+4, ax+aw-4)
-                    p.y = clamp(p.y, ay+4, ay+ah-4)
-                    -- flip velocity away from the wall they hit during clamp
-                    if p.x <= ax+4     then p.vx = math.abs(p.vx) end
-                    if p.x >= ax+aw-4  then p.vx = -math.abs(p.vx) end
-                    if p.y <= ay+4     then p.vy = math.abs(p.vy) end
-                    if p.y >= ay+ah-4  then p.vy = -math.abs(p.vy) end
+                    p.x = clamp(p.x+dax, ax+4, ax+aw-4)
+                    p.y = clamp(p.y+day, ay+4, ay+ah-4)
+                    if p.x <= ax+4    then p.vx =  math.abs(p.vx) end
+                    if p.x >= ax+aw-4 then p.vx = -math.abs(p.vx) end
+                    if p.y <= ay+4    then p.vy =  math.abs(p.vy) end
+                    if p.y >= ay+ah-4 then p.vy = -math.abs(p.vy) end
                 end
             end
             sys.ax,sys.ay,sys.aw,sys.ah = ax,ay,aw,ah
@@ -445,21 +433,21 @@ return function(ctx)
                 if p.y > ay+ah-m then p.y = ay+ah-m; p.vy = -math.abs(p.vy) end
 
                 local pulse  = 0.88+0.12*math.sin(globalTime*1.1+p.phaseOff)
-                local spd    = lerp(SPEED_FAR, SPEED_NEAR, p.z)
+                local spd    = lerp(p.sFar, p.sNear, p.z)
                 local curSpd = math.sqrt(p.vx^2+p.vy^2)
                 if curSpd > 0.1 then
-                    local target = spd*pulse
-                    local sc = lerp(1, target/curSpd, dt*2)
+                    local sc = lerp(1, spd*pulse/curSpd, dt*2)
                     p.vx *= sc; p.vy *= sc
                 end
 
-                local r       = lerp(R_FAR, R_NEAR, p.z)
-                local pulseR  = r*(0.88+0.12*math.sin(globalTime*1.8+p.phaseOff))
-                local baseOp  = lerp(0.18, 0.60, p.z)
-                local finalOp = baseOp*globalAlpha
+                local r      = lerp(p.rFar, p.rNear, p.z)
+                local pulseR = r*(0.88+0.12*math.sin(globalTime*1.8+p.phaseOff))
+                -- globalParticleAlpha controls overall transparency
+                local baseOp  = lerp(0.12, 0.40, p.z) * globalParticleAlpha
+                local finalOp = baseOp * alpha
                 local pT      = (globalT + p.phaseOff/(math.pi*2)*0.3)%1
 
-                p.dot.Position     = Vector2.new(p.x, p.y + particleYOffset)
+                p.dot.Position     = Vector2.new(p.x, p.y)
                 p.dot.Radius       = pulseR
                 p.dot.Transparency = finalOp
                 p.dot.Color        = getParticleColor(pT, p.z)
@@ -474,9 +462,9 @@ return function(ctx)
                     if dist < connectDist then
                         local prox = 1-dist/connectDist
                         local avgZ = (pi.z+pj.z)*0.5
-                        local lineOp = lerp(0.05,0.35,prox)*lerp(0.35,1,avgZ)*globalAlpha
-                        l.From        = Vector2.new(pi.x, pi.y + particleYOffset)
-                        l.To          = Vector2.new(pj.x, pj.y + particleYOffset)
+                        local lineOp = lerp(0.05,0.25,prox)*lerp(0.35,1,avgZ)*alpha*globalParticleAlpha
+                        l.From        = Vector2.new(pi.x, pi.y)
+                        l.To          = Vector2.new(pj.x, pj.y)
                         l.Transparency = lineOp
                         l.Thickness   = lerp(0.4,1.2,avgZ)
                         l.Color       = getParticleColor(globalT, avgZ)
@@ -487,40 +475,50 @@ return function(ctx)
             end
         end
 
-        local entryToSys = {}
-        entryToSys[titleEntry] = buildSys(particleCount)
-        if fpsEntry  then entryToSys[fpsEntry]  = buildSys(particleCount) end
-        if timeEntry then entryToSys[timeEntry] = buildSys(particleCount) end
+        -- Build A (base) + B (density) for each chip including logo
+        local entrySystems = {}   -- entry → {sysA, sysB}
 
-        -- Deferred init: wait for valid AbsoluteSize
+        local function buildEntrySystems(entry)
+            entrySystems[entry] = {
+                buildSys(particleCount, SPEED_NEAR, SPEED_FAR, R_NEAR, R_FAR),
+                buildSys(densityCount,  SPEED_NEAR2, SPEED_FAR2, R_NEAR2, R_FAR2),
+            }
+        end
+
+        buildEntrySystems(logoEntry)
+        buildEntrySystems(titleEntry)
+        if fpsEntry  then buildEntrySystems(fpsEntry)  end
+        if timeEntry then buildEntrySystems(timeEntry) end
+
+        -- Deferred init
         task.spawn(function()
             local waited = 0
             while waited < 4 do
                 task.wait(0.05); waited += 0.05
                 local allReady = true
-                for entry, sys in pairs(entryToSys) do
-                    if not sys.ready then
-                        local ap = entry.frame.AbsolutePosition
-                        local as = entry.frame.AbsoluteSize
-                        if as.X > 8 and as.Y > 4 then
-                            initSys(sys, ap.X, ap.Y + particleYOffset, as.X, as.Y)
-                        else
-                            allReady = false
+                for entry, pair in pairs(entrySystems) do
+                    local f  = entry.frame
+                    local ap = f.AbsolutePosition
+                    local as = f.AbsoluteSize
+                    if as.X > 4 and as.Y > 4 then
+                        local ay = ap.Y + particleYOffset
+                        for _, sys in ipairs(pair) do
+                            if not sys.ready then
+                                initSys(sys, ap.X, ay, as.X, as.Y)
+                            end
                         end
+                    else
+                        allReady = false
                     end
                 end
                 if allReady then break end
             end
         end)
 
-        -- ── Spring position ───────────────────────────────────────────
-        local springP = 0
-        local springV = 0
-        local targetA = 1
-        local SPRING_K = 120
-        local SPRING_D = 16
+        -- ── Spring / drag state ───────────────────────────────────────
+        local springP = 0; local springV = 0; local targetA = 1
+        local SPRING_K = 120; local SPRING_D = 16
 
-        -- One single position target for the anchor (smooth for both drag and buttons)
         local dragTargetX = posX; local dragTargetY = posY
         local dragCurX    = posX; local dragCurY    = posY
         local isDragging  = false
@@ -548,52 +546,54 @@ return function(ctx)
                 s.dot.BackgroundTransparency = lerp(1, 0.15, p)
             end
             accentLine.BackgroundTransparency = lerp(1,0,p)
-            if p < 0.02 then
-                for _, d in ipairs(drawObjs) do d.Transparency = 0 end
-            end
         end
 
-        -- ── setTargetPos: used by drag AND buttons ────────────────────
         local function setTargetPos(x, y)
             dragTargetX = x; dragTargetY = y
         end
-        -- Instant snap (no spring) for initialization or drag=false reset
         local function snapPos(x, y)
-            dragTargetX = x; dragTargetY = y
-            dragCurX    = x; dragCurY    = y
+            dragTargetX=x; dragTargetY=y; dragCurX=x; dragCurY=y
             anchor.Position = UDim2.fromOffset(x, y)
         end
+
+        -- ── Cached screen positions of logo dots (for orbit lines) ────
+        -- Updated each RenderStepped from the dot UI positions.
+        -- We compute actual SCREEN positions by sampling logoEntry.frame.AbsolutePosition
+        -- plus the dot's offset (Position) scaled by chip size.
+        local dotScreenPos = {}  -- [i] = Vector2
+        for i = 1, SEG_COUNT do dotScreenPos[i] = Vector2.new(0,0) end
 
         -- ── Connections ───────────────────────────────────────────────
         local conns = {}
 
-        -- Logo: RenderStepped for smooth rotation
         table.insert(conns, RunService.RenderStepped:Connect(function(dt)
             logoAngleTg = logoAngleTg + dt*22
-            logoAngleSm = logoAngleSm + (logoAngleTg - logoAngleSm)*(1 - math.exp(-dt*10))
+            logoAngleSm = logoAngleSm + (logoAngleTg - logoAngleSm)*(1-math.exp(-dt*10))
 
             local pulse = 0.88 + 0.12*math.sin(globalTime*1.4)
             local n = #logoSegs
+            local lf  = logoEntry.frame
+            local lap = lf.AbsolutePosition
+            local las = lf.AbsoluteSize
+
             for i, s in ipairs(logoSegs) do
                 local baseA = math.rad((i-1)*(360/n)) + math.rad(logoAngleSm)
                 local r     = LOGO_R * pulse
 
                 local px, py, sz, alpha
                 if onThePlane then
-                    -- 3D: dots orbit in a tilted ellipse (sin depth)
-                    local tilt = 0.45   -- how much the plane is tilted (0=flat, 1=edge-on)
-                    local cosA = math.cos(baseA)
-                    local sinA = math.sin(baseA)
-                    px = cosA * r
-                    py = sinA * r * (1 - tilt)   -- compressed Y simulates tilt
-                    -- depth: front (+) → larger/brighter, back (-) → smaller/dimmer
-                    local depth = sinA              -- -1 (back) to +1 (front)
-                    sz  = lerp(DOT_SZ*0.5, DOT_SZ*1.5, (depth+1)*0.5)
+                    local tilt  = 0.45
+                    local cosA  = math.cos(baseA)
+                    local sinA  = math.sin(baseA)
+                    px   = cosA * r
+                    py   = sinA * r * (1-tilt)
+                    local depth = sinA
+                    sz    = lerp(DOT_SZ*0.5, DOT_SZ*1.5, (depth+1)*0.5)
                     alpha = lerp(0.55, 0.15, (depth+1)*0.5)
                 else
-                    px = math.cos(baseA) * r
-                    py = math.sin(baseA) * r
-                    sz  = DOT_SZ
+                    px    = math.cos(baseA) * r
+                    py    = math.sin(baseA) * r
+                    sz    = DOT_SZ
                     alpha = 0.18
                 end
 
@@ -602,6 +602,13 @@ return function(ctx)
                 s.dot.BackgroundTransparency = alpha
                 s.dot.BackgroundColor3 = getParticleColor(
                     (globalT + (i-1)/n*0.25)%1, (i-1)/n)
+
+                -- Compute screen position of this dot for orbit line drawing.
+                -- logoHolder is centered inside lf at (0.5, 0.5).
+                -- Dot position inside logoHolder = (0.5*las.X + px, 0.5*las.Y + py)
+                local cx = lap.X + las.X*0.5
+                local cy = lap.Y + las.Y*0.5 + particleYOffset
+                dotScreenPos[i] = Vector2.new(cx + px, cy + py)
             end
         end))
 
@@ -616,11 +623,10 @@ return function(ctx)
             if math.abs(springP-targetA)<0.003 and math.abs(springV)<0.003 then
                 springP=targetA; springV=0
             end
-
             applyProgress(springP)
             gui.Enabled = springP > 0.008
 
-            -- accent underline
+            -- accent
             accentPh = (accentPh+dt*0.6)%(math.pi*2)
             accentLine.BackgroundColor3 = getParticleColor((math.sin(accentPh)+1)*0.5, 0.5)
             local ts = titleLbl.AbsoluteSize
@@ -629,28 +635,27 @@ return function(ctx)
                 accentLine.Position = UDim2.fromOffset(0, BAR_H-3)
             end
 
-            -- smooth position spring (used for drag AND button moves)
+            -- smooth position spring
             dragCurX = lerp(dragCurX, dragTargetX, clamp(dt*DRAG_SPRING,0,1))
             dragCurY = lerp(dragCurY, dragTargetY, clamp(dt*DRAG_SPRING,0,1))
             anchor.Position = UDim2.fromOffset(math.round(dragCurX), math.round(dragCurY))
 
-            -- orbit outline: update each frame using logo chip AbsolutePosition
-            if orbitEnabled and springP > 0.05 then
-                local lf  = logoEntry.frame
-                local lap = lf.AbsolutePosition
-                local las = lf.AbsoluteSize
-                local cx  = lap.X + las.X*0.5
-                local cy  = lap.Y + las.Y*0.5
-                local orbitR = las.X * 0.44   -- slightly inside the chip edge
-                local orbitAlpha = lerp(0.75, 0.25, springP) * 0.7
-                local orbitCol   = getParticleColor(globalT, 0.5)
-                for i, l in ipairs(orbitLines) do
-                    local a1 = (i-1)/ORBIT_SEGS * math.pi*2 + globalTime*0.25
-                    local a2 = i/ORBIT_SEGS     * math.pi*2 + globalTime*0.25
-                    l.From        = Vector2.new(cx + math.cos(a1)*orbitR, cy + math.sin(a1)*orbitR)
-                    l.To          = Vector2.new(cx + math.cos(a2)*orbitR, cy + math.sin(a2)*orbitR)
-                    l.Color       = orbitCol
-                    l.Transparency = orbitAlpha
+            -- orbit lines: connect consecutive dots (dot[i] → dot[i+1], closing loop)
+            if orbitEnabled and springP > 0.05 and #logoSegs >= 2 then
+                local n        = #logoSegs
+                local orbitCol = getParticleColor(globalT, 0.5)
+                -- orbit lines count may differ from logoSegs if rebuilt
+                local lineCount = math.min(#orbitLines, n)
+                for i = 1, lineCount do
+                    local j = (i % n) + 1  -- next dot, wrapping around
+                    local from = dotScreenPos[i]
+                    local to   = dotScreenPos[j]
+                    if from and to then
+                        orbitLines[i].From        = from
+                        orbitLines[i].To          = to
+                        orbitLines[i].Color       = orbitCol
+                        orbitLines[i].Transparency = 0.50 * (1-springP*0.3)
+                    end
                 end
             else
                 for _, l in ipairs(orbitLines) do l.Transparency = 0 end
@@ -658,21 +663,24 @@ return function(ctx)
 
             -- particles
             if springP > 0.03 then
-                for entry, sys in pairs(entryToSys) do
+                for entry, pair in pairs(entrySystems) do
                     local f  = entry.frame
                     local ap = f.AbsolutePosition
                     local as = f.AbsoluteSize
-                    if as.X > 8 and as.Y > 4 then
-                        if not sys.ready then
-                            initSys(sys, ap.X, ap.Y + particleYOffset, as.X, as.Y)
-                        else
-                            tickSys(sys, dt, ap.X, ap.Y + particleYOffset, as.X, as.Y, springP)
+                    if as.X > 4 and as.Y > 4 then
+                        local ay = ap.Y + particleYOffset
+                        for _, sys in ipairs(pair) do
+                            if not sys.ready then
+                                initSys(sys, ap.X, ay, as.X, as.Y)
+                            else
+                                tickSys(sys, dt, ap.X, ay, as.X, as.Y, springP)
+                            end
                         end
                     end
                 end
             end
 
-            -- FPS counter
+            -- FPS
             if fpsLbl then
                 fpsBuf[fpsBufI]=dt; fpsBufI=(fpsBufI%FPS_N)+1
                 fpsTimer+=dt
@@ -693,37 +701,37 @@ return function(ctx)
             end
         end))
 
-        -- ── Drag input ───────────────────────────────────────────────
+        -- ── Drag ─────────────────────────────────────────────────────
         local dragInputConns = {}
         local function setupDrag()
             local function getMP()
-                local mp = UIS:GetMouseLocation()
-                return Vector2.new(mp.X, mp.Y)
+                local mp=UIS:GetMouseLocation()
+                return Vector2.new(mp.X,mp.Y)
             end
             table.insert(dragInputConns, row.InputBegan:Connect(function(inp)
                 if not dragEnabled_ then return end
                 if inp.UserInputType==Enum.UserInputType.MouseButton1
                 or inp.UserInputType==Enum.UserInputType.Touch then
-                    isDragging        = true
-                    dragStartMouse    = getMP()
-                    dragStartAnchor   = Vector2.new(dragCurX, dragCurY)
+                    isDragging=true
+                    dragStartMouse=getMP()
+                    dragStartAnchor=Vector2.new(dragCurX,dragCurY)
                 end
             end))
             table.insert(dragInputConns, UIS.InputChanged:Connect(function(inp)
                 if not isDragging or not dragEnabled_ then return end
                 if inp.UserInputType==Enum.UserInputType.MouseMovement
                 or inp.UserInputType==Enum.UserInputType.Touch then
-                    local cur = getMP()
+                    local cur=getMP()
                     setTargetPos(
-                        dragStartAnchor.X + (cur.X - dragStartMouse.X),
-                        dragStartAnchor.Y + (cur.Y - dragStartMouse.Y)
+                        dragStartAnchor.X+(cur.X-dragStartMouse.X),
+                        dragStartAnchor.Y+(cur.Y-dragStartMouse.Y)
                     )
                 end
             end))
             table.insert(dragInputConns, UIS.InputEnded:Connect(function(inp)
                 if inp.UserInputType==Enum.UserInputType.MouseButton1
                 or inp.UserInputType==Enum.UserInputType.Touch then
-                    isDragging = false
+                    isDragging=false
                 end
             end))
         end
@@ -731,80 +739,79 @@ return function(ctx)
 
         applyProgress(0); targetA=1
 
-        -- ── Position helpers (all smooth via setTargetPos) ────────────
+        -- ── Position helpers ─────────────────────────────────────────
         local function waitAndMove(fn)
             task.spawn(function()
-                -- wait up to 0.5s for AbsoluteSize to be valid
-                local t = 0
-                while row.AbsoluteSize.X < 8 and t < 0.5 do
-                    task.wait(0.05); t += 0.05
-                end
+                local t=0
+                while row.AbsoluteSize.X<8 and t<0.5 do task.wait(0.05); t+=0.05 end
                 fn()
             end)
         end
 
         local function moveTopLeft()
-            -- slightly right of the original 104 default
-            setTargetPos(124, MARGIN)
+            -- left AND lower: X=88, Y=42
+            setTargetPos(88, 42)
         end
         local function moveTopRight()
             waitAndMove(function()
-                local vp = workspace.CurrentCamera.ViewportSize
-                local w  = row.AbsoluteSize.X
-                setTargetPos(vp.X - w - MARGIN, MARGIN + 8)  -- +8 lower
+                local vp=workspace.CurrentCamera.ViewportSize
+                local w=row.AbsoluteSize.X
+                setTargetPos(vp.X-w-MARGIN, MARGIN+8)
             end)
         end
         local function moveBottomLeft()
             waitAndMove(function()
-                local vp = workspace.CurrentCamera.ViewportSize
-                local w  = row.AbsoluteSize.X
-                local h  = row.AbsoluteSize.Y
-                setTargetPos(104 - 8, vp.Y - h - MARGIN)  -- -8 left
+                local vp=workspace.CurrentCamera.ViewportSize
+                local h=row.AbsoluteSize.Y
+                -- further left: 80px from edge
+                setTargetPos(80, vp.Y-h-MARGIN)
             end)
         end
 
-        -- ── Rebuild particle systems ──────────────────────────────────
-        local function rebuildParticles(n, cd)
-            -- Remove old particle drawObjs but keep orbit lines
-            for _, sys in pairs(entryToSys) do
-                for _, p in ipairs(sys.pts) do
-                    pcall(function() p.dot:Remove() end)
-                end
-                for i=1,#sys.pts do
-                    for j=i+1,#sys.pts do
-                        if sys.lines[i] and sys.lines[i][j] then
-                            pcall(function() sys.lines[i][j]:Remove() end)
+        -- ── Rebuild helpers ───────────────────────────────────────────
+        local function rebuildAllSystems()
+            -- remove old drawing objs except orbit lines (rebuilt separately)
+            for entry, pair in pairs(entrySystems) do
+                for _, sys in ipairs(pair) do
+                    for _, p in ipairs(sys.pts) do
+                        pcall(function() p.dot:Remove() end)
+                    end
+                    for i=1,#sys.pts do
+                        for j=i+1,#sys.pts do
+                            if sys.lines[i] and sys.lines[i][j] then
+                                pcall(function() sys.lines[i][j]:Remove() end)
+                            end
                         end
                     end
                 end
             end
-            -- Rebuild drawObjs list (keep orbit lines)
+            -- Rebuild drawObjs list keeping orbit lines
             drawObjs = {}
             for _, l in ipairs(orbitLines) do table.insert(drawObjs, l) end
 
-            if cd then connectDist = cd end
-            particleCount = n
+            entrySystems = {}
+            buildEntrySystems(logoEntry)
+            buildEntrySystems(titleEntry)
+            if fpsEntry  then buildEntrySystems(fpsEntry)  end
+            if timeEntry then buildEntrySystems(timeEntry) end
 
-            entryToSys[titleEntry] = buildSys(n)
-            if fpsEntry  then entryToSys[fpsEntry]  = buildSys(n) end
-            if timeEntry then entryToSys[timeEntry] = buildSys(n) end
-
-            -- re-init
             task.spawn(function()
-                local waited = 0
-                while waited < 4 do
-                    task.wait(0.05); waited += 0.05
-                    local allReady = true
-                    for entry, sys in pairs(entryToSys) do
-                        if not sys.ready then
-                            local ap = entry.frame.AbsolutePosition
-                            local as = entry.frame.AbsoluteSize
-                            if as.X > 8 then
-                                initSys(sys, ap.X, ap.Y + particleYOffset, as.X, as.Y)
-                            else allReady = false end
-                        end
+                local waited=0
+                while waited<4 do
+                    task.wait(0.05); waited+=0.05
+                    local ok=true
+                    for entry, pair in pairs(entrySystems) do
+                        local f=entry.frame
+                        local ap=f.AbsolutePosition
+                        local as=f.AbsoluteSize
+                        if as.X>4 then
+                            local ay=ap.Y+particleYOffset
+                            for _, sys in ipairs(pair) do
+                                if not sys.ready then initSys(sys,ap.X,ay,as.X,as.Y) end
+                            end
+                        else ok=false end
                     end
-                    if allReady then break end
+                    if ok then break end
                 end
             end)
         end
@@ -812,92 +819,82 @@ return function(ctx)
         -- ── Public API ───────────────────────────────────────────────
         local WM = {}
 
-        function WM:Show()      targetA = 1 end
-        function WM:Hide()      targetA = 0 end
-        function WM:Toggle()    if targetA > 0.5 then self:Hide() else self:Show() end end
-        function WM:IsVisible() return targetA > 0.5 end
-        function WM:SetTitle(txt) titleText = txt; titleLbl.Text = txt end
+        function WM:Show()      targetA=1 end
+        function WM:Hide()      targetA=0 end
+        function WM:Toggle()    if targetA>0.5 then self:Hide() else self:Show() end end
+        function WM:IsVisible() return targetA>0.5 end
+        function WM:SetTitle(txt) titleText=txt; titleLbl.Text=txt end
 
-        -- Raw position (instant)
         function WM:SetPosition(pos)
-            if typeof(pos)=="UDim2" then
-                snapPos(pos.X.Offset, pos.Y.Offset)
-            elseif typeof(pos)=="Vector2" then
-                snapPos(pos.X, pos.Y)
-            end
+            if typeof(pos)=="UDim2" then snapPos(pos.X.Offset,pos.Y.Offset)
+            elseif typeof(pos)=="Vector2" then snapPos(pos.X,pos.Y) end
         end
+        function WM:MoveTopLeft()    moveTopLeft()    end
+        function WM:MoveTopRight()   moveTopRight()   end
+        function WM:MoveBottomLeft() moveBottomLeft() end
 
-        -- Smooth moves
-        function WM:MoveTopLeft()     moveTopLeft()    end
-        function WM:MoveTopRight()    moveTopRight()   end
-        function WM:MoveBottomLeft()  moveBottomLeft() end
-        -- MoveBottomRight intentionally removed per request
-
-        -- Drag
         function WM:SetDrag(state)
-            dragEnabled_ = state
-            if not state then
-                isDragging = false
-                -- Reset to top-right when drag is disabled
-                moveTopRight()
-            end
+            dragEnabled_=state
+            if not state then isDragging=false; moveTopRight() end
         end
         function WM:IsDragEnabled() return dragEnabled_ end
 
-        -- Particle Y offset nudge (for coordinate tuning)
+        -- Particle Y offset (manual fine-tune, default=28)
         function WM:SetParticleYOffset(v)
-            particleYOffset = v
-            -- force re-init on next frame so positions are recalculated
-            for _, sys in pairs(entryToSys) do
-                sys.ready = false
+            particleYOffset=v
+            for _, pair in pairs(entrySystems) do
+                for _, sys in ipairs(pair) do sys.ready=false end
             end
         end
         function WM:GetParticleYOffset() return particleYOffset end
 
-        -- Particle customisation
-        function WM:SetParticleColors(c1, c2)
-            if c1 then particleColor1 = c1 end
-            if c2 then particleColor2 = c2 end
+        -- Particle global opacity (0=invisible, 1=full)
+        function WM:SetParticleAlpha(a)
+            globalParticleAlpha = math.clamp(a, 0, 1)
+        end
+        function WM:GetParticleAlpha() return globalParticleAlpha end
+
+        function WM:SetParticleColors(c1,c2)
+            if c1 then particleColor1=c1 end
+            if c2 then particleColor2=c2 end
         end
         function WM:SetParticleCount(n, cd)
-            n = math.clamp(math.round(n), 2, 30)
-            rebuildParticles(n, cd)
+            particleCount=math.clamp(math.round(n),2,30)
+            if cd then connectDist=cd end
+            rebuildAllSystems()
         end
-        function WM:SetConnectDist(d)
-            connectDist = d
+        function WM:SetDensityCount(n)
+            densityCount=math.clamp(math.round(n),0,20)
+            rebuildAllSystems()
         end
-        function WM:SetParticleSpeed(near, far)
-            if near then SPEED_NEAR = near end
-            if far  then SPEED_FAR  = far  end
+        function WM:SetConnectDist(d) connectDist=d end
+        function WM:SetParticleSpeed(near,far)
+            if near then SPEED_NEAR=near end
+            if far  then SPEED_FAR=far  end
         end
 
-        -- Orbit
         function WM:SetOrbitEnabled(state)
-            orbitEnabled = state
-            if not state then
-                for _, l in ipairs(orbitLines) do l.Transparency = 0 end
-            end
+            orbitEnabled=state
+            if not state then for _,l in ipairs(orbitLines) do l.Transparency=0 end end
         end
         function WM:IsOrbitEnabled() return orbitEnabled end
 
-        -- Logo segment count
         function WM:SetSegmentCount(n)
-            n = math.clamp(math.round(n), 2, 24)
-            SEG_COUNT = n
+            n=math.clamp(math.round(n),2,24)
+            SEG_COUNT=n
             rebuildLogoSegs(n)
+            buildOrbitLines(n)
+            for i=1,n do dotScreenPos[i]=Vector2.new(0,0) end
         end
         function WM:GetSegmentCount() return SEG_COUNT end
 
-        -- 3D "on the plane" mode
-        function WM:SetOnThePlane(state)
-            onThePlane = state
-        end
+        function WM:SetOnThePlane(state) onThePlane=state end
         function WM:IsOnThePlane() return onThePlane end
 
         function WM:Destroy()
-            for _, c in ipairs(conns) do c:Disconnect() end
-            for _, c in ipairs(dragInputConns) do c:Disconnect() end
-            for _, d in ipairs(drawObjs) do pcall(function() d:Remove() end) end
+            for _,c in ipairs(conns) do c:Disconnect() end
+            for _,c in ipairs(dragInputConns) do c:Disconnect() end
+            for _,d in ipairs(drawObjs) do pcall(function() d:Remove() end) end
             gui:Destroy()
         end
 
