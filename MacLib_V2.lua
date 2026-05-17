@@ -2026,7 +2026,7 @@ function MacLib:Window(Settings)
 					button.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					button.BorderSizePixel = 0
 					button.Size = UDim2.new(1, 0, 0, 38)
-					button.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					button.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					button.Parent = section
 
 					local buttonInteract = Instance.new("TextButton")
@@ -2141,7 +2141,7 @@ function MacLib:Window(Settings)
 					toggle.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					toggle.BorderSizePixel = 0
 					toggle.Size = UDim2.new(1, 0, 0, 38)
-					toggle.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					toggle.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					toggle.Parent = section
 
 					local toggleName = Instance.new("TextLabel")
@@ -2319,7 +2319,7 @@ function MacLib:Window(Settings)
 					slider.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					slider.BorderSizePixel = 0
 					slider.Size = UDim2.new(1, 0, 0, 38)
-					slider.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					slider.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					slider.Parent = section
 
 					local sliderName = Instance.new("TextLabel")
@@ -2628,7 +2628,7 @@ function MacLib:Window(Settings)
 					input.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					input.BorderSizePixel = 0
 					input.Size = UDim2.new(1, 0, 0, 38)
-					input.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					input.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					input.Parent = section
 
 					local inputName = Instance.new("TextLabel")
@@ -2830,7 +2830,7 @@ function MacLib:Window(Settings)
 					keybind.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					keybind.BorderSizePixel = 0
 					keybind.Size = UDim2.new(1, 0, 0, 38)
-					keybind.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					keybind.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					keybind.Parent = section
 
 					local keybindName = Instance.new("TextLabel")
@@ -3238,7 +3238,7 @@ function MacLib:Window(Settings)
 					dropdown.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					dropdown.BorderSizePixel = 0
 					dropdown.Size = UDim2.new(1, 0, 0, 38)
-					dropdown.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					dropdown.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					dropdown.Parent = section
 					dropdown.ClipsDescendants = false
 
@@ -3892,7 +3892,7 @@ function MacLib:Window(Settings)
 					colorpicker.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					colorpicker.BorderSizePixel = 0
 					colorpicker.Size = UDim2.new(1, 0, 0, 38)
-					colorpicker.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					colorpicker.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					colorpicker.Parent = section
 
 					local colorpickerName = Instance.new("TextLabel")
@@ -5194,7 +5194,7 @@ function MacLib:Window(Settings)
 					header.BorderSizePixel = 0
 					header.LayoutOrder = 0
 					header.Size = UDim2.fromScale(1, 0)
-					header.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					header.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					header.Parent = section
 
 					local uIPadding = Instance.new("UIPadding")
@@ -5248,7 +5248,7 @@ function MacLib:Window(Settings)
 					label.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					label.BorderSizePixel = 0
 					label.Size = UDim2.new(1, 0, 0, 38)
-					label.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					label.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					label.Parent = section
 
 					local labelText = Instance.new("TextLabel")
@@ -5293,7 +5293,7 @@ function MacLib:Window(Settings)
 					subLabel.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					subLabel.BorderSizePixel = 0
 					subLabel.Size = UDim2.new(1, 0, 0, 0)
-					subLabel.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					subLabel.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					subLabel.Parent = section
 
 					local subLabelText = Instance.new("TextLabel")
@@ -5338,7 +5338,7 @@ function MacLib:Window(Settings)
 					paragraph.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					paragraph.BorderSizePixel = 0
 					paragraph.Size = UDim2.new(1, 0, 0, 38)
-					paragraph.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					paragraph.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					paragraph.Parent = section
 
 					local paragraphHeader = Instance.new("TextLabel")
@@ -5417,7 +5417,7 @@ function MacLib:Window(Settings)
 					divider.BorderSizePixel = 0
 					divider.Position = UDim2.fromScale(0, 1)
 					divider.Size = UDim2.new(1, 0, 0, 1)
-					divider.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					divider.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					divider.Parent = section
 
 					local uIPadding = Instance.new("UIPadding")
@@ -5461,7 +5461,7 @@ function MacLib:Window(Settings)
 					spacer.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					spacer.BorderSizePixel = 0
 					spacer.Position = UDim2.fromScale(0, 1)
-					spacer.LayoutOrder = (type(Settings) == 'table' and Settings.Slot) or (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					spacer.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					spacer.Parent = section
 
 					function SpacerFunctions:Remove()
@@ -6833,45 +6833,44 @@ function MacLib:Window(Settings)
 	end
 
 	function MacLib:CreateCustomElement(sectionObj, typeName, settings, flag)
-    assert(customBuilders[typeName], ...)
-
-    local childrenBefore = {}
-    if sectionObj.frame then
-        for _, c in ipairs(sectionObj.frame:GetChildren()) do
-            childrenBefore[c] = true
-        end
-    end
-
-    -- ✅ FIX: резервируем LayoutOrder ДО вызова билдера
-    local reservedOrder
-    if sectionObj.nextOrder then
-        reservedOrder = sectionObj.nextOrder()
-    end
-
-    local elementFns = customBuilders[typeName](sectionObj.frame, settings, flag)
-
-    -- ✅ FIX: применяем зарезервированный порядок к новому frame
-    if reservedOrder and sectionObj.frame and elementFns then
-        local rootFrame = elementFns._frame or elementFns.frame
-        if not rootFrame then
-            for _, c in ipairs(sectionObj.frame:GetChildren()) do
-                if not childrenBefore[c] then
-                    rootFrame = c
-                    break
-                end
-            end
-        end
-        if rootFrame then
-            rootFrame.LayoutOrder = reservedOrder
-        end
-    end
-
-    if flag ~= nil and elementFns ~= nil then
-        elementFns.Class = elementFns.Class or typeName
-        MacLib.Options[flag] = elementFns
-    end
-    return elementFns
-end
+		assert(_customBuilders[typeName],
+			"CreateCustomElement: type '" .. tostring(typeName) ..
+			"' not registered. Call MacLib:RegisterElement first.")
+		-- FIX: резервируем LayoutOrder СИНХРОННО до вызова билдера
+		local reservedOrder = nil
+		if sectionObj._frame and type(sectionObj._nextOrder) == "function" then
+			reservedOrder = sectionObj._nextOrder()
+		end
+		-- FIX: snapshot детей ДО вызова билдера
+		local childrenBefore = {}
+		if sectionObj._frame then
+			for _, c in ipairs(sectionObj._frame:GetChildren()) do
+				childrenBefore[c] = true
+			end
+		end
+		local elementFns = _customBuilders[typeName](sectionObj._frame or sectionObj, settings or {}, flag)
+		-- FIX: rootFrame через diff (не FindFirstChild — он вернёт первый с таким именем!)
+		-- Приоритет: elementFns._frame (прямая ссылка из билдера) → diff детей
+		if reservedOrder and elementFns and sectionObj._frame then
+			local rootFrame = elementFns._frame
+			if not rootFrame then
+				for _, c in ipairs(sectionObj._frame:GetChildren()) do
+					if not childrenBefore[c] then
+						rootFrame = c
+						break
+					end
+				end
+			end
+			if rootFrame then
+				rootFrame.LayoutOrder = reservedOrder
+			end
+		end
+		if flag ~= nil and elementFns ~= nil then
+			elementFns.Class = elementFns.Class or typeName
+			MacLib.Options[flag] = elementFns
+		end
+		return elementFns
+	end
 	-- === EXTENDED API ===
 
 	--[[
@@ -7728,7 +7727,23 @@ end
 		Обратная совместимость:
 		  MacLib:Preloader(fn, callback)  -- callback = onLoad
 	]]
-	function MacLib:Preloader(moduleResult, config)
+	MacLib._loadedModules   = MacLib._loadedModules   or {}
+	MacLib._onLoadCallbacks = MacLib._onLoadCallbacks or {}
+
+	function MacLib:OnLoad(name, callback)
+		if MacLib._loadedModules[name] then
+			task.spawn(callback)
+		else
+			MacLib._onLoadCallbacks[name] = MacLib._onLoadCallbacks[name] or {}
+			table.insert(MacLib._onLoadCallbacks[name], callback)
+		end
+	end
+
+	function MacLib:IsLoaded(name)
+		return MacLib._loadedModules[name] == true
+	end
+
+		function MacLib:Preloader(moduleResult, config)
 		-- Поддержка старого API: Preloader(fn, callback)
 		if type(config) == "function" then
 			config = { onLoad = config }
@@ -7761,19 +7776,19 @@ end
 
 			if ok then
 				if type(config.onLoad) == "function" then
-				config.onLoad(result)
-			end
-			-- Track loaded modules for MacLib:IsLoaded() / MacLib:OnLoad()
-			if config.Name then
-				MacLib._loadedModules = MacLib._loadedModules or {}
-				MacLib._loadCallbacks = MacLib._loadCallbacks or {}
-				MacLib._loadedModules[config.Name] = true
-				local cbs = MacLib._loadCallbacks[config.Name]
-				if cbs then
-					for _, cb in ipairs(cbs) do task.spawn(cb) end
-					MacLib._loadCallbacks[config.Name] = nil
+					config.onLoad(result)
 				end
-			end
+				-- FIX: помечаем модуль загруженным и диспатчим MacLib:OnLoad callbacks
+				if config.Name then
+					MacLib._loadedModules[config.Name] = true
+					local cbs = MacLib._onLoadCallbacks and MacLib._onLoadCallbacks[config.Name]
+					if cbs then
+						for _, cb in ipairs(cbs) do
+							task.spawn(cb)
+						end
+						MacLib._onLoadCallbacks[config.Name] = nil
+					end
+				end
 			else
 				warn("[MacLib:Preloader] Error" .. (config.Name and (" in '" .. config.Name .. "'") or "") .. ": " .. tostring(result))
 				if type(config.onError) == "function" then
@@ -7782,169 +7797,4 @@ end
 			end
 		end)
 	end
--- ════════════════════════════════════════════════════════════════════════════
--- MACLIB EXTENSION API v2
--- Полноценный механизм расширения MacLib без _G.
--- ════════════════════════════════════════════════════════════════════════════
-
--- MacLib:Extend(name, fn)
--- Добавляет новый метод/свойство прямо в таблицу MacLib.
--- Используется модулями из Preloader для регистрации глобальных методов.
--- Пример: MacLib:Extend("KeySystem", function(self, cfg) ... end)
-function MacLib:Extend(name, fn)
-	assert(type(name) == "string", "MacLib:Extend — name must be a string")
-	assert(type(fn) == "function", "MacLib:Extend — fn must be a function")
-	if MacLib[name] ~= nil then
-		warn("[MacLib:Extend] Overwriting existing member: " .. tostring(name))
-	end
-	MacLib[name] = fn
-end
-
--- MacLib:Hook(name, hookFn)
--- Перехватывает существующий метод MacLib.
--- hookFn(original, self, ...) — вызывайте original(self, ...) внутри.
--- Пример (логирование): MacLib:Hook("Notify", function(orig, self, s)
---     print("[HOOK] Notify:", s.Title)  orig(self, s)  end)
-function MacLib:Hook(name, hookFn)
-	assert(type(name) == "string",   "MacLib:Hook — name must be a string")
-	assert(type(hookFn) == "function", "MacLib:Hook — hookFn must be a function")
-	local original = MacLib[name]
-	assert(type(original) == "function", "MacLib:Hook — MacLib." .. name .. " is not a function")
-	MacLib[name] = function(self, ...)
-		return hookFn(original, self, ...)
-	end
-end
-
--- MacLib:ExtendSection(name, fn)
--- Регистрирует новый метод во ВСЕ существующие и будущие Section-объекты.
--- Аналог MacLib:PatchSection, но с правильным именованием и без путаницы.
--- fn(self, settings, flag) — self это SectionFunctions объект секции.
--- Пример: MacLib:ExtendSection("ProgressBar", function(self, s, f) ... end)
-function MacLib:ExtendSection(name, fn)
-	assert(type(name) == "string",   "MacLib:ExtendSection — name must be a string")
-	assert(type(fn) == "function",   "MacLib:ExtendSection — fn must be a function")
-	MacLib._sectionPatches = MacLib._sectionPatches or {}
-	MacLib._sectionPatches[name] = fn
-	MacLib._liveSections = MacLib._liveSections or {}
-	for _, sectionFns in ipairs(MacLib._liveSections) do
-		if not sectionFns[name] then
-			local captured = fn
-			sectionFns[name] = function(self, settings, flag)
-				return captured(self, settings, flag)
-			end
-		end
-	end
-end
-
--- MacLib:WatchOption(flag, fn)
--- Подписывается на изменения flagged-элемента без замены его Callback.
--- fn(newValue) — вызывается при каждом изменении после основного Callback.
--- Можно подписаться ДО создания элемента — callback будет применён при регистрации.
-MacLib._watchers = MacLib._watchers or {}
-function MacLib:WatchOption(flag, fn)
-	assert(type(flag) == "string",  "MacLib:WatchOption — flag must be a string")
-	assert(type(fn) == "function",  "MacLib:WatchOption — fn must be a function")
-	MacLib._watchers[flag] = MacLib._watchers[flag] or {}
-	table.insert(MacLib._watchers[flag], fn)
-	local el = MacLib.Options[flag]
-	if el and el.Settings then
-		local origCB = el.Settings.Callback
-		el.Settings.Callback = function(v)
-			if origCB then origCB(v) end
-			for _, wfn in ipairs(MacLib._watchers[flag] or {}) do
-				task.spawn(wfn, v)
-			end
-		end
-	end
-end
-
--- MacLib:BatchSet(tbl)
--- Массово устанавливает значения по флагам.
--- tbl = { ["MyFlag"] = newValue, ... }
--- Типы: Toggle→bool, Slider→number, Input→string,
---       Dropdown→string|table, Colorpicker→Color3|{color=Color3, alpha=number}
-function MacLib:BatchSet(tbl)
-	assert(type(tbl) == "table", "MacLib:BatchSet — argument must be a table")
-	for flag, value in next, tbl do
-		local el = MacLib.Options[flag]
-		if not el then
-			warn("[MacLib:BatchSet] Unknown flag: " .. tostring(flag))
-			continue
-		end
-		local class = el.Class
-		if class == "Toggle" then
-			el:UpdateState(value)
-		elseif class == "Slider" then
-			el:UpdateValue(value)
-		elseif class == "Input" then
-			el:UpdateText(value)
-		elseif class == "Dropdown" then
-			el:UpdateSelection(value)
-		elseif class == "Colorpicker" then
-			if typeof(value) == "Color3" then
-				el:SetColor(value)
-			elseif type(value) == "table" then
-				if value.color then el:SetColor(value.color) end
-				if value.alpha ~= nil then el:SetAlpha(value.alpha) end
-			end
-		else
-			-- Кастомный элемент — пробуем дженерик методы
-			if el.SetValue then el:SetValue(value)
-			elseif el.UpdateValue then el:UpdateValue(value)
-			elseif el.UpdateState then el:UpdateState(value) end
-		end
-	end
-end
-
--- MacLib:RemoveOption(flag)
--- Удаляет flagged-элемент из реестра и вызывает его деструктор.
-function MacLib:RemoveOption(flag)
-	local el = MacLib.Options[flag]
-	if not el then return end
-	pcall(function()
-		if el.Destroy then el:Destroy()
-		elseif el.Remove then el:Remove() end
-	end)
-	MacLib.Options[flag] = nil
-	if MacLib._watchers then MacLib._watchers[flag] = nil end
-end
-
--- MacLib:GetOptions()
--- Возвращает копию таблицы всех зарегистрированных flagged-элементов.
-function MacLib:GetOptions()
-	local copy = {}
-	for k, v in next, MacLib.Options do
-		copy[k] = v
-	end
-	return copy
-end
-
--- MacLib:IsLoaded(name)
--- Возвращает true если Preloader успешно загрузил модуль с данным именем.
--- Замена флагам типа PB_READY, CB_READY, KS_READY.
-MacLib._loadedModules = MacLib._loadedModules or {}
-function MacLib:IsLoaded(name)
-	return MacLib._loadedModules[name] == true
-end
-
--- MacLib:OnLoad(name, fn)
--- Вызывает fn() сразу если модуль уже загружен, иначе ставит в очередь
--- и вызовет fn() когда Preloader завершит загрузку с данным Name.
--- Заменяет паттерн: while not X_READY do task.wait(0.1) end
-MacLib._loadCallbacks = MacLib._loadCallbacks or {}
-function MacLib:OnLoad(name, fn)
-	assert(type(name) == "string",  "MacLib:OnLoad — name must be a string")
-	assert(type(fn) == "function",  "MacLib:OnLoad — fn must be a function")
-	if MacLib._loadedModules[name] then
-		task.spawn(fn)
-	else
-		MacLib._loadCallbacks[name] = MacLib._loadCallbacks[name] or {}
-		table.insert(MacLib._loadCallbacks[name], fn)
-	end
-end
-
--- ════════════════════════════════════════════════════════════════════════════
--- END EXTENSION API v2
--- ════════════════════════════════════════════════════════════════════════════
-
 return MacLib
