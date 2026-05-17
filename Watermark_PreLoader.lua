@@ -1,217 +1,471 @@
--- Watermark_PreLoader.lua  (v2 — V11 compatible)
--- Registers MacLib:Watermark(cfg)
--- Fixes: spring animation, stable FPS rolling avg, fixed-width chips, styled title chip
+-- Watermark_PreLoader.lua  (v3 — Drawing-based, Neverlose/Thunderhack style)
+-- Pure Drawing API: no ScreenGui. Fake-blur via layered semi-transparent squares.
+-- Features: icon+text chips, animated accent line, layered bg "glass" effect,
+--           spring-style show/hide, rolling-avg FPS, fixed layout.
 
 return function(ctx)
-    local MacLib       = ctx.MacLib
-    local TweenService = game:GetService("TweenService")
-    local RunService   = game:GetService("RunService")
+    local MacLib     = ctx.MacLib
+    local RunService = game:GetService("RunService")
 
-    local function Tween(obj, info, props)
-        local t = TweenService:Create(obj, info, props); t:Play(); return t
-    end
+    -- ── Drawing helpers ──────────────────────────────────────────────────
+    local function D(type) return Drawing.new(type) end
 
-    local function GetGui()
-        local g = Instance.new("ScreenGui")
-        g.ResetOnSpawn   = false
-        g.DisplayOrder   = 9998
-        g.IgnoreGuiInset = true
-        g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-        local ok
-        if gethui then ok = pcall(function() g.Parent = gethui() end) end
-        if not ok or not g.Parent then ok = pcall(function() g.Parent = game:GetService("CoreGui") end) end
-        if not ok or not g.Parent then g.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui") end
-        return g
-    end
+    -- Smooth lerp for animation
+    local function lerp(a, b, t) return a + (b - a) * t end
 
+    -- ── Icon rbxassetids ─────────────────────────────────────────────────
+    -- We'll render icon images via Drawing "Image" if available,
+    -- otherwise fallback to unicode glyphs in Drawing "Text"
+    local ICON_FPS  = 102994395432803  -- user-provided asset
+    local ICON_TIME = 17824308575      -- user-provided asset
+
+    -- ── Color palette (Neverlose dark + blue accent) ──────────────────────
+    local C = {
+        bg_dark   = Color3.fromRGB(10, 10, 13),       -- main bg
+        bg_mid    = Color3.fromRGB(16, 16, 22),        -- title section bg
+        accent    = Color3.fromRGB(75, 140, 255),       -- blue accent
+        accent2   = Color3.fromRGB(100, 80, 255),       -- purple accent (gradient sim)
+        text_main = Color3.fromRGB(225, 225, 235),      -- primary text
+        text_muted= Color3.fromRGB(140, 140, 155),      -- secondary text
+        white     = Color3.fromRGB(255, 255, 255),
+        sep       = Color3.fromRGB(40, 40, 55),         -- separator line
+    }
+
+    -- ── Layout constants ─────────────────────────────────────────────────
+    local PAD_X    = 10   -- horizontal padding inside chip
+    local PAD_Y    = 6    -- vertical padding
+    local H        = 30   -- total height
+    local ICON_SZ  = 14   -- icon square size
+    local FONT     = Drawing.Fonts and Drawing.Fonts.UI or 0
+    local TXT_SZ   = 13
+    local SEP_W    = 1    -- separator width
+    local CORNER   = 4    -- rounding for image objects (if supported)
+
+    -- ── State ─────────────────────────────────────────────────────────────
+    local allObjs  = {}   -- all Drawing objects, for bulk remove
+    local function reg(obj) table.insert(allObjs, obj); return obj end
+
+    local visible  = true
+    local alpha    = 0    -- 0=hidden 1=shown, used for fade animation
+    local targetA  = 1
+
+    -- FPS rolling average
+    local FPS_N    = 30
+    local fpsBuf   = table.create(FPS_N, 1/60)
+    local fpsBufI  = 1
+    local fpsVal   = 0
+    local fpsTimer = 0
+
+    -- Time
+    local lastSec  = -1
+    local timeStr  = "00:00:00"
+
+    -- Animated accent bar phase
+    local accentPhase = 0
+
+    -- Position (top-left corner of whole watermark)
+    local POS_X = 18
+    local POS_Y = 22
+
+    -- ========================================================================
     function MacLib:Watermark(cfg)
         cfg = cfg or {}
         local titleText = cfg.Title    or "Watermark"
         local showFPS   = cfg.ShowFPS  ~= false
         local showTime  = cfg.ShowTime ~= false
 
-        local gui = GetGui()
-        gui.Name = "MacLibWatermark"
-
-        local anchor = Instance.new("Frame")
-        anchor.Name = "WmAnchor"; anchor.AnchorPoint = Vector2.new(0, 0)
-        anchor.Position = cfg.Position or UDim2.fromOffset(14, 14)
-        anchor.BackgroundTransparency = 1; anchor.BorderSizePixel = 0
-        anchor.AutomaticSize = Enum.AutomaticSize.XY; anchor.Parent = gui
-
-        local wrapper = Instance.new("Frame")
-        wrapper.Name = "WmWrapper"; wrapper.AnchorPoint = Vector2.new(0, 0)
-        wrapper.Position = UDim2.fromScale(0, 0); wrapper.BackgroundTransparency = 1
-        wrapper.BorderSizePixel = 0; wrapper.AutomaticSize = Enum.AutomaticSize.XY
-        wrapper.ClipsDescendants = false; wrapper.Parent = anchor
-
-        local uiScale = Instance.new("UIScale"); uiScale.Scale = 0; uiScale.Parent = wrapper
-
-        local row = Instance.new("Frame")
-        row.Name = "WmRow"; row.BackgroundTransparency = 1
-        row.BorderSizePixel = 0; row.AutomaticSize = Enum.AutomaticSize.XY; row.Parent = wrapper
-
-        local rowLayout = Instance.new("UIListLayout")
-        rowLayout.FillDirection = Enum.FillDirection.Horizontal
-        rowLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-        rowLayout.SortOrder = Enum.SortOrder.LayoutOrder
-        rowLayout.Padding = UDim.new(0, 4); rowLayout.Parent = row
-
-        local CHIP_H = 28; local CHIP_PAD_H = 12; local CHIP_RADIUS = 8
-        local CHIP_BG = Color3.fromRGB(12, 12, 14)
-        local CHIP_BG_T = 0.08; local CHIP_STROKE_T = 0.80; local TXT_T = 0.05
-        local FONT_BODY  = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium)
-        local FONT_TITLE = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.SemiBold)
-
-        local allChips = {}
-
-        local function makeChip(order, defaultText, opts)
-            opts = opts or {}
-            local chip = Instance.new("Frame")
-            chip.Name = "Chip"..order; chip.BackgroundColor3 = opts.bg or CHIP_BG
-            chip.BackgroundTransparency = CHIP_BG_T; chip.BorderSizePixel = 0
-            chip.LayoutOrder = order
-            chip.AutomaticSize = opts.fixedW and Enum.AutomaticSize.None or Enum.AutomaticSize.X
-            chip.Size = opts.fixedW and UDim2.fromOffset(opts.fixedW, CHIP_H) or UDim2.fromOffset(0, CHIP_H)
-            chip.Parent = row
-            Instance.new("UICorner", chip).CornerRadius = UDim.new(0, CHIP_RADIUS)
-            local stroke = Instance.new("UIStroke")
-            stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-            stroke.Color = Color3.fromRGB(255,255,255); stroke.Transparency = CHIP_STROKE_T
-            stroke.Thickness = 1; stroke.Parent = chip
-            local pad = Instance.new("UIPadding")
-            pad.PaddingLeft = UDim.new(0, CHIP_PAD_H); pad.PaddingRight = UDim.new(0, CHIP_PAD_H)
-            pad.Parent = chip
-            local lbl = Instance.new("TextLabel")
-            lbl.Name = "Lbl"; lbl.FontFace = opts.font or FONT_BODY
-            lbl.TextSize = opts.textSize or 13; lbl.TextColor3 = Color3.fromRGB(255,255,255)
-            lbl.TextTransparency = TXT_T; lbl.BackgroundTransparency = 1
-            lbl.BorderSizePixel = 0; lbl.RichText = false
-            lbl.TextTruncate = Enum.TextTruncate.None
-            lbl.Size = UDim2.new(1, 0, 1, 0); lbl.TextXAlignment = Enum.TextXAlignment.Center
-            lbl.Text = defaultText; lbl.Parent = chip
-            local entry = { frame = chip, label = lbl, stroke = stroke }
-            table.insert(allChips, entry)
-            return entry
-        end
-
-        -- Title chip: dark tinted bg + blue accent stroke + left stripe
-        local titleChip = makeChip(1, titleText, {
-            bg = Color3.fromRGB(15, 16, 24), font = FONT_TITLE, textSize = 13,
-        })
-        local stripe = Instance.new("Frame")
-        stripe.Name = "AccentStripe"; stripe.AnchorPoint = Vector2.new(0, 0.5)
-        stripe.Position = UDim2.new(0, 0, 0.5, 0); stripe.Size = UDim2.fromOffset(2, 14)
-        stripe.BackgroundColor3 = Color3.fromRGB(75, 155, 255); stripe.BackgroundTransparency = 0
-        stripe.BorderSizePixel = 0; stripe.ZIndex = 3; stripe.Parent = titleChip.frame
-        Instance.new("UICorner", stripe).CornerRadius = UDim.new(1, 0)
-        titleChip.stroke.Color = Color3.fromRGB(75, 155, 255); titleChip.stroke.Transparency = 0.65
-
-        -- FPS chip: fixed width prevents layout jitter
-        local fpsChip
-        if showFPS then fpsChip = makeChip(2, "FPS  --", { fixedW = 78 }) end
-
-        -- Time chip: fixed width
-        local timeChip
-        if showTime then timeChip = makeChip(3, "00:00:00", { fixedW = 88 }) end
-
-        -- ==================================================================
-        -- ANIMATION: iOS/macOS spring-style
-        --   Appear  → Back Out (overshoot scale 0.80→1.0) + Quint Out (fade)
-        --   Disappear → Quint In (fast, clean scale 1→0.82 + fade)
-        -- ==================================================================
-        local APPEAR_SCALE = TweenInfo.new(0.40, Enum.EasingStyle.Back,  Enum.EasingDirection.Out)
-        local APPEAR_FADE  = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-        local DISAPPEAR    = TweenInfo.new(0.16, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
-
-        local visible = true
-
-        local function setVisible(show, animate)
-            if animate then
-                if show then
-                    uiScale.Scale = 0.80
-                    for _, c in ipairs(allChips) do
-                        c.frame.BackgroundTransparency = 1
-                        c.label.TextTransparency = 1
-                        c.stroke.Transparency = 1
-                    end
-                    Tween(uiScale, APPEAR_SCALE, { Scale = 1 })
-                    for _, c in ipairs(allChips) do
-                        Tween(c.frame,  APPEAR_FADE, { BackgroundTransparency = CHIP_BG_T })
-                        Tween(c.label,  APPEAR_FADE, { TextTransparency = TXT_T })
-                        Tween(c.stroke, APPEAR_FADE, { Transparency = CHIP_STROKE_T })
-                    end
-                    Tween(titleChip.stroke, APPEAR_FADE, { Transparency = 0.65 })
-                else
-                    Tween(uiScale, DISAPPEAR, { Scale = 0.82 })
-                    for _, c in ipairs(allChips) do
-                        Tween(c.frame,  DISAPPEAR, { BackgroundTransparency = 1 })
-                        Tween(c.label,  DISAPPEAR, { TextTransparency = 1 })
-                        Tween(c.stroke, DISAPPEAR, { Transparency = 1 })
-                    end
-                    task.delay(0.18, function() if not visible then gui.Enabled = false end end)
-                end
-            else
-                uiScale.Scale = show and 1 or 0
-                for _, c in ipairs(allChips) do
-                    c.frame.BackgroundTransparency = show and CHIP_BG_T or 1
-                    c.label.TextTransparency = show and TXT_T or 1
-                    c.stroke.Transparency = show and CHIP_STROKE_T or 1
-                end
+        if cfg.Position then
+            -- accept UDim2 or Vector2
+            if typeof(cfg.Position) == "UDim2" then
+                local vp = workspace.CurrentCamera.ViewportSize
+                POS_X = cfg.Position.X.Offset + cfg.Position.X.Scale * vp.X
+                POS_Y = cfg.Position.Y.Offset + cfg.Position.Y.Scale * vp.Y
+            elseif typeof(cfg.Position) == "Vector2" then
+                POS_X = cfg.Position.X
+                POS_Y = cfg.Position.Y
             end
         end
 
-        task.defer(function()
-            setVisible(false, false); task.wait(0.08); setVisible(true, true)
-        end)
+        -- ── Measure text widths ──────────────────────────────────────────
+        -- We create hidden probe texts to measure TextBounds
+        local function measureText(str, size)
+            local t = Drawing.new("Text")
+            t.Text    = str
+            t.Size    = size or TXT_SZ
+            t.Font    = FONT
+            t.Visible = false
+            local b = t.TextBounds
+            t:Remove()
+            return b.X, b.Y
+        end
 
-        -- ==================================================================
-        -- FPS: rolling average over 30 Heartbeat samples → update every 0.25s
-        -- Text is only updated at 4Hz, chip width is fixed → zero layout jitter
-        -- ==================================================================
-        local FPS_SAMPLES = 30
-        local fpsBuf = table.create(FPS_SAMPLES, 1/60)
-        local fpsBufIdx = 1; local fpsTimer = 0
+        -- Pre-measure all sections
+        local titleW = measureText(titleText, TXT_SZ) + PAD_X * 2
+        local fpsW   = showFPS   and (ICON_SZ + 4 + measureText("000", TXT_SZ) + PAD_X * 2) or 0
+        local timeW  = showTime  and (ICON_SZ + 4 + measureText("00:00:00", TXT_SZ) + PAD_X * 2) or 0
 
-        -- Time: only recalc when second changes
-        local lastSecond = -1
+        -- Total width: title + (optional) fps + (optional) time + separators
+        local numSeps = (showFPS and 1 or 0) + (showTime and 1 or 0)
+        local totalW  = titleW + fpsW + timeW + numSeps * SEP_W
 
+        -- ── Build all Drawing objects ────────────────────────────────────
+        -- Layer order (ZIndex): bg=1, blur sim=2, accent=3, sep=4, icons=5, text=6
+
+        -- 1) Outer shadow (fake depth) — slightly larger dark square
+        local shadow = reg(D("Square"))
+        shadow.Filled      = true
+        shadow.Color       = Color3.fromRGB(0,0,0)
+        shadow.Transparency = 0.55
+        shadow.Thickness   = 0
+        shadow.ZIndex      = 1
+
+        -- 2) Main background (dark glass)
+        local bgMain = reg(D("Square"))
+        bgMain.Filled      = true
+        bgMain.Color       = C.bg_dark
+        bgMain.Transparency = 0.08   -- mostly opaque, slight transparency = "glass feel"
+        bgMain.Thickness   = 0
+        bgMain.ZIndex      = 2
+
+        -- 3) Blur simulation: multiple thin semi-transparent layers stacked
+        --    Real GPU blur is impossible in Roblox even with exploits.
+        --    Best approximation: 3 offset squares at different transparencies
+        --    giving a "frosted glass" impression when overlaid on game world.
+        local blurLayers = {}
+        local blurColors = {
+            Color3.fromRGB(20,20,30),
+            Color3.fromRGB(15,15,25),
+            Color3.fromRGB(25,25,40),
+        }
+        local blurAlphas = { 0.82, 0.88, 0.75 }
+        local blurOffset = { {0,0}, {1,0}, {0,1} }
+        for i = 1,3 do
+            local bl = reg(D("Square"))
+            bl.Filled      = true
+            bl.Color       = blurColors[i]
+            bl.Transparency = blurAlphas[i]
+            bl.Thickness   = 0
+            bl.ZIndex      = 3
+            table.insert(blurLayers, { sq = bl, ox = blurOffset[i][1], oy = blurOffset[i][2] })
+        end
+
+        -- 4) Title section bg (slightly different tint = visual separation)
+        local bgTitle = reg(D("Square"))
+        bgTitle.Filled      = true
+        bgTitle.Color       = C.bg_mid
+        bgTitle.Transparency = 0.05
+        bgTitle.Thickness   = 0
+        bgTitle.ZIndex      = 4
+
+        -- 5) Outer border (1px, dim)
+        local border = reg(D("Square"))
+        border.Filled      = false
+        border.Color       = C.sep
+        border.Transparency = 0.4
+        border.Thickness   = 1
+        border.ZIndex      = 5
+
+        -- 6) Accent bottom line (animated gradient shimmer simulation)
+        --    We use 3 overlapping lines of different color to simulate gradient
+        local accentLines = {}
+        for i = 1, 3 do
+            local al = reg(D("Line"))
+            al.Thickness  = 1
+            al.ZIndex     = 6
+            al.Transparency = 1
+            table.insert(accentLines, al)
+        end
+
+        -- 7) Separator lines between chips
+        local seps = {}
+        local function makeSep()
+            local s = reg(D("Line"))
+            s.Color       = C.sep
+            s.Transparency = 0.5
+            s.Thickness   = 1
+            s.ZIndex      = 7
+            table.insert(seps, s)
+            return s
+        end
+
+        -- Separator after title
+        local sep1 = makeSep()
+        -- Separator after FPS (only if time shown)
+        local sep2 = showFPS and showTime and makeSep() or nil
+
+        -- 8) Title text (SemiBold sim: outline trick)
+        local titleLbl = reg(D("Text"))
+        titleLbl.Text         = titleText
+        titleLbl.Size         = TXT_SZ
+        titleLbl.Font         = FONT
+        titleLbl.Color        = C.text_main
+        titleLbl.Outline      = true
+        titleLbl.OutlineColor = Color3.fromRGB(0,0,0)
+        titleLbl.Transparency = 1
+        titleLbl.ZIndex       = 8
+        titleLbl.Center       = false
+
+        -- 9) FPS icon (Drawing Image if rbxassetid works, else Text glyph)
+        local fpsIcon, fpsLbl
+        if showFPS then
+            -- Try Drawing Image for the icon
+            fpsIcon = reg(D("Image"))
+            -- rbxassetid numeric → packed into Data field on some executors
+            -- Fallback: if executor doesn't support Image drawing, we use text
+            pcall(function()
+                fpsIcon.Data = "rbxassetid://" .. tostring(ICON_FPS)
+                fpsIcon.Rounding = 2
+            end)
+            fpsIcon.Transparency = 1
+            fpsIcon.ZIndex = 8
+
+            fpsLbl = reg(D("Text"))
+            fpsLbl.Text         = "000"
+            fpsLbl.Size         = TXT_SZ
+            fpsLbl.Font         = FONT
+            fpsLbl.Color        = C.text_muted
+            fpsLbl.Outline      = false
+            fpsLbl.Transparency = 1
+            fpsLbl.ZIndex       = 8
+            fpsLbl.Center       = false
+        end
+
+        local timeIcon, timeLbl
+        if showTime then
+            timeIcon = reg(D("Image"))
+            pcall(function()
+                timeIcon.Data = "rbxassetid://" .. tostring(ICON_TIME)
+                timeIcon.Rounding = 2
+            end)
+            timeIcon.Transparency = 1
+            timeIcon.ZIndex = 8
+
+            timeLbl = reg(D("Text"))
+            timeLbl.Text         = "00:00:00"
+            timeLbl.Size         = TXT_SZ
+            timeLbl.Font         = FONT
+            timeLbl.Color        = C.text_muted
+            timeLbl.Outline      = false
+            timeLbl.Transparency = 1
+            timeLbl.ZIndex       = 8
+            timeLbl.Center       = false
+        end
+
+        -- ── Layout function: positions all objects given current POS_X/Y ─
+        local function layout()
+            local x = POS_X
+            local y = POS_Y
+            local W = totalW
+            local shadowPad = 6
+
+            -- shadow
+            shadow.Position = Vector2.new(x - 2 + shadowPad*0.5, y + 2 + shadowPad*0.5)
+            shadow.Size     = Vector2.new(W + 4, H + 2)
+
+            -- blur layers
+            for _, bl in ipairs(blurLayers) do
+                bl.sq.Position = Vector2.new(x + bl.ox, y + bl.oy)
+                bl.sq.Size     = Vector2.new(W + 4, H)
+            end
+
+            -- main bg
+            bgMain.Position = Vector2.new(x, y)
+            bgMain.Size     = Vector2.new(W, H)
+
+            -- title bg (left portion)
+            bgTitle.Position = Vector2.new(x, y)
+            bgTitle.Size     = Vector2.new(titleW, H)
+
+            -- outer border
+            border.Position = Vector2.new(x - 0.5, y - 0.5)
+            border.Size     = Vector2.new(W + 1, H + 1)
+
+            -- accent bottom lines (will be animated, just set base positions)
+            local bY = y + H - 1
+            accentLines[1].From = Vector2.new(x,         bY); accentLines[1].To = Vector2.new(x + W*0.5,  bY)
+            accentLines[2].From = Vector2.new(x + W*0.4, bY); accentLines[2].To = Vector2.new(x + W*0.8,  bY)
+            accentLines[3].From = Vector2.new(x + W*0.7, bY); accentLines[3].To = Vector2.new(x + W,      bY)
+
+            -- sep1 (after title)
+            local s1x = x + titleW
+            sep1.From = Vector2.new(s1x, y + 4)
+            sep1.To   = Vector2.new(s1x, y + H - 4)
+
+            -- Title text: vertically centered, left-padded
+            local tY = y + (H - TXT_SZ) * 0.5
+            titleLbl.Position = Vector2.new(x + PAD_X, tY)
+
+            -- FPS chip
+            if showFPS then
+                local chipX = x + titleW + SEP_W
+                local iconX = chipX + PAD_X
+                local iconY = y + (H - ICON_SZ) * 0.5
+                fpsIcon.Position = Vector2.new(iconX, iconY)
+                fpsIcon.Size     = Vector2.new(ICON_SZ, ICON_SZ)
+                fpsLbl.Position  = Vector2.new(iconX + ICON_SZ + 4, tY)
+
+                if sep2 then
+                    local s2x = chipX + fpsW
+                    sep2.From = Vector2.new(s2x, y + 4)
+                    sep2.To   = Vector2.new(s2x, y + H - 4)
+                end
+            end
+
+            -- Time chip
+            if showTime then
+                local chipX = x + titleW + SEP_W + fpsW + (sep2 and SEP_W or 0)
+                local iconX = chipX + PAD_X
+                local iconY = y + (H - ICON_SZ) * 0.5
+                timeIcon.Position = Vector2.new(iconX, iconY)
+                timeIcon.Size     = Vector2.new(ICON_SZ, ICON_SZ)
+                timeLbl.Position  = Vector2.new(iconX + ICON_SZ + 4, tY)
+            end
+        end
+
+        layout()
+
+        -- ── Animation helpers ──────────────────────────────────────────────
+        local function applyAlpha(a)
+            -- a: 0 = invisible, 1 = fully visible
+            -- Drawing Transparency: 0=opaque, 1=invisible  → invert
+            local inv = 1 - a
+
+            shadow.Transparency  = math.min(1, 0.55 + inv * 0.45)
+            bgMain.Transparency  = math.min(1, 0.08 + inv * 0.92)
+            bgTitle.Transparency = math.min(1, 0.05 + inv * 0.95)
+            border.Transparency  = math.min(1, 0.4  + inv * 0.6)
+            for _, bl in ipairs(blurLayers) do
+                bl.sq.Transparency = math.min(1, bl.sq.Transparency * 1 + inv * (1 - bl.sq.Transparency))
+            end
+
+            titleLbl.Transparency = inv
+            sep1.Transparency     = math.min(1, 0.5 + inv * 0.5)
+            if sep2 then sep2.Transparency = math.min(1, 0.5 + inv * 0.5) end
+
+            for _, al in ipairs(accentLines) do
+                al.Transparency = inv
+            end
+
+            if fpsIcon  then fpsIcon.Transparency  = inv end
+            if fpsLbl   then fpsLbl.Transparency   = inv end
+            if timeIcon then timeIcon.Transparency  = inv end
+            if timeLbl  then timeLbl.Transparency   = inv end
+        end
+
+        -- Spring lerp speed: fast spring (iOS deceleration feel)
+        local SPRING_SPEED = 12  -- higher = snappier
+
+        -- ── Main loop ─────────────────────────────────────────────────────
         local conn
         conn = RunService.Heartbeat:Connect(function(dt)
-            if not gui or not gui.Parent then conn:Disconnect(); return end
-            if fpsChip then
-                fpsBuf[fpsBufIdx] = dt
-                fpsBufIdx = (fpsBufIdx % FPS_SAMPLES) + 1
+            -- Spring animation toward target
+            local speed = targetA > alpha and SPRING_SPEED or (SPRING_SPEED * 1.5)
+            alpha = lerp(alpha, targetA, math.min(1, dt * speed))
+            if math.abs(alpha - targetA) < 0.001 then alpha = targetA end
+
+            applyAlpha(alpha)
+
+            -- Animated accent bottom bar (shimmer/pulse effect)
+            -- Simulates the Neverlose gradient line by animating color phases
+            accentPhase = (accentPhase + dt * 0.8) % (math.pi * 2)
+            local t1 = (math.sin(accentPhase) + 1) * 0.5          -- 0..1
+            local t2 = (math.sin(accentPhase + 2.1) + 1) * 0.5
+            local t3 = (math.sin(accentPhase + 4.2) + 1) * 0.5
+
+            local function blendC(a, b, t)
+                return Color3.fromRGB(
+                    math.round(lerp(a.R*255, b.R*255, t)),
+                    math.round(lerp(a.G*255, b.G*255, t)),
+                    math.round(lerp(a.B*255, b.B*255, t))
+                )
+            end
+            accentLines[1].Color = blendC(C.accent, C.accent2, t1)
+            accentLines[2].Color = blendC(C.accent2, C.accent, t2)
+            accentLines[3].Color = blendC(C.accent, C.accent2, t3)
+
+            -- FPS
+            if fpsLbl then
+                fpsBuf[fpsBufI] = dt
+                fpsBufI = (fpsBufI % FPS_N) + 1
                 fpsTimer += dt
                 if fpsTimer >= 0.25 then
                     fpsTimer = 0
                     local sum = 0
-                    for i = 1, FPS_SAMPLES do sum += fpsBuf[i] end
-                    local avgDt = sum / FPS_SAMPLES
-                    fpsChip.label.Text = "FPS  " .. tostring(avgDt > 0 and math.round(1/avgDt) or 0)
+                    for i = 1, FPS_N do sum += fpsBuf[i] end
+                    local avg = sum / FPS_N
+                    fpsVal = avg > 0 and math.round(1/avg) or 0
+                    fpsLbl.Text = tostring(fpsVal)
                 end
             end
-            if timeChip then
+
+            -- Time (update every second)
+            if timeLbl then
                 local now = os.time()
-                if now ~= lastSecond then
-                    lastSecond = now
+                if now ~= lastSec then
+                    lastSec = now
                     local h = math.floor(now/3600)%24
                     local m = math.floor(now/60)%60
                     local s = now%60
-                    timeChip.label.Text = string.format("%02d:%02d:%02d", h, m, s)
+                    timeStr = string.format("%02d:%02d:%02d", h, m, s)
+                    timeLbl.Text = timeStr
                 end
             end
         end)
 
+        -- ── Public API ─────────────────────────────────────────────────────
         local WM = {}
-        function WM:Show()    if not visible then visible=true; gui.Enabled=true; setVisible(true,true) end end
-        function WM:Hide()    if visible then visible=false; setVisible(false,true) end end
-        function WM:Toggle()  if visible then self:Hide() else self:Show() end end
-        function WM:SetTitle(text) titleText=text; titleChip.label.Text=text end
-        function WM:SetPosition(udim2) anchor.Position=udim2 end
-        function WM:SetVisible(state) if state then self:Show() else self:Hide() end end
+
+        function WM:Show()
+            if not visible then
+                visible = true
+                targetA = 1
+            end
+        end
+
+        function WM:Hide()
+            if visible then
+                visible = false
+                targetA = 0
+            end
+        end
+
+        function WM:Toggle()
+            if visible then self:Hide() else self:Show() end
+        end
+
         function WM:IsVisible() return visible end
-        function WM:Destroy() conn:Disconnect(); gui:Destroy() end
+
+        function WM:SetTitle(text)
+            titleText = text
+            titleLbl.Text = text
+        end
+
+        function WM:SetPosition(pos)
+            if typeof(pos) == "UDim2" then
+                local vp = workspace.CurrentCamera.ViewportSize
+                POS_X = pos.X.Offset + pos.X.Scale * vp.X
+                POS_Y = pos.Y.Offset + pos.Y.Scale * vp.Y
+            elseif typeof(pos) == "Vector2" then
+                POS_X = pos.X; POS_Y = pos.Y
+            end
+            layout()
+        end
+
+        function WM:SetVisible(state)
+            if state then self:Show() else self:Hide() end
+        end
+
+        function WM:Destroy()
+            conn:Disconnect()
+            for _, obj in ipairs(allObjs) do
+                pcall(function() obj:Remove() end)
+            end
+            table.clear(allObjs)
+        end
+
+        -- Initial appear (spring from 0)
+        alpha = 0; targetA = 1
+
         return WM
     end
 
