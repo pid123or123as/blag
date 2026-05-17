@@ -693,7 +693,7 @@ print('2')
         end
 
         local function moveTopLeft()
-            setTargetPos(84, MARGIN+12)  -- left but lower
+            setTargetPos(100, MARGIN+35)  -- left but lower
         end
         local function moveTopRight()
             waitAndMove(function()
@@ -706,7 +706,7 @@ print('2')
             waitAndMove(function()
                 local vp=workspace.CurrentCamera.ViewportSize
                 local h=row.AbsoluteSize.Y
-                setTargetPos(84, vp.Y-h-MARGIN)  -- same X as top-left (further left)
+                setTargetPos(100, vp.Y-h-MARGIN)  -- same X as top-left (further left)
             end)
         end
 
