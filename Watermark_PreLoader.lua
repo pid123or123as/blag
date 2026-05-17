@@ -1,18 +1,15 @@
--- Watermark_PreLoader.lua  (v7)
--- КРИТИЧНЫЕ ИСПРАВЛЕНИЯ:
---   • Drawing: Transparency 0=прозрачный, 1=непрозрачный (ОБРАТНО от Roblox GUI!)
---              + обязателен Visible = true
---   • Полоска: сдвиг через TextLabel GetTextSize → точная ширина текста
---   • Логотип: сегменты меньше фона (scale 0.7 внутри chip), фон больше
---   • Top-right: учитывает UIScale при вычислении ширины
---   • Top-left margin: 104px от левого края (мимо кнопок Roblox)
+-- Watermark_PreLoader.lua  (v8)
+-- Fixes: particles above frame, gradient color shift, logo segments, centering,
+--        positions, size-jump on appear, iOS drag animation, particle pulse
 
 return function(ctx)
     local MacLib     = ctx.MacLib
     local RunService = game:GetService("RunService")
+    local UIS        = game:GetService("UserInputService")
 
     local function lerp(a, b, t) return a + (b - a) * t end
     local function rand(a, b)    return a + math.random() * (b - a) end
+    local function clamp(v,mn,mx) return math.max(mn, math.min(mx, v)) end
 
     local function GetGui()
         local g = Instance.new("ScreenGui")
@@ -38,19 +35,21 @@ return function(ctx)
         local showFPS   = cfg.ShowFPS  ~= false
         local showTime  = cfg.ShowTime ~= false
 
-        local initX, initY = 104, 8  -- left: skip Roblox top-left buttons
+        -- Default position: top-left, past Roblox buttons
+        local initX, initY = 108, 8
         if cfg.Position then
             if typeof(cfg.Position) == "UDim2" then
-                initX = cfg.Position.X.Offset
-                initY = cfg.Position.Y.Offset
+                initX = cfg.Position.X.Offset; initY = cfg.Position.Y.Offset
             elseif typeof(cfg.Position) == "Vector2" then
                 initX = cfg.Position.X; initY = cfg.Position.Y
             end
         end
 
-        -- ── Root ──────────────────────────────────────────────────────────
+        -- ── Root GUI ──────────────────────────────────────────────────────
         local gui = GetGui(); gui.Name = "MacLibWatermark"
 
+        -- Outer container — this is what we move for position
+        -- Size = XY auto so it wraps content
         local anchor = Instance.new("Frame")
         anchor.Name                   = "WmAnchor"
         anchor.Position               = UDim2.fromOffset(initX, initY)
@@ -60,9 +59,10 @@ return function(ctx)
         anchor.AutomaticSize          = Enum.AutomaticSize.XY
         anchor.Parent                 = gui
 
-        local uiScale       = Instance.new("UIScale")
-        uiScale.Scale       = 0.85
-        uiScale.Parent      = anchor
+        -- UIScale for spring appear/disappear animation
+        -- Start at 1.0, animate only transparency — no scale jump at end
+        -- We'll NOT use uiScale for appear, instead we fade only
+        -- (Scale approach causes the text size jump you saw)
 
         local row = Instance.new("Frame")
         row.Name                   = "Row"
@@ -79,12 +79,12 @@ return function(ctx)
         rowList.Parent            = row
 
         -- ── Tokens ────────────────────────────────────────────────────────
-        local BAR_H    = 26
-        local LOGO_SZ  = 32       -- chip size (bigger than BAR_H)
-        local SEG_SZ   = 20       -- logo ring size inside chip
-        local TXT_SZ   = 12
-        local ICON_SZ  = 13
-        local PAD_X    = 10
+        local BAR_H   = 26
+        local LOGO_SZ = 32
+        local SEG_SZ  = 18    -- ring inside logo chip (smaller than chip)
+        local TXT_SZ  = 12
+        local ICON_SZ = 13
+        local PAD_X   = 10
 
         local FONT_TITLE = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.SemiBold)
         local FONT_BODY  = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium)
@@ -108,17 +108,17 @@ return function(ctx)
             local f = Instance.new("Frame")
             f.Name                   = "Chip"..chipOrder
             f.BackgroundColor3       = opts.bg or COL_BG_CHIP
-            f.BackgroundTransparency = BG_TRANSP
+            f.BackgroundTransparency = 1   -- start invisible, applyAlpha controls this
             f.BorderSizePixel        = 0
             f.LayoutOrder            = chipOrder
             f.ClipsDescendants       = true
 
             if opts.fixedW then
                 f.AutomaticSize = Enum.AutomaticSize.None
-                f.Size          = UDim2.fromOffset(opts.fixedW, h)
+                f.Size = UDim2.fromOffset(opts.fixedW, h)
             else
                 f.AutomaticSize = Enum.AutomaticSize.X
-                f.Size          = UDim2.fromOffset(0, h)
+                f.Size = UDim2.fromOffset(0, h)
             end
             f.Parent = row
 
@@ -131,7 +131,7 @@ return function(ctx)
                 stroke = Instance.new("UIStroke")
                 stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
                 stroke.Color           = COL_STROKE
-                stroke.Transparency    = 0
+                stroke.Transparency    = 1
                 stroke.Thickness       = 1
                 stroke.Parent          = f
             end
@@ -143,62 +143,50 @@ return function(ctx)
                 pad.Parent = f
             end
 
-            local entry = { frame=f, stroke=stroke, labels={}, images={} }
+            local entry = { frame=f, stroke=stroke, labels={}, images={}, bgColor=opts.bg or COL_BG_CHIP }
             table.insert(allChips, entry)
             return entry
         end
 
         -- ── LOGO chip ─────────────────────────────────────────────────────
-        -- Chip = LOGO_SZ × LOGO_SZ square with rounded corners (not full circle)
-        -- Inside: ring of segments scaled to SEG_SZ
         local logoEntry = makeChip({
-            bg     = COL_BG_DARK,
-            fixedW = LOGO_SZ,
-            h      = LOGO_SZ,
-            radius = 9,
-            stroke = false,
-            padX   = false,
+            bg=COL_BG_DARK, fixedW=LOGO_SZ, h=LOGO_SZ,
+            radius=9, stroke=false, padX=false,
         })
 
         local logoHolder = Instance.new("Frame")
         logoHolder.Name                   = "LogoHolder"
         logoHolder.AnchorPoint            = Vector2.new(0.5, 0.5)
-        logoHolder.Position               = UDim2.new(0.5, 0, 0.5, 0)
+        logoHolder.Position               = UDim2.new(0.5,0, 0.5,0)
         logoHolder.Size                   = UDim2.fromOffset(SEG_SZ, SEG_SZ)
         logoHolder.BackgroundTransparency = 1
         logoHolder.BorderSizePixel        = 0
         logoHolder.ClipsDescendants       = false
         logoHolder.Parent                 = logoEntry.frame
 
-        local SEG_COUNT = 30
+        local SEG_COUNT = 16   -- reduced from 30
         local logoSegs  = {}
-
         for i = 1, SEG_COUNT do
             local seg = Instance.new("ImageLabel")
-            seg.Size                   = UDim2.new(1, 0, 1, 0)
+            seg.Size                   = UDim2.new(1,0,1,0)
             seg.BackgroundTransparency = 1
             seg.Image                  = "rbxassetid://7151778302"
-            seg.ImageTransparency      = 0.35
-            seg.Rotation               = (i-1) * (360/SEG_COUNT)
+            seg.ImageTransparency      = 1   -- start hidden
+            seg.Rotation               = (i-1)*(360/SEG_COUNT)
             seg.ZIndex                 = 3
             seg.Parent                 = logoHolder
             Instance.new("UICorner", seg).CornerRadius = UDim.new(0.5, 0)
-
             local grad = Instance.new("UIGradient")
-            local h1 = 0.60 + (i-1)/SEG_COUNT * 0.12
-            local h2 = 0.68 + i/SEG_COUNT     * 0.10
-            grad.Color    = ColorSequence.new(
-                Color3.fromHSV(h1 % 1, 0.85, 1),
-                Color3.fromHSV(h2 % 1, 0.78, 1)
-            )
-            grad.Rotation = (i-1) * (360/SEG_COUNT)
+            local h1 = (0.60 + (i-1)/SEG_COUNT*0.14) % 1
+            local h2 = (0.70 + i/SEG_COUNT*0.12) % 1
+            grad.Color    = ColorSequence.new(Color3.fromHSV(h1,0.85,1), Color3.fromHSV(h2,0.78,1))
+            grad.Rotation = (i-1)*(360/SEG_COUNT)
             grad.Parent   = seg
-
-            table.insert(logoSegs, { seg=seg })
+            table.insert(logoSegs, seg)
         end
 
         -- ── TITLE chip ────────────────────────────────────────────────────
-        local titleEntry = makeChip({ bg = COL_BG_DARK, stroke = true })
+        local titleEntry = makeChip({ bg=COL_BG_DARK, stroke=true })
 
         local titleLbl = Instance.new("TextLabel")
         titleLbl.FontFace               = FONT_TITLE
@@ -209,16 +197,17 @@ return function(ctx)
         titleLbl.AutomaticSize          = Enum.AutomaticSize.X
         titleLbl.Size                   = UDim2.fromOffset(0, BAR_H)
         titleLbl.TextXAlignment         = Enum.TextXAlignment.Left
+        titleLbl.TextTransparency       = 1
         titleLbl.Text                   = titleText
         titleLbl.ZIndex                 = 3
         titleLbl.Parent                 = titleEntry.frame
         table.insert(titleEntry.labels, titleLbl)
 
-        -- Accent underline inside title chip — positioned above bottom edge
+        -- Accent underline
         local accentLine = Instance.new("Frame")
         accentLine.Name                   = "AccentLine"
         accentLine.BackgroundColor3       = COL_ACCENT
-        accentLine.BackgroundTransparency = 0
+        accentLine.BackgroundTransparency = 1
         accentLine.BorderSizePixel        = 0
         accentLine.ZIndex                 = 5
         accentLine.Size                   = UDim2.fromOffset(40, 1)
@@ -228,7 +217,7 @@ return function(ctx)
         -- ── FPS chip ──────────────────────────────────────────────────────
         local fpsEntry, fpsIcon, fpsLbl
         if showFPS then
-            fpsEntry = makeChip({ fixedW = 72, stroke = true })
+            fpsEntry = makeChip({ fixedW=74, stroke=true })
 
             fpsIcon = Instance.new("ImageLabel")
             fpsIcon.Image                  = "rbxassetid://102994395432803"
@@ -236,20 +225,25 @@ return function(ctx)
             fpsIcon.AnchorPoint            = Vector2.new(0, 0.5)
             fpsIcon.Position               = UDim2.new(0, 0, 0.5, 0)
             fpsIcon.BackgroundTransparency = 1
+            fpsIcon.ImageTransparency      = 1
             fpsIcon.BorderSizePixel        = 0
             fpsIcon.ZIndex                 = 3
             fpsIcon.Parent                 = fpsEntry.frame
             table.insert(fpsEntry.images, fpsIcon)
 
+            -- Center: icon(13) + gap(5) + label fills rest, but we add left shift
+            -- total inner = fixedW - 2*padX = 74-20=54. icon=13,gap=5 → label=36
+            -- We push label center relative to chip center
             fpsLbl = Instance.new("TextLabel")
             fpsLbl.FontFace               = FONT_BODY
             fpsLbl.TextSize               = TXT_SZ
             fpsLbl.TextColor3             = COL_TXT_MUTE
             fpsLbl.BackgroundTransparency = 1
+            fpsLbl.TextTransparency       = 1
             fpsLbl.BorderSizePixel        = 0
-            fpsLbl.Size                   = UDim2.new(1, -(ICON_SZ+5), 1, 0)
-            fpsLbl.Position               = UDim2.fromOffset(ICON_SZ+5, 0)
-            fpsLbl.TextXAlignment         = Enum.TextXAlignment.Left
+            fpsLbl.Size                   = UDim2.new(1, -(ICON_SZ+4), 1, 0)
+            fpsLbl.Position               = UDim2.fromOffset(ICON_SZ+4, 0)
+            fpsLbl.TextXAlignment         = Enum.TextXAlignment.Center
             fpsLbl.Text                   = "--"
             fpsLbl.ZIndex                 = 3
             fpsLbl.Parent                 = fpsEntry.frame
@@ -259,7 +253,7 @@ return function(ctx)
         -- ── TIME chip ─────────────────────────────────────────────────────
         local timeEntry, timeIcon, timeLbl
         if showTime then
-            timeEntry = makeChip({ fixedW = 90, stroke = true })
+            timeEntry = makeChip({ fixedW=90, stroke=true })
 
             timeIcon = Instance.new("ImageLabel")
             timeIcon.Image                  = "rbxassetid://17824308575"
@@ -267,6 +261,7 @@ return function(ctx)
             timeIcon.AnchorPoint            = Vector2.new(0, 0.5)
             timeIcon.Position               = UDim2.new(0, 0, 0.5, 0)
             timeIcon.BackgroundTransparency = 1
+            timeIcon.ImageTransparency      = 1
             timeIcon.BorderSizePixel        = 0
             timeIcon.ZIndex                 = 3
             timeIcon.Parent                 = timeEntry.frame
@@ -277,10 +272,11 @@ return function(ctx)
             timeLbl.TextSize               = TXT_SZ
             timeLbl.TextColor3             = COL_TXT_MUTE
             timeLbl.BackgroundTransparency = 1
+            timeLbl.TextTransparency       = 1
             timeLbl.BorderSizePixel        = 0
-            timeLbl.Size                   = UDim2.new(1, -(ICON_SZ+5), 1, 0)
-            timeLbl.Position               = UDim2.fromOffset(ICON_SZ+5, 0)
-            timeLbl.TextXAlignment         = Enum.TextXAlignment.Left
+            timeLbl.Size                   = UDim2.new(1, -(ICON_SZ+4), 1, 0)
+            timeLbl.Position               = UDim2.fromOffset(ICON_SZ+4, 0)
+            timeLbl.TextXAlignment         = Enum.TextXAlignment.Center
             timeLbl.Text                   = "00:00"
             timeLbl.ZIndex                 = 3
             timeLbl.Parent                 = timeEntry.frame
@@ -288,14 +284,11 @@ return function(ctx)
         end
 
         -- ════════════════════════════════════════════════════════════════════
-        -- DRAWING PARTICLES  (particles.js constellation, per-chip)
-        --
-        -- Drawing API transparency: 0 = полностью прозрачный, 1 = непрозрачный
-        -- Drawing API: обязателен Visible = true
-        --
-        -- Pseudo-3D: Z∈[0,1], 0=далеко(маленький, тусклый), 1=близко(большой, яркий)
+        -- DRAWING PARTICLES
+        -- Drawing Transparency: 0 = invisible, 1 = fully opaque
+        -- Particles confined strictly to chip AbsoluteBounds
+        -- Gradient color: blue → light purple pulse per particle
         -- ════════════════════════════════════════════════════════════════════
-
         local drawObjs = {}
         local function D(t)
             local d = Drawing.new(t)
@@ -304,27 +297,31 @@ return function(ctx)
             return d
         end
 
-        local P_COUNT      = 9
-        local CONNECT_DIST = 55
-        local SPEED_NEAR   = 22
-        local SPEED_FAR    = 7
+        local P_COUNT      = 10
+        local CONNECT_DIST = 52
+        local SPEED_NEAR   = 20
+        local SPEED_FAR    = 6
         local R_NEAR       = 2.0
         local R_FAR        = 0.7
+
+        -- Color gradient: blue (210°) → light purple (265°) in HSV
+        local HUE_BLUE   = 210/360
+        local HUE_PURPLE = 265/360
 
         local function buildSys(n)
             local pts = {}
             for i = 1, n do
                 local p = {
-                    x=0, y=0,
-                    vx=0, vy=0,
-                    z = rand(0,1),
-                    dot = D("Circle"),
+                    x=0, y=0, vx=0, vy=0,
+                    z       = rand(0,1),
+                    phase   = rand(0, math.pi*2),  -- individual color phase
+                    pulsePh = rand(0, math.pi*2),  -- size pulse phase
+                    dot     = D("Circle"),
                 }
-                -- Drawing Transparency: начинаем с 0 (прозрачный), покажем позже
                 p.dot.Filled       = true
-                p.dot.Color        = COL_ACCENT
+                p.dot.Color        = Color3.fromHSV(HUE_BLUE, 0.7, 1)
                 p.dot.Radius       = 1
-                p.dot.Transparency = 0   -- начало: невидимый
+                p.dot.Transparency = 0
                 p.dot.NumSides     = 12
                 p.dot.ZIndex       = 9
                 table.insert(pts, p)
@@ -336,8 +333,8 @@ return function(ctx)
                 for j = i+1, n do
                     local l = D("Line")
                     l.Thickness    = 1
-                    l.Color        = COL_ACCENT
-                    l.Transparency = 0   -- начало: невидимый
+                    l.Color        = Color3.fromHSV(HUE_BLUE, 0.65, 1)
+                    l.Transparency = 0
                     l.ZIndex       = 8
                     lines[i][j] = l
                 end
@@ -352,8 +349,9 @@ return function(ctx)
 
         local function initSys(sys, ax, ay, aw, ah)
             for _, p in ipairs(sys.pts) do
-                p.x = rand(ax+4, ax+aw-4)
-                p.y = rand(ay+4, ay+ah-4)
+                -- Spawn strictly inside chip
+                p.x = rand(ax + R_NEAR + 1, ax + aw - R_NEAR - 1)
+                p.y = rand(ay + R_NEAR + 1, ay + ah - R_NEAR - 1)
                 local spd   = lerp(SPEED_FAR, SPEED_NEAR, p.z)
                 local angle = rand(0, math.pi*2)
                 p.vx = math.cos(angle)*spd
@@ -362,9 +360,8 @@ return function(ctx)
             sys.ready = true
         end
 
-        -- Drawing Transparency: 0=прозрачный, 1=непрозрачный
-        -- globalA ∈ [0,1] — наш alpha fade
-        -- Итоговая drawing transparency = lerp(0, targetOpacity, globalA)
+        local globalTime = 0
+
         local function tickSys(sys, dt, ax, ay, aw, ah, globalA)
             if not sys.ready then
                 if aw > 4 then initSys(sys, ax, ay, aw, ah) end
@@ -376,48 +373,55 @@ return function(ctx)
                 p.x += p.vx * dt
                 p.y += p.vy * dt
 
-                local m = 3
-                if p.x < ax+m    then p.x=ax+m;    p.vx= math.abs(p.vx) end
-                if p.x > ax+aw-m then p.x=ax+aw-m; p.vx=-math.abs(p.vx) end
-                if p.y < ay+m    then p.y=ay+m;    p.vy= math.abs(p.vy) end
-                if p.y > ay+ah-m then p.y=ay+ah-m; p.vy=-math.abs(p.vy) end
+                -- Strict bounce inside chip pixel bounds
+                local rr = lerp(R_FAR, R_NEAR, p.z)
+                if p.x - rr < ax    then p.x = ax + rr;    p.vx =  math.abs(p.vx) end
+                if p.x + rr > ax+aw then p.x = ax+aw - rr; p.vx = -math.abs(p.vx) end
+                if p.y - rr < ay    then p.y = ay + rr;    p.vy =  math.abs(p.vy) end
+                if p.y + rr > ay+ah then p.y = ay+ah - rr; p.vy = -math.abs(p.vy) end
 
-                local r      = lerp(R_FAR, R_NEAR, p.z)
-                local dotOp  = lerp(0.25, 0.70, p.z)  -- target opacity in Drawing scale
-                local finalOp = dotOp * globalA        -- fade with global alpha
+                -- Gradient color: blue → light purple, per-particle phase shift
+                p.phase   = (p.phase   + dt * 0.6) % (math.pi*2)
+                p.pulsePh = (p.pulsePh + dt * 1.4) % (math.pi*2)
+
+                local ct   = (math.sin(p.phase) + 1) * 0.5   -- 0=blue, 1=purple
+                local hue  = lerp(HUE_BLUE, HUE_PURPLE, ct)
+                local sat  = lerp(0.60, 0.80, p.z)
+                local val  = lerp(0.85, 1.00, p.z)
+
+                -- Size pulse
+                local pulseMult = 1 + math.sin(p.pulsePh) * 0.25
+                local r    = lerp(R_FAR, R_NEAR, p.z) * pulseMult
+                -- Opacity: Drawing 0=invisible 1=opaque
+                local dotOp = lerp(0.18, 0.72, p.z) * globalA
 
                 p.dot.Position    = Vector2.new(p.x, p.y)
-                p.dot.Radius      = r
-                p.dot.Transparency = finalOp
-                p.dot.Color = Color3.fromRGB(
-                    math.round(lerp(60, 130, p.z)),
-                    math.round(lerp(100, 170, p.z)),
-                    255
-                )
+                p.dot.Radius      = math.max(0.3, r)
+                p.dot.Transparency = clamp(dotOp, 0, 1)
+                p.dot.Color       = Color3.fromHSV(hue, sat, val)
             end
 
+            -- Lines
             for i = 1, #pts do
                 for j = i+1, #pts do
                     local pi, pj = pts[i], pts[j]
-                    local dx = pi.x-pj.x; local dy = pi.y-pj.y
-                    local dist = math.sqrt(dx*dx+dy*dy)
-                    local l = sys.lines[i][j]
+                    local dx   = pi.x - pj.x; local dy = pi.y - pj.y
+                    local dist = math.sqrt(dx*dx + dy*dy)
+                    local l    = sys.lines[i][j]
 
                     if dist < CONNECT_DIST then
-                        local prox = 1 - dist/CONNECT_DIST   -- 0→1 closer=1
-                        local avgZ = (pi.z+pj.z)*0.5
-                        -- Drawing transparency: ближе = больше opacity
-                        local lineOp = lerp(0.08, 0.45, prox) * lerp(0.5, 1, avgZ) * globalA
+                        local prox = 1 - dist/CONNECT_DIST
+                        local avgZ = (pi.z + pj.z)*0.5
+                        local ct2  = (math.sin((pi.phase+pj.phase)*0.5)+1)*0.5
+                        local hue2 = lerp(HUE_BLUE, HUE_PURPLE, ct2)
+                        -- Drawing opacity: closer = more opaque
+                        local lineOp = lerp(0.05, 0.42, prox) * lerp(0.5, 1, avgZ) * globalA
 
                         l.From         = Vector2.new(pi.x, pi.y)
                         l.To           = Vector2.new(pj.x, pj.y)
-                        l.Transparency = lineOp
+                        l.Transparency = clamp(lineOp, 0, 1)
                         l.Thickness    = lerp(0.5, 1.2, avgZ)
-                        l.Color = Color3.fromRGB(
-                            math.round(lerp(55, 110, avgZ)),
-                            math.round(lerp(90, 155, avgZ)),
-                            255
-                        )
+                        l.Color        = Color3.fromHSV(hue2, 0.65, 1)
                     else
                         l.Transparency = 0
                     end
@@ -427,10 +431,10 @@ return function(ctx)
 
         -- ── Animation state ───────────────────────────────────────────────
         local visible    = true
-        local alpha      = 0
+        local alpha      = 0       -- 0=hidden, 1=shown
         local targetA    = 1
-        local SPRING_IN  = 12
-        local SPRING_OUT = 20
+        local SPRING_IN  = 10
+        local SPRING_OUT = 18
 
         local logoAngle = 0
         local accentPh  = 0
@@ -440,82 +444,116 @@ return function(ctx)
         local fpsBufI = 1; local fpsTimer = 0
         local lastMin = -1
 
-        -- ── applyAlpha: Roblox GUI transparency (0=опак, 1=прозрачный) ────
+        -- ── applyAlpha — NO UIScale so no size jump ───────────────────────
         local function applyAlpha(a)
-            uiScale.Scale = lerp(0.85, 1.0, a)
-
-            local bgT  = lerp(1, BG_TRANSP, a)
-            local txtT = lerp(1, 0, a)
-            local strT = lerp(1, 0, a)
-
+            -- All chips: fade background
             for _, e in ipairs(allChips) do
-                e.frame.BackgroundTransparency = bgT
-                if e.stroke then e.stroke.Transparency = strT end
-                for _, l in ipairs(e.labels) do l.TextTransparency  = txtT end
-                for _, i in ipairs(e.images) do i.ImageTransparency = txtT end
+                e.frame.BackgroundTransparency = lerp(1, BG_TRANSP, a)
+                if e.stroke then e.stroke.Transparency = lerp(1, 0, a) end
+                for _, lbl in ipairs(e.labels)  do lbl.TextTransparency  = lerp(1, 0, a) end
+                for _, img in ipairs(e.images)  do img.ImageTransparency = lerp(1, 0, a) end
             end
-
-            for _, s in ipairs(logoSegs) do
-                s.seg.ImageTransparency = lerp(1, 0.35, a)
+            for _, seg in ipairs(logoSegs) do
+                seg.ImageTransparency = lerp(1, 0.35, a)
             end
-
             accentLine.BackgroundTransparency = lerp(1, 0, a)
 
-            -- Hide drawing objects when invisible
             if a < 0.02 then
                 for _, d in ipairs(drawObjs) do d.Transparency = 0 end
             end
         end
 
+        -- ── Drag (iOS style: smooth position lerp) ────────────────────────
+        local isDragging  = false
+        local dragOffsetX = 0
+        local dragOffsetY = 0
+        local targetPosX  = initX
+        local targetPosY  = initY
+        local currentPosX = initX
+        local currentPosY = initY
+
+        -- Drag detect on any chip frame
+        local function setupDrag(frame)
+            frame.InputBegan:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.MouseButton1
+                or inp.UserInputType == Enum.UserInputType.Touch then
+                    isDragging  = true
+                    local ap    = anchor.AbsolutePosition
+                    dragOffsetX = inp.Position.X - ap.X
+                    dragOffsetY = inp.Position.Y - ap.Y
+                end
+            end)
+        end
+
+        for _, e in ipairs(allChips) do setupDrag(e.frame) end
+
+        UIS.InputEnded:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1
+            or inp.UserInputType == Enum.UserInputType.Touch then
+                isDragging = false
+            end
+        end)
+
         -- ── Heartbeat ─────────────────────────────────────────────────────
         local conn
         conn = RunService.Heartbeat:Connect(function(dt)
+            globalTime = globalTime + dt
+
+            -- Spring alpha (fade only, no scale change)
             local spd = targetA > alpha and SPRING_IN or SPRING_OUT
-            alpha = lerp(alpha, targetA, math.min(1, dt*spd))
+            alpha = lerp(alpha, targetA, clamp(dt*spd, 0, 1))
             if math.abs(alpha-targetA) < 0.004 then alpha = targetA end
 
             applyAlpha(alpha)
             gui.Enabled = alpha > 0.01
 
-            -- Logo slow rotation
-            logoAngle = (logoAngle + dt*15) % 360
-            for i, s in ipairs(logoSegs) do
-                s.seg.Rotation = (i-1)*(360/SEG_COUNT) + logoAngle
+            -- Drag: update target from mouse, spring-lerp actual position
+            if isDragging then
+                local mp    = UIS:GetMouseLocation()
+                targetPosX  = mp.X - dragOffsetX
+                targetPosY  = mp.Y - dragOffsetY
+            end
+            -- iOS spring drag: position follows target with slight lag
+            local posSpeed = isDragging and 22 or 14
+            currentPosX = lerp(currentPosX, targetPosX, clamp(dt*posSpeed, 0, 1))
+            currentPosY = lerp(currentPosY, targetPosY, clamp(dt*posSpeed, 0, 1))
+            anchor.Position = UDim2.fromOffset(math.round(currentPosX), math.round(currentPosY))
+
+            -- Logo rotation
+            logoAngle = (logoAngle + dt*18) % 360
+            for i, seg in ipairs(logoSegs) do
+                seg.Rotation = (i-1)*(360/SEG_COUNT) + logoAngle
             end
 
-            -- Accent color pulse + resize to match text width
-            accentPh = (accentPh + dt*0.8) % (math.pi*2)
-            local t = (math.sin(accentPh)+1)*0.5
+            -- Accent color pulse + size sync to text
+            accentPh = (accentPh + dt*0.9) % (math.pi*2)
+            local t  = (math.sin(accentPh)+1)*0.5
             accentLine.BackgroundColor3 = Color3.fromRGB(
                 math.round(lerp(72,108,t)),
                 math.round(lerp(138,82,t)),
                 255
             )
-
-            -- Match accent line exactly to text width using AbsoluteSize
-            -- AbsoluteSize gives the rendered text bounds
             local ts = titleLbl.AbsoluteSize
-            if ts.X > 0 then
-                -- The label has UIPadding from its parent chip.
-                -- We want the line to start at same X as the label inside the padded area.
-                -- titleLbl Position is UDim2.fromOffset(0,0) inside padded chip,
-                -- so relative offset = 0 from padding start.
+            if ts.X > 1 then
                 accentLine.Size     = UDim2.fromOffset(ts.X, 1)
-                -- Position relative to chip: same X as padded label, near bottom
                 accentLine.Position = UDim2.fromOffset(0, BAR_H - 4)
             end
 
-            -- Particle systems
+            -- Particles
             if alpha > 0.03 then
                 for entry, sys in pairs(entryToSys) do
                     local f  = entry.frame
                     local ap = f.AbsolutePosition
                     local as = f.AbsoluteSize
-                    tickSys(sys, dt, ap.X, ap.Y, as.X, as.Y, alpha)
+                    if as.X > 4 and as.Y > 4 then
+                        tickSys(sys, dt, ap.X, ap.Y, as.X, as.Y, alpha)
+                    end
                 end
+            else
+                for _, d in ipairs(drawObjs) do d.Transparency = 0 end
             end
 
-            -- FPS
+            -- FPS rolling avg
             if fpsLbl then
                 fpsBuf[fpsBufI] = dt; fpsBufI=(fpsBufI % FPS_N)+1
                 fpsTimer += dt
@@ -540,19 +578,8 @@ return function(ctx)
         end)
 
         applyAlpha(0); targetA = 1
-
-        -- ── Top-right helper ──────────────────────────────────────────────
-        local function setTopRight()
-            -- Wait one frame so AutomaticSize has settled
-            task.defer(function()
-                local vp     = workspace.CurrentCamera.ViewportSize
-                local scale  = uiScale.Scale
-                local rawW   = row.AbsoluteSize.X  -- already scaled by UIScale
-                local margin = 22
-                local posX   = vp.X - rawW - margin
-                anchor.Position = UDim2.fromOffset(posX, 8)
-            end)
-        end
+        currentPosX = initX; currentPosY = initY
+        targetPosX  = initX; targetPosY  = initY
 
         -- ── Public API ────────────────────────────────────────────────────
         local WM = {}
@@ -561,17 +588,37 @@ return function(ctx)
         function WM:Toggle()  if visible then self:Hide() else self:Show() end end
         function WM:IsVisible() return visible end
         function WM:SetTitle(txt) titleText=txt; titleLbl.Text=txt end
+
         function WM:SetPosition(pos)
-            if typeof(pos)=="UDim2" then anchor.Position=pos
+            local x, y
+            if typeof(pos)=="UDim2" then
+                x=pos.X.Offset; y=pos.Y.Offset
             elseif typeof(pos)=="Vector2" then
-                anchor.Position=UDim2.fromOffset(pos.X,pos.Y)
+                x=pos.X; y=pos.Y
+            end
+            if x then
+                targetPosX=x; targetPosY=y
             end
         end
-        function WM:MoveTopRight() setTopRight() end
-        function WM:MoveTopLeft()
-            anchor.Position = UDim2.fromOffset(104, 8)
+
+        function WM:MoveTopRight()
+            task.defer(function()
+                local vp = workspace.CurrentCamera.ViewportSize
+                local w  = row.AbsoluteSize.X
+                local x  = vp.X - w - 16
+                local y  = 8
+                targetPosX = x; targetPosY = y
+            end)
         end
-        function WM:SetVisible(state) if state then self:Show() else self:Hide() end end
+
+        function WM:MoveTopLeft()
+            targetPosX = 108; targetPosY = 8
+        end
+
+        function WM:SetVisible(state)
+            if state then self:Show() else self:Hide() end
+        end
+
         function WM:Destroy()
             conn:Disconnect()
             for _, d in ipairs(drawObjs) do pcall(function() d:Remove() end) end
