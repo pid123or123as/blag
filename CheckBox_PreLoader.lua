@@ -1,27 +1,3 @@
---[[
-    MacLib PreLoader Module — CheckBox
-
-    Использование:
-        MacLib:Preloader("https://raw.githubusercontent.com/.../CheckBox_Element.lua", {
-            onLoad = function()
-                local cb = mySection:CheckBox({
-                    Name    = "Option A",
-                    Default = false,
-                    Callback = function(v) print("CheckBox:", v) end,
-                }, "CB_A")
-            end,
-        })
-
-    После загрузки section:CheckBox(settings, flag) доступен на любой секции.
-
-    Методы элемента:
-        cb:SetChecked(bool)   -- установить состояние
-        cb:GetChecked()       -- получить текущее состояние
-        cb:Toggle()           -- переключить
-        cb:UpdateName(string) -- изменить заголовок
-        cb:SetVisibility(bool)-- показать/скрыть
-]]
-
 return function(ctx)
     local MacLib = ctx.MacLib
     local TweenService = game:GetService("TweenService")
@@ -99,6 +75,7 @@ return function(ctx)
             IgnoreConfig = false,
             Settings     = settings,
             Checked      = settings.Default == true,
+            _frame       = frame,   -- прямая ссылка для CreateCustomElement
         }
 
         local tweenInfo = TweenInfo.new(0.12, Enum.EasingStyle.Quad)
