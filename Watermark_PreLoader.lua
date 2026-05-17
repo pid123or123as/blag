@@ -9,7 +9,7 @@ return function(ctx)
     local function rand(a,b)   return a+math.random()*(b-a) end
     local function clamp(v,a,b) return math.max(a,math.min(b,v)) end
 
-    local GUI_INSET_Y = 48   -- Roblox topbar inset; Drawing starts at 0, GUI at 28
+    local GUI_INSET_Y = 58   -- Roblox topbar inset; Drawing starts at 0, GUI at 28
 
     local function GetGui()
         local g = Instance.new("ScreenGui")
