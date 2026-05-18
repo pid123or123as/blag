@@ -2318,9 +2318,23 @@ function MacLib:Window(Settings)
 					slider.BackgroundTransparency = 1
 					slider.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					slider.BorderSizePixel = 0
-					slider.Size = UDim2.new(1, 0, 0, 38)
+					slider.Size = UDim2.new(1, 0, 0, 0) -- FIX-V13: высота автоматическая
+				slider.AutomaticSize = Enum.AutomaticSize.Y
 					slider.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
 					slider.Parent = section
+
+					-- FIX-V13: вертикальный layout — имя сверху, ползунок снизу
+					local sliderVerticalLayout = Instance.new("UIListLayout")
+					sliderVerticalLayout.Name = "SliderVerticalLayout"
+					sliderVerticalLayout.FillDirection = Enum.FillDirection.Vertical
+					sliderVerticalLayout.SortOrder = Enum.SortOrder.LayoutOrder
+					sliderVerticalLayout.Padding = UDim.new(0, 4)
+					sliderVerticalLayout.Parent = slider
+					local sliderVerticalPad = Instance.new("UIPadding")
+					sliderVerticalPad.Name = "SliderVerticalPad"
+					sliderVerticalPad.PaddingTop = UDim.new(0, 6)
+					sliderVerticalPad.PaddingBottom = UDim.new(0, 8)
+					sliderVerticalPad.Parent = slider
 
 					local sliderName = Instance.new("TextLabel")
 					sliderName.Name = "SliderName"
@@ -2333,24 +2347,27 @@ function MacLib:Window(Settings)
 					sliderName.TextTruncate = Enum.TextTruncate.AtEnd
 					sliderName.TextXAlignment = Enum.TextXAlignment.Left
 					sliderName.TextYAlignment = Enum.TextYAlignment.Top
-					sliderName.AnchorPoint = Vector2.new(0, 0.5)
-					sliderName.AutomaticSize = Enum.AutomaticSize.XY
+					sliderName.AnchorPoint = Vector2.new(0, 0)
+					sliderName.AutomaticSize = Enum.AutomaticSize.Y
 					sliderName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 					sliderName.BackgroundTransparency = 1
 					sliderName.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					sliderName.BorderSizePixel = 0
-					sliderName.Position = UDim2.fromScale(1.3e-07, 0.5)
+					sliderName.Position = UDim2.fromOffset(0, 0) -- FIX-V13: layout управляет позицией
+					sliderName.Size = UDim2.new(1, 0, 0, 0) -- FIX-V13: полная ширина
+					sliderName.LayoutOrder = 1
 					sliderName.Parent = slider
 
 					local sliderElements = Instance.new("Frame")
 					sliderElements.Name = "SliderElements"
-					sliderElements.AnchorPoint = Vector2.new(1, 0)
+					sliderElements.AnchorPoint = Vector2.new(0, 0) -- FIX-V13
 					sliderElements.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 					sliderElements.BackgroundTransparency = 1
 					sliderElements.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					sliderElements.BorderSizePixel = 0
-					sliderElements.Position = UDim2.fromScale(1, 0)
-					sliderElements.Size = UDim2.fromScale(1, 1)
+					sliderElements.Position = UDim2.fromOffset(0, 0) -- FIX-V13
+					sliderElements.Size = UDim2.new(1, 0, 0, 24) -- FIX-V13: фиксированная высота строки
+					sliderElements.LayoutOrder = 2
 
 					local sliderValue = Instance.new("TextBox")
 					sliderValue.Name = "SliderValue"
@@ -2572,12 +2589,15 @@ function MacLib:Window(Settings)
 					local function updateSliderBarSize()
 						local containerWidth = sliderElements.AbsoluteSize.X
 						if containerWidth <= 0 then return end
-						-- FIX-V12: bar clamped to minimum so it stays usable on mobile/narrow widths
+						-- FIX-V13: sliderName теперь отдельная строка, учитываем только valueW
 						local padding = sliderElementsUIListLayout.Padding.Offset
 						local valueW = math.max(sliderValue.AbsoluteSize.X, 41)
-						local available = math.max(0, containerWidth - valueW - padding)
+						local available = containerWidth - valueW - padding
 						local minBar = isMobile and 80 or 90
 						local barW = math.max(available, minBar)
+						-- Clamp: не выходить за containerWidth
+						barW = math.min(barW, containerWidth - valueW - padding + (available < 0 and 0 or 0))
+						barW = math.max(barW, minBar)
 						sliderBar.Size = UDim2.new(0, barW, 0, 3)
 					end
 
@@ -2585,7 +2605,6 @@ function MacLib:Window(Settings)
 
 					sliderValue:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateSliderBarSize)
 					sliderElements:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateSliderBarSize)
-					sliderName:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateSliderBarSize)
 					section:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateSliderBarSize)
 
 					function SliderFunctions:UpdateName(Name)
@@ -7187,6 +7206,11 @@ function MacLib:Window(Settings)
 	local _notifyScale = 1
 	function WindowFunctions:SetNotifyScale(scale)
 		_notifyScale = scale
+		-- FIX-V13: применяем к notifUIScale — он стоит на контейнере notifications
+		-- и масштабирует все уведомления сразу, без необходимости пересоздавать их
+		if notifUIScale then
+			notifUIScale.Scale = scale
+		end
 	end
 	function WindowFunctions:GetNotifyScale()
 		return _notifyScale
