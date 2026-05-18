@@ -2418,7 +2418,7 @@ function MacLib:Window(Settings)
 					sliderHead.BorderSizePixel = 0
 					sliderHead.Position = UDim2.fromScale(1, 0.5)
 					-- FIX3: уменьшен ползунок на мобиле до 16px
-				sliderHead.Size = isMobile and UDim2.fromOffset(16, 16) or UDim2.fromOffset(12, 12)
+				sliderHead.Size = UDim2.fromOffset(12, 12) -- FIX-V12: uniform size, touch area handled by sliderTouchBar
 					sliderHead.Parent = sliderBar
 
 					sliderBar.Parent = sliderElements
@@ -2502,7 +2502,7 @@ function MacLib:Window(Settings)
 					sliderTouchBar.AnchorPoint = Vector2.new(0, 0.5)
 					sliderTouchBar.Position = UDim2.new(0, 0, 0.5, 0)
 					-- FIX3: зона тача чуть уже
-					sliderTouchBar.Size = UDim2.new(1, 20, 0, 36)
+					sliderTouchBar.Size = UDim2.new(1, 10, 0, 32) -- FIX-V12: moderate touch area
 					sliderTouchBar.ZIndex = sliderHead.ZIndex + 1
 					sliderTouchBar.Parent = sliderBar
 
@@ -2570,17 +2570,21 @@ function MacLib:Window(Settings)
 					end)
 
 					local function updateSliderBarSize()
+						local containerWidth = sliderElements.AbsoluteSize.X
+						if containerWidth <= 0 then return end
+						-- FIX-V12: bar clamped to minimum so it stays usable on mobile/narrow widths
 						local padding = sliderElementsUIListLayout.Padding.Offset
-						local sliderValueWidth = sliderValue.AbsoluteSize.X
-						local sliderNameWidth = sliderName.AbsoluteSize.X
-						local totalWidth = sliderElements.AbsoluteSize.X
-
-						local newBarWidth = (totalWidth - (padding + sliderValueWidth + sliderNameWidth + 20)) / baseUIScale.Scale
-						sliderBar.Size = UDim2.new(sliderBar.Size.X.Scale, newBarWidth, sliderBar.Size.Y.Scale, sliderBar.Size.Y.Offset)
+						local valueW = math.max(sliderValue.AbsoluteSize.X, 41)
+						local available = math.max(0, containerWidth - valueW - padding)
+						local minBar = isMobile and 80 or 90
+						local barW = math.max(available, minBar)
+						sliderBar.Size = UDim2.new(0, barW, 0, 3)
 					end
 
 					updateSliderBarSize()
 
+					sliderValue:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateSliderBarSize)
+					sliderElements:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateSliderBarSize)
 					sliderName:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateSliderBarSize)
 					section:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateSliderBarSize)
 
@@ -5800,12 +5804,21 @@ function MacLib:Window(Settings)
 				secR:Header({ Name = "Notify" })
 				local _notifyW = 250
 				local _notifyLT = 5
+				-- FIX-V12: mobile default scale = 80% (matches actual mobile notify size)
+				local _notifyScaleDefault = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) and 80 or 100
 				secR:Slider({ Name = "Width (px)", Default = _notifyW, Minimum = 50, Maximum = 440, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.3,
 					Callback = function(v) _notifyW = v end }, "Cust_NWidth")
 				secR:Slider({ Name = "Lifetime (sec)", Default = _notifyLT, Minimum = 1, Maximum = 30, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.3,
 					Callback = function(v) _notifyLT = v end }, "Cust_NLifetime")
+				-- FIX-V12: scale slider — mobile players can shrink/enlarge notifications
+				secR:Slider({ Name = "Scale %", Default = _notifyScaleDefault,
+					Minimum = 50, Maximum = 150, Precision = 0, Suffix = "%",
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v)
+						WindowFunctions:SetNotifyScale(v / 100)
+					end }, "Cust_NScale")
 				secR:Button({ Name = "Test Notify", Callback = function()
 					WindowFunctions:Notify({ Title = "Customisation", Description = "Preview notification.",
 						Lifetime = _notifyLT, SizeX = _notifyW })
@@ -7636,6 +7649,56 @@ end
 			pcall(function() delfile(path) end)
 		end
 	end
+
+
+	--[[
+		MacLib:FALSetData(flag, value)
+		Сохраняет произвольные кастомные данные под ключом `flag` в папке FAutoLoad.
+		Аналог MacLib:SetData(), но хранится в FAutoLoad/flag.syl.
+		Позволяет разработчику сохранять значения без привязки к UI-элементу.
+
+		MacLib:FALGetData(flag, default?)
+		Читает ранее сохранённые кастомные данные. Возвращает `default` если не найдено.
+
+		MacLib:FALLoadData(flag, callback, delay?, default?)
+		Отложенный хелпер — ждёт `delay` секунд, затем читает данные и вызывает callback(value).
+		Поведение полностью аналогично ForceAutoLoad у элементов.
+
+		Пример использования:
+		  MacLib:FALSetData("MySpeed", 75)
+		  MacLib:FALLoadData("MySpeed", function(v)
+		      print("Loaded speed:", v)  --> 75
+		  end, 0.5, 50)
+	]]
+	function MacLib:FALSetData(flag, value)
+		if isStudio then return false, "Studio mode" end
+		if not (MacLib._falFolder and writefile) then return false, "Config system unavailable" end
+		if not isfolder(MacLib._falFolder) then makefolder(MacLib._falFolder) end
+		local path = MacLib._falFolder .. "/" .. tostring(flag) .. ".syl"
+		local ok, encoded = pcall(HttpService.JSONEncode, HttpService, { type = "Custom", value = value })
+		if not ok then return false, "Encode error: " .. tostring(encoded) end
+		local wrote, err = pcall(writefile, path, encoded)
+		return wrote, wrote and nil or tostring(err)
+	end
+
+	function MacLib:FALGetData(flag, default)
+		if isStudio then return default end
+		if not (MacLib._falFolder and isfile and readfile) then return default end
+		local path = MacLib._falFolder .. "/" .. tostring(flag) .. ".syl"
+		if not isfile(path) then return default end
+		local ok, data = pcall(HttpService.JSONDecode, HttpService, readfile(path))
+		if not ok or type(data) ~= "table" or data.type ~= "Custom" then return default end
+		return data.value ~= nil and data.value or default
+	end
+
+	function MacLib:FALLoadData(flag, callback, delay, default)
+		task.spawn(function()
+			if delay and delay > 0 then task.wait(delay) end
+			local value = MacLib:FALGetData(flag, default)
+			if callback then callback(value) end
+		end)
+	end
+
 
 	--[[
 		MacLib:Preloader(url, config)
