@@ -7206,10 +7206,18 @@ function MacLib:Window(Settings)
 	local _notifyScale = 1
 	function WindowFunctions:SetNotifyScale(scale)
 		_notifyScale = scale
-		-- FIX-V13: применяем к notifUIScale — он стоит на контейнере notifications
-		-- и масштабирует все уведомления сразу, без необходимости пересоздавать их
-		if notifUIScale then
-			notifUIScale.Scale = scale
+		-- FIX-V14: применяем scale только к notificationUIScale каждого уведомления.
+		-- notifUIScale трогать нельзя — он масштабирует весь контейнер от (0,0)
+		-- и сдвигает уведомления по диагонали.
+		if notifications then
+			for _, child in ipairs(notifications:GetChildren()) do
+				if child.Name == "Notification" then
+					local uis = child:FindFirstChild("NotificationUIScale")
+					if uis then
+						Tween(uis, TweenInfo.new(0.2, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), { Scale = scale }):Play()
+					end
+				end
+			end
 		end
 	end
 	function WindowFunctions:GetNotifyScale()
