@@ -2380,7 +2380,9 @@ function MacLib:Window(Settings)
 					sliderValue.BackgroundTransparency = 0.95
 					sliderValue.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					sliderValue.BorderSizePixel = 0
-					sliderValue.LayoutOrder = 1
+					-- FIX-V17: нет UIListLayout — позиционируем справа абсолютно
+					sliderValue.AnchorPoint = Vector2.new(1, 0.5)
+					sliderValue.Position = UDim2.new(1, 0, 0.5, 0)
 					sliderValue.Position = UDim2.fromScale(-0.0789, 0.171)
 					sliderValue.Size = UDim2.fromOffset(41, 21)
 					sliderValue.ClipsDescendants = true
@@ -2405,14 +2407,7 @@ function MacLib:Window(Settings)
 
 					sliderValue.Parent = sliderElements
 
-					local sliderElementsUIListLayout = Instance.new("UIListLayout")
-					sliderElementsUIListLayout.Name = "SliderElementsUIListLayout"
-					sliderElementsUIListLayout.Padding = UDim.new(0, 20)
-					sliderElementsUIListLayout.FillDirection = Enum.FillDirection.Horizontal
-					sliderElementsUIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
-					sliderElementsUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-					sliderElementsUIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-					sliderElementsUIListLayout.Parent = sliderElements
+					-- FIX-V17: UIListLayout удалён — sliderBar использует Scale-based Size
 
 					local sliderBar = Instance.new("ImageLabel")
 					sliderBar.Name = "SliderBar"
@@ -2422,9 +2417,9 @@ function MacLib:Window(Settings)
 					sliderBar.BackgroundTransparency = 1
 					sliderBar.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					sliderBar.BorderSizePixel = 0
-					sliderBar.AnchorPoint = Vector2.new(0, 0.5) -- FIX-V16
-					sliderBar.Position = UDim2.new(0, 0, 0.5, 0) -- FIX-V16: бар по центру Y sliderElements
-					sliderBar.Size = UDim2.fromOffset(123, 3)
+					sliderBar.AnchorPoint = Vector2.new(0, 0.5)
+					sliderBar.Position = UDim2.new(0, 0, 0.5, 0)
+					sliderBar.Size = UDim2.new(1, -63, 0, 3) -- FIX-V17: 100% - 63px(valueW+padding)
 
 					local sliderHead = Instance.new("ImageButton")
 					sliderHead.Name = "SliderHead"
@@ -2587,26 +2582,7 @@ function MacLib:Window(Settings)
 						end
 					end)
 
-					local function updateSliderBarSize()
-						local containerWidth = sliderElements.AbsoluteSize.X
-						if containerWidth <= 0 then return end
-						-- FIX-V13: sliderName теперь отдельная строка, учитываем только valueW
-						local padding = sliderElementsUIListLayout.Padding.Offset
-						local valueW = math.max(sliderValue.AbsoluteSize.X, 41)
-						local available = containerWidth - valueW - padding
-						local minBar = isMobile and 80 or 90
-						local barW = math.max(available, minBar)
-						-- Clamp: не выходить за containerWidth
-						barW = math.min(barW, containerWidth - valueW - padding + (available < 0 and 0 or 0))
-						barW = math.max(barW, minBar)
-						sliderBar.Size = UDim2.new(0, barW, 0, 3)
-					end
-
-					updateSliderBarSize()
-
-					sliderValue:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateSliderBarSize)
-					sliderElements:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateSliderBarSize)
-					section:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateSliderBarSize)
+					-- FIX-V17: updateSliderBarSize удалена — Size теперь UDim2.new(1,-63,0,3)
 
 					function SliderFunctions:UpdateName(Name)
 						SliderFunctions.Settings.Name = Name
