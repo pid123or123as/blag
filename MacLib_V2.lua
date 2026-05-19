@@ -1884,7 +1884,7 @@ function MacLib:Window(Settings)
 			elementsScrolling.BottomImage = ""
 			elementsScrolling.CanvasSize = UDim2.new()
 			elementsScrolling.ScrollBarImageTransparency = isMobile and 0.2 or 0.5  -- FIX: more visible on mobile
-			elementsScrolling.ScrollBarThickness = isMobile and 8 or 2  -- FIX: wider scrollbar on mobile
+			elementsScrolling.ScrollBarThickness = isMobile and 12 or 2  -- FIX: wider scrollbar on mobile
 			elementsScrolling.TopImage = ""
 			elementsScrolling.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 			elementsScrolling.BackgroundTransparency = 1
@@ -3203,6 +3203,10 @@ function MacLib:Window(Settings)
 						plusBtn.Activated:Connect(function()
 							showMobileBtn(not _mbVisible)
 							updatePlusText()
+							-- FIX Bug1: save visible state via FAL hook
+							if KeybindFunctions._falSaveHook then
+								task.defer(KeybindFunctions._falSaveHook)
+							end
 							Tween(plusBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.6}):Play()
 							task.delay(0.12, function()
 								Tween(plusBtn, TweenInfo.new(0.1, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.88}):Play()
@@ -3287,10 +3291,8 @@ function MacLib:Window(Settings)
 							MacLib:FALSave(Flag, KeybindFunctions)
 							if _origBinded then _origBinded(bind) end
 						end
-						-- Also save when mobile button visibility changes
-						local _origShow = showMobileBtn
-						showMobileBtn = function(state)
-							_origShow(state)
+						-- Register a save hook that plusBtn.Activated and showMobileBtn can call
+						KeybindFunctions._falSaveHook = function()
 							MacLib:FALSave(Flag, KeybindFunctions)
 						end
 						task.defer(function()
@@ -3484,20 +3486,20 @@ function MacLib:Window(Settings)
 					searchBox.Size = UDim2.fromScale(1, 1)
 
 					local function CalculateDropdownSize()
-						local totalHeight = 0
-						local visibleChildrenCount = 0
-						local padding = dropdownFrameUIPadding.PaddingTop.Offset + dropdownFrameUIPadding.PaddingBottom.Offset
-
+						-- FIX: count-based height — works before frame renders (AbsoluteSize=0 issue)
+						local optH = 30  -- option height px (matches option.Size)
+						local spacing = dropdownFrameUIListLayout.Padding.Offset  -- 5px
+						local padT = dropdownFrameUIPadding.PaddingTop.Offset    -- 6px
+						local padB = dropdownFrameUIPadding.PaddingBottom.Offset  -- 6px
+						local count = 0
 						for _, v in pairs(dropdownFrame:GetChildren()) do
-							if not v:IsA("UIComponent") and v.Visible then
-								totalHeight += v.AbsoluteSize.Y
-								visibleChildrenCount += 1
+							-- only count actual visible GUI options (GuiObject check prevents UIStroke/UICorner/etc errors)
+							if v:IsA("GuiObject") and v.Visible then
+								count += 1
 							end
 						end
-
-						local spacing = dropdownFrameUIListLayout.Padding.Offset * (visibleChildrenCount - 1)
-
-						return totalHeight + spacing + padding
+						if count == 0 then return 0 end
+						return count * optH + math.max(count - 1, 0) * spacing + padT + padB
 					end
 
 					local function findOption()
@@ -3620,10 +3622,11 @@ function MacLib:Window(Settings)
 						local defaultDropdownSize = 38
 						local isDropdownOpen = not dropped
 						local _uiScale = (MacLib._uiScale or 1)
-						-- FIX: no maxDropHeight cap — show ALL options without scrolling
+						-- FIX: height = all options (no cap for <=8), viewport cap for large lists
 						local rawHeight = CalculateDropdownSize()
-						-- FIX8: openHeight = заголовок(38) + список, dropdownFrame = только список
-						local frameH = rawHeight  -- no clamp, show all options
+						local vpH = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.Y or 600
+						local safeMax = math.floor(vpH * 0.45)  -- max 45% of viewport for huge lists
+						local frameH = math.min(rawHeight, safeMax)
 						local openHeight = defaultDropdownSize + math.max(frameH, 1)
 						local targetSize = isDropdownOpen and UDim2.new(1, 0, 0, openHeight) or UDim2.new(1, 0, 0, defaultDropdownSize)
 
@@ -6589,7 +6592,7 @@ function MacLib:Window(Settings)
 					type = "Keybind", 
 					flag = Flag, 
 					bind = (typeof(data.Bind) == "EnumItem" and data.Bind.Name) or nil,
-					mbVisible = (MacLib.keybindBtnVisible and MacLib.keybindBtnVisible[Flag]) or false
+					mbVisible = (MacLib._keybindBtnVisible and MacLib._keybindBtnVisible[Flag]) or false
 				}
 			end,
 			Load = function(Flag, data)
@@ -7705,9 +7708,10 @@ end
 			end
 		elseif class == "Keybind" then
 			-- FALSave for Keybind: saves binded key name + mobile button visible state
-			local bind = elementObj:GetBind and elementObj:GetBind()
+			local bind = elementObj.GetBind and elementObj:GetBind()
 			local bindName = (typeof(bind) == "EnumItem" and bind.Name) or nil
-			local mbVis = (MacLib.keybindBtnVisible and elementObj._falFlag and MacLib.keybindBtnVisible[elementObj._falFlag]) or false
+			local falFlag = elementObj._falFlag
+			local mbVis = (MacLib._keybindBtnVisible and falFlag and MacLib._keybindBtnVisible[falFlag]) or false
 			data = { type = "Keybind", bind = bindName, mbVisible = mbVis }
 		end
 		local ok, encoded = pcall(HttpService.JSONEncode, HttpService, data)
