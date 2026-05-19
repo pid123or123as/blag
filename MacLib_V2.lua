@@ -5776,7 +5776,7 @@ function MacLib:Window(Settings)
 				-- ── Toggle Button Position (AnchorPoint sliders) ──────
 				sec:Divider()
 				sec:Header({ Name = "Toggle Button Position" })
-				sec:Slider({ Name = "X)", Default = 100, Minimum = 0, Maximum = 100, Precision = 0,
+				sec:Slider({ Name = "X)", Default = 50, Minimum = 0, Maximum = 100, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.4,
 					Callback = function(v)
 						local ax = v / 100
@@ -5791,7 +5791,7 @@ function MacLib:Window(Settings)
 							Position    = UDim2.new(ax, ox, ay, oy),
 						})
 					end }, "Cust_TBAnchorX")
-				sec:Slider({ Name = "Y", Default = 100, Minimum = 0, Maximum = 100, Precision = 0,
+				sec:Slider({ Name = "Y", Default = 0, Minimum = 0, Maximum = 100, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.4,
 					Callback = function(v)
 						local ay = v / 100
@@ -5819,7 +5819,7 @@ function MacLib:Window(Settings)
 							Position = UDim2.new(ax, v, ay, oy),
 						})
 					end }, "Cust_TBOffX")
-				sec:Slider({ Name = "Offset Y", Default = 0, Minimum = -200, Maximum = 200, Precision = 0,
+				sec:Slider({ Name = "Offset Y", Default = 15, Minimum = -200, Maximum = 200, Precision = 0,
 					ForceAutoLoad = true, FALoadDelay = 0.4,
 					Callback = function(v)
 						local ax_o = MacLib:GetOption("Cust_TBAnchorX")
