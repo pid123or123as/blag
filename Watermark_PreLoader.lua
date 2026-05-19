@@ -50,7 +50,7 @@ return function(ctx)
         local MARGIN_Y = 22
         -- FIX-V17: автоскейл — FHD=1.0, меньше FHD → пропорционально меньше
         local _wmVP = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
-        local _wmScale = math.clamp(math.min(_wmVP.X, _wmVP.Y) / 1080, 0.5, 1.0)
+        local _wmScale = math.clamp(math.min(_wmVP.X, _wmVP.Y) / 1080, 0.25, 1.0) -- FIX-V20: мобиль ~0.36
         local UI_SCALE_HIDDEN = _wmScale * 0.80
         local UI_SCALE_VISIBLE = _wmScale
 
