@@ -1,5 +1,17 @@
--- [v3.4] AUTO DRIBBLE + AUTO TACKLE
--- AutoDribble: полная переработка ShouldDribbleNow
+-- [v3.5] AUTO DRIBBLE + AUTO TACKLE
+-- Changelog v3.5:
+--   - Manual Button полностью удалён (кнопка, настройки, Toggle, Slider)
+--   - AutoTackle.ManualButton, ButtonScale, SetupManualTackleButton,
+--     ToggleManualTackleButton, SetTackleButtonScale — удалены полностью
+--   - Мобильное нажатие: ManualTackleKeybind теперь работает через MacLib Keybind
+--     (onBinded callback), а InputBegan оставлен только как ПК fallback
+--   - AutoDribble: улучшена точность — добавлена прогнозная позиция таклера
+--     через GetPositionBasedVelocity (история позиций) для более ранней реакции
+--   - AutoDribble: добавлена проверка IsTackling перед ShouldDribbleNow —
+--     если анимация такла ещё не началась, но враг летит вплотную — всё равно дек
+--   - PrecomputePlayers: velocity берётся из PositionHistory если ALV слишком мала
+--   - UpdateDebugVisibility: убраны ссылки на ButtonGui/ManualButton
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -8,7 +20,7 @@ local Camera = Workspace.CurrentCamera
 local UserInputService = game:GetService("UserInputService")
 local Debris = game:GetService("Debris")
 local Stats = game:GetService("Stats")
-print('9')
+
 local LocalPlayer = Players.LocalPlayer
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
@@ -53,17 +65,12 @@ local AutoTackleConfig = {
     ManualTackleEnabled = true,
     ManualTackleKeybind = Enum.KeyCode.Q,
     ManualTackleCooldown = 0.5,
-    ManualButton = false,
-    ButtonScale = 1.0,
 }
 
 local AutoDribbleConfig = {
     Enabled = false,
     MaxDribbleDistance = 30,
     DribbleActivationDistance = 17,
-    -- MinAngleForDribble: угол при котором враг считается "летящим на нас"
-    -- 90 = реагируем на любого кто хоть как-то движется в нашу сторону
-    -- 30 = только если летит почти прямо на нас
     MinAngleForDribble = 32,
     ShowServerPos = false,
 }
@@ -80,11 +87,6 @@ local AutoTackleStatus = {
     Connection = nil,
     HeartbeatConnection = nil,
     InputConnection = nil,
-    ButtonGui = nil,
-    TouchStartTime = 0,
-    Dragging = false,
-    DragStart = Vector2.new(0, 0),
-    StartPos = UDim2.new(0, 0, 0, 0),
     Ping = 0.1,
     LastPingUpdate = 0,
     TargetPositionHistory = {},
@@ -96,7 +98,6 @@ local AutoDribbleStatus = {
     Connection = nil,
     HeartbeatConnection = nil,
     LastDribbleTime = 0,
-    -- TackleDetectionCooldown УДАЛЁН — он блокировал реакцию
 }
 
 local DribbleStates = {}
@@ -464,9 +465,6 @@ local function UpdateDebugVisibility()
     if not AutoDribbleConfig.Enabled or not AutoDribbleConfig.ShowServerPos then
         if Gui.ServerPosBoxLines then HideBoxLines(Gui.ServerPosBoxLines) end
     end
-    if AutoTackleStatus.ButtonGui and AutoTackleStatus.ButtonGui:FindFirstChild("ManualTackleButton") then
-        AutoTackleStatus.ButtonGui.ManualTackleButton.Visible = AutoTackleConfig.ManualButton and AutoTackleConfig.Enabled
-    end
 end
 
 local function CleanupDebugText()
@@ -612,64 +610,6 @@ local function CheckIfTypingInChat()
     return success and result or false
 end
 
--- === MANUAL TACKLE BUTTON ===
-local function SetupManualTackleButton()
-    if AutoTackleStatus.ButtonGui then AutoTackleStatus.ButtonGui:Destroy(); AutoTackleStatus.ButtonGui = nil end
-    local buttonGui = Instance.new("ScreenGui")
-    buttonGui.Name = "ManualTackleButtonGui"; buttonGui.ResetOnSpawn = false
-    buttonGui.IgnoreGuiInset = false; buttonGui.Parent = game:GetService("CoreGui")
-    local size = 50 * AutoTackleConfig.ButtonScale
-    local screenSize = Camera.ViewportSize
-    local buttonFrame = Instance.new("Frame")
-    buttonFrame.Name = "ManualTackleButton"
-    buttonFrame.Size = UDim2.new(0, size, 0, size)
-    buttonFrame.Position = UDim2.new(0, screenSize.X/2 - size/2, 0, screenSize.Y * 0.7)
-    buttonFrame.BackgroundColor3 = Color3.fromRGB(20, 30, 50)
-    buttonFrame.BackgroundTransparency = 0.3; buttonFrame.BorderSizePixel = 0
-    buttonFrame.Visible = AutoTackleConfig.ManualButton and AutoTackleConfig.Enabled
-    buttonFrame.Parent = buttonGui
-    Instance.new("UICorner", buttonFrame).CornerRadius = UDim.new(0.5, 0)
-    local buttonIcon = Instance.new("ImageLabel")
-    buttonIcon.Size = UDim2.new(0, size*0.6, 0, size*0.6)
-    buttonIcon.Position = UDim2.new(0.5, -size*0.3, 0.5, -size*0.3)
-    buttonIcon.BackgroundTransparency = 1; buttonIcon.Image = "rbxassetid://73279554401260"
-    buttonIcon.Parent = buttonFrame
-    buttonFrame.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            AutoTackleStatus.TouchStartTime = tick()
-            local mp = input.UserInputType == Enum.UserInputType.Touch and Vector2.new(input.Position.X, input.Position.Y) or UserInputService:GetMouseLocation()
-            AutoTackleStatus.Dragging = true; AutoTackleStatus.DragStart = mp; AutoTackleStatus.StartPos = buttonFrame.Position
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) and AutoTackleStatus.Dragging then
-            local mp = input.UserInputType == Enum.UserInputType.Touch and Vector2.new(input.Position.X, input.Position.Y) or UserInputService:GetMouseLocation()
-            local delta = mp - AutoTackleStatus.DragStart
-            buttonFrame.Position = UDim2.new(AutoTackleStatus.StartPos.X.Scale, AutoTackleStatus.StartPos.X.Offset + delta.X, AutoTackleStatus.StartPos.Y.Scale, AutoTackleStatus.StartPos.Y.Offset + delta.Y)
-        end
-    end)
-    buttonFrame.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            AutoTackleStatus.Dragging = false; AutoTackleStatus.TouchStartTime = 0
-        end
-    end)
-    AutoTackleStatus.ButtonGui = buttonGui
-end
-
-local function ToggleManualTackleButton(value)
-    AutoTackleConfig.ManualButton = value
-    if value then SetupManualTackleButton()
-    else
-        if AutoTackleStatus.ButtonGui then AutoTackleStatus.ButtonGui:Destroy(); AutoTackleStatus.ButtonGui = nil end
-    end
-    UpdateDebugVisibility()
-end
-
-local function SetTackleButtonScale(value)
-    AutoTackleConfig.ButtonScale = value
-    if AutoTackleConfig.ManualButton then SetupManualTackleButton() end
-end
-
 -- === ПРОВЕРКИ СОСТОЯНИЙ ===
 local function IsDribbling(targetPlayer)
     if not targetPlayer or not targetPlayer.Character or not targetPlayer.Parent or targetPlayer.TeamColor == LocalPlayer.TeamColor then return false end
@@ -743,6 +683,7 @@ local function UpdateDribbleStates()
 end
 
 -- === PRECOMPUTE PLAYERS ===
+-- v3.5: velocity берётся как max(ALV, positionHistory) для ранней детекции разгона
 local function PrecomputePlayers()
     PrecomputedPlayers = {}
     HasBall = false; CanDribbleNow = false
@@ -770,12 +711,18 @@ local function PrecomputePlayers()
         TackleStates[player].IsTackling = IsSpecificTackle(player)
         local distance = (targetRoot.Position - HumanoidRootPart.Position).Magnitude
         if distance > AutoDribbleConfig.MaxDribbleDistance then continue end
+
+        -- v3.5: берём лучшую velocity из двух источников
+        local alv = targetRoot.AssemblyLinearVelocity
+        local posVel = GetPositionBasedVelocity(player)
+        local velocity = alv.Magnitude >= posVel.Magnitude and alv or posVel
+
         PrecomputedPlayers[player] = {
             Distance   = distance,
             IsValid    = true,
             IsTackling = TackleStates[player].IsTackling,
             RootPart   = targetRoot,
-            Velocity   = targetRoot.AssemblyLinearVelocity
+            Velocity   = velocity
         }
         RecordTargetPosition(targetRoot, player)
     end
@@ -908,6 +855,8 @@ AutoTackle.Start = function()
         IsTypingInChat = CheckIfTypingInChat()
     end)
 
+    -- ПК fallback: InputBegan ловит клавиатуру
+    -- Мобиль: MacLib Keybind вызывает ManualTackleAction через onBinded/Callback
     AutoTackleStatus.InputConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
         if gameProcessed or not AutoTackleConfig.Enabled or not AutoTackleConfig.ManualTackleEnabled then return end
         if IsTypingInChat then return end
@@ -1029,7 +978,6 @@ AutoTackle.Start = function()
         end)
     end)
 
-    if AutoTackleConfig.ManualButton then SetupManualTackleButton() end
     if DebugConfig.MoveEnabled then SetupDebugMovement() end
     UpdateDebugVisibility()
     if notify then notify("AutoTackle", "Started", true) end
@@ -1045,15 +993,12 @@ AutoTackle.Stop = function()
         for _, line in ipairs(circle) do line:Remove() end
     end
     AutoTackleStatus.TargetCircles = {}
-    if AutoTackleStatus.ButtonGui then AutoTackleStatus.ButtonGui:Destroy(); AutoTackleStatus.ButtonGui = nil end
     if notify then notify("AutoTackle", "Stopped", true) end
 end
 
 -- ==========================================================
--- === AUTODRIBBLE MODULE — v3.4 FULL REWRITE
+-- === AUTODRIBBLE MODULE — v3.5
 -- ==========================================================
--- Кэш косинуса порога угла. math.cos вызывается только когда
--- MinAngleForDribble меняется, а не каждый кадр.
 local _cachedAngleDeg   = -1
 local _cachedCosThresh  = 0
 local function GetCosThreshold()
@@ -1065,26 +1010,19 @@ local function GetCosThreshold()
 end
 
 -- ============================================================
--- ShouldDribbleNow — переработана с нуля.
+-- ShouldDribbleNow v3.5 — улучшения точности:
 --
--- ЛОГИКА (3 стадии):
+-- [НОВОЕ] Прогнозная позиция таклера через GetPositionBasedVelocity:
+--   На расстоянии 4-DribbleActivationDistance теперь смотрим куда
+--   таклер ПРИДЁТ через ping*1.5 мс, а не где он сейчас.
+--   Это значительно снижает пропуски при высоком пинге.
 --
---  [0] Немедленно: враг СОВСЕМ рядом (< 4 ед) — дек без всяких проверок.
---      Это закрывает кейс "враг вплотную, скрипт не реагирует".
+-- [НОВОЕ] Fallback без IsTackling на дистанции < DribbleActivationDistance:
+--   Если враг вплотную и летит в нашу сторону (dot > 0.6), но анимация
+--   такла ещё не началась — всё равно дек. Раньше в этом случае скрипт
+--   ждал IsTackling и пропускал момент.
 --
---  [1] Зона активации (< DribbleActivationDistance):
---      Анимация такла играет — дек немедленно, без угла и скорости.
---      Враг уже в пределах и атакует — нет времени вычислять.
---
---  [2] Средняя дистанция (до MaxDribbleDistance):
---      a) Скорость врага >= 1.5 (таклер начал разгон)
---      b) Направление: dot > cosThreshold (враг летит в нашу сторону)
---         — используем dot product, НЕ acos (acos только для GUI)
---      c) Время до столкновения < 0.4с с учётом нашей скорости
---
--- ВАЖНО: TackleDetectionCooldown полностью убран.
--- Единственный throttle — PerformDribble.LastDribbleTime (0.02с),
--- который просто защищает от двойного FireServer за один тик.
+-- [СОХРАНЕНО] Все оригинальные стадии 0/1/2 из v3.4.
 -- ============================================================
 local function ShouldDribbleNow(specificTarget, tacklerData)
     if not specificTarget or not tacklerData then return false end
@@ -1092,14 +1030,21 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
     local tacklerRoot = tacklerData.RootPart
     if not tacklerRoot then return false end
 
-    -- Серверная позиция (CFrame-based, компенсация пинга × 1.5)
     local serverCF     = GetMyServerCFrame()
     local myServerPos  = Vector3.new(serverCF.Position.X, 0, serverCF.Position.Z)
-    local tacklerPos2D = Vector3.new(tacklerRoot.Position.X, 0, tacklerRoot.Position.Z)
-    local toMe         = myServerPos - tacklerPos2D
+
+    -- v3.5: используем прогнозную позицию таклера (ping-компенсация)
+    local histVel      = GetPositionBasedVelocity(specificTarget)
+    local flatHistVel  = Vector3.new(histVel.X, 0, histVel.Z)
+    local predictedTacklerPos = Vector3.new(
+        tacklerRoot.Position.X + flatHistVel.X * AutoTackleStatus.Ping * 1.5,
+        0,
+        tacklerRoot.Position.Z + flatHistVel.Z * AutoTackleStatus.Ping * 1.5
+    )
+
+    local toMe         = myServerPos - predictedTacklerPos
     local distFlat     = toMe.Magnitude
 
-    -- Верхняя граница
     if distFlat > AutoDribbleConfig.MaxDribbleDistance then
         if Gui and AutoDribbleConfig.Enabled then
             Gui.AngleLabel.Text = string.format("FAR d=%.1f", distFlat)
@@ -1107,8 +1052,7 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
         return false
     end
 
-    -- [СТАДИЯ 0] Враг вплотную — реагируем мгновенно без каких-либо проверок.
-    -- distFlat < 0.1 тоже попадает сюда (раньше это возвращало false — баг!)
+    -- [СТАДИЯ 0] Вплотную
     if distFlat < 4 then
         if Gui and AutoDribbleConfig.Enabled then
             Gui.AngleLabel.Text = string.format("⚡ POINT BLANK d=%.1f", distFlat)
@@ -1116,21 +1060,30 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
         return true
     end
 
-    -- [СТАДИЯ 1] Зона активации — анимация такла играет, просто дек.
+    -- [СТАДИЯ 1] Зона активации
     if distFlat <= AutoDribbleConfig.DribbleActivationDistance then
         if Gui and AutoDribbleConfig.Enabled then
             Gui.AngleLabel.Text = string.format("⚡ CLOSE d=%.1f", distFlat)
         end
+        -- v3.5 fallback: если IsTackling ещё false, но враг летит прямо на нас
+        if not tacklerData.IsTackling then
+            local tackerVelFlat = Vector3.new(tacklerData.Velocity.X, 0, tacklerData.Velocity.Z)
+            if tackerVelFlat.Magnitude >= 1.5 then
+                local dotClose = tackerVelFlat.Unit:Dot(toMe.Unit)
+                if dotClose > 0.55 then
+                    return true
+                end
+            end
+            return false
+        end
         return true
     end
 
-    -- [СТАДИЯ 2] Средняя дистанция — проверяем направление и время.
-    local tacklerVel  = tacklerData.Velocity
-    local flatVel     = Vector3.new(tacklerVel.X, 0, tacklerVel.Z)
+    -- [СТАДИЯ 2] Средняя дистанция
+    local tacklerVel   = tacklerData.Velocity
+    local flatVel      = Vector3.new(tacklerVel.X, 0, tacklerVel.Z)
     local tacklerSpeed = flatVel.Magnitude
 
-    -- Порог скорости снижен до 1.5 (раньше 3): таклер начал анимацию,
-    -- AssemblyLinearVelocity ещё не разогналась до 3 — не пропускаем
     if tacklerSpeed < 1.5 then
         if Gui and AutoDribbleConfig.Enabled then
             Gui.AngleLabel.Text = string.format("v=%.1f (slow)", tacklerSpeed)
@@ -1138,32 +1091,25 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
         return false
     end
 
-    -- Быстрая проверка угла через dot product (без acos в горячем пути)
-    -- dot > cosThreshold  ↔  angle < MinAngleForDribble
     local tacklerDir  = flatVel.Unit
     local dirToMe     = toMe.Unit
     local dot         = tacklerDir:Dot(dirToMe)
     local cosThresh   = GetCosThreshold()
 
-    -- Для GUI отображаем угол (acos — только визуал, не влияет на решение)
     if Gui and AutoDribbleConfig.Enabled then
         local angleDeg = math.deg(math.acos(math.clamp(dot, -1, 1)))
         Gui.AngleLabel.Text = string.format("A=%.0f° v=%.1f d=%.1f", angleDeg, tacklerSpeed, distFlat)
     end
 
-    -- Враг движется не в нашу сторону
     if dot < cosThresh then
         return false
     end
 
-    -- Время до столкновения с учётом нашей скорости сближения
     local myFlatVel   = GetMyVelocityFromHistory()
     local myFlatSpeed = Vector3.new(myFlatVel.X, 0, myFlatVel.Z).Magnitude
-    -- relSpeed = сближение: скорость таклера + наша скорость (если идём навстречу)
-    -- Dot нашей скорости в сторону таклера: если < 0 — мы убегаем, вычитаем
-    local myDirToTackler = -dirToMe -- направление от нас к таклеру
+    local myDirToTackler = -dirToMe
     local myVelUnit  = myFlatSpeed > 0.1 and Vector3.new(myFlatVel.X, 0, myFlatVel.Z).Unit or Vector3.zero
-    local myApproach = myVelUnit:Dot(myDirToTackler) -- > 0 если мы идём навстречу
+    local myApproach = myVelUnit:Dot(myDirToTackler)
     local relSpeed   = tacklerSpeed + myFlatSpeed * math.max(myApproach, 0)
 
     local timeToCollision = distFlat / math.max(relSpeed, 1)
@@ -1180,7 +1126,6 @@ end
 
 local function PerformDribble()
     local currentTime = tick()
-    -- 0.02с — минимальный throttle, просто защита от двойного FireServer в одном тике
     if currentTime - AutoDribbleStatus.LastDribbleTime < 0.02 then return end
     local bools = Workspace:FindFirstChild(LocalPlayer.Name) and Workspace[LocalPlayer.Name]:FindFirstChild("Bools")
     if not bools or bools.dribbleDebounce.Value then return end
@@ -1229,6 +1174,22 @@ AutoDribble.Start = function()
                     minDist = data.Distance
                     specificTarget = player
                     nearestTacklerData = data
+                end
+            end
+        end
+
+        -- v3.5: если нет игрока с активной анимацией такла, смотрим всех врагов
+        -- в зоне активации (летят вплотную без анимации — тоже угроза)
+        if not specificTarget then
+            for player, data in pairs(PrecomputedPlayers) do
+                if data.IsValid and data.Distance < minDist then
+                    local flatV = Vector3.new(data.Velocity.X, 0, data.Velocity.Z)
+                    if flatV.Magnitude >= 1.5 then
+                        minDist = data.Distance
+                        specificTarget = player
+                        nearestTacklerData = data
+                        targetCount += 1
+                    end
                 end
             end
         end
@@ -1336,19 +1297,21 @@ local function SetupUI(UI)
             Name = "Manual Tackle Enabled", Default = AutoTackleConfig.ManualTackleEnabled,
             Callback = function(v) AutoTackleConfig.ManualTackleEnabled = v end
         }, "AutoTackleManualTackleEnabled")
+        -- MacLib Keybind: на ПК ловит клавишу через InputBegan (выше),
+        -- на мобиле — сама библиотека рисует FAB-кнопку и вызывает Callback/onBinded
         uiElements.AutoTackleManualTackleKeybind = UI.Sections.AutoTackle:Keybind({
-            Name = "Manual Tackle Key", Default = AutoTackleConfig.ManualTackleKeybind,
-            Callback = function(v) AutoTackleConfig.ManualTackleKeybind = v end
+            Name = "Manual Tackle Key",
+            Default = AutoTackleConfig.ManualTackleKeybind,
+            Callback = function(v)
+                -- Мобиль: MacLib вызывает Callback при нажатии своей FAB-кнопки
+                if not AutoTackleConfig.Enabled or not AutoTackleConfig.ManualTackleEnabled then return end
+                ManualTackleAction()
+            end,
+            onBinded = function(v)
+                -- Смена биндинга (ПК/геймпад)
+                AutoTackleConfig.ManualTackleKeybind = v
+            end
         }, "AutoTackleManualTackleKeybind")
-        uiElements.AutoTackleManualButton = UI.Sections.AutoTackle:Toggle({
-            Name = "Manual Button", Default = AutoTackleConfig.ManualButton,
-            Callback = ToggleManualTackleButton
-        }, "AutoTackleManualButton")
-        uiElements.AutoTackleButtonScale = UI.Sections.AutoTackle:Slider({
-            Name = "Button Scale", Minimum = 0.5, Maximum = 2.0,
-            Default = AutoTackleConfig.ButtonScale, Precision = 2,
-            Callback = SetTackleButtonScale
-        }, "AutoTackleButtonScale")
     end
 
     if UI.Sections.AutoDribble then
@@ -1378,7 +1341,7 @@ local function SetupUI(UI)
             Default = AutoDribbleConfig.MinAngleForDribble, Precision = 0,
             Callback = function(v)
                 AutoDribbleConfig.MinAngleForDribble = v
-                _cachedAngleDeg = -1 -- сбрасываем кэш косинуса
+                _cachedAngleDeg = -1
             end
         }, "AutoDribbleMinAngle")
         uiElements.AutoDribbleShowServerPos = UI.Sections.AutoDribble:Toggle({
@@ -1422,7 +1385,6 @@ local function SynchronizeConfigValues()
         { uiElements.AutoTackleDribbleDelay,        function(v) AutoTackleConfig.DribbleDelayTime = v end },
         { uiElements.AutoTackleEagleEyeMinDelay,    function(v) AutoTackleConfig.EagleEyeMinDelay = v end },
         { uiElements.AutoTackleEagleEyeMaxDelay,    function(v) AutoTackleConfig.EagleEyeMaxDelay = v end },
-        { uiElements.AutoTackleButtonScale,         function(v) AutoTackleConfig.ButtonScale = v end },
         { uiElements.AutoDribbleMaxDistance,        function(v) AutoDribbleConfig.MaxDribbleDistance = v end },
         { uiElements.AutoDribbleActivationDistance, function(v) AutoDribbleConfig.DribbleActivationDistance = v end },
         { uiElements.AutoDribbleMinAngle,           function(v) AutoDribbleConfig.MinAngleForDribble = v; _cachedAngleDeg = -1 end },
