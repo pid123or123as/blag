@@ -52,7 +52,8 @@ return function(ctx)
         -- FIX-V15-WM: автоскейл относительно FHD (1080p = scale 1.0)
         local _wmVP = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
         local _wmShort = math.min(_wmVP.X, _wmVP.Y)
-        local _wmAutoScale = math.clamp(_wmShort / 900, 0.55, 1.6)
+        local -- FIX-V17: FHD(1080)=1.0, мобиль~1.28, 4K~0.84
+        _wmAutoScale = math.clamp((1080 / math.max(_wmShort, 200)) ^ 0.25, 0.55, 1.5)
         local UI_SCALE_VISIBLE = _wmAutoScale
         local UI_SCALE_HIDDEN = _wmAutoScale * 0.80
 
@@ -572,10 +573,10 @@ return function(ctx)
             MacLib:FALSetData("WM_PosNY", py)
         end
 
-        local function normToPixel(nx, ny)
+        local function normToPixel(nx, ny, scaleOverride)
             local cam = workspace.CurrentCamera
             local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
-            local sz = getVisualSize()
+            local sz = getVisualSize(scaleOverride or UI_SCALE_VISIBLE)
             local px = math.round(clamp(nx * vp.X, 0, vp.X - sz.X))
             local py = math.round(clamp(ny * vp.Y, 0, vp.Y - sz.Y))
             return px, py
@@ -587,22 +588,22 @@ return function(ctx)
             return px / vp.X, py / vp.Y
         end
 
-        local function clampToViewport(x, y)
+        local function clampToViewport(x, y, scaleOverride)
             local cam = workspace.CurrentCamera
             local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
-            local sz = getVisualSize()
+            local sz = getVisualSize(scaleOverride)
             return math.round(clamp(x, 0, vp.X - sz.X)), math.round(clamp(y, 0, vp.Y - sz.Y))
         end
 
-        local function setTargetPos(x, y)
-            x, y = clampToViewport(x, y)
+        local function setTargetPos(x, y, scaleOverride)
+            x, y = clampToViewport(x, y, scaleOverride)
             dragTargetX = x
             dragTargetY = y
             savePos(pixelToNorm(x, y))
         end
 
-        local function snapPos(x, y)
-            x, y = clampToViewport(x, y)
+        local function snapPos(x, y, scaleOverride)
+            x, y = clampToViewport(x, y, scaleOverride)
             dragTargetX = x
             dragTargetY = y
             dragCurX = x
@@ -659,7 +660,7 @@ return function(ctx)
                 local cam = workspace.CurrentCamera
                 local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
                 local sz = getVisualSize(UI_SCALE_VISIBLE)
-                setTargetPos(vp.X - sz.X - MARGIN_X, MARGIN_Y)
+                setTargetPos(vp.X - sz.X - MARGIN_X, MARGIN_Y, UI_SCALE_VISIBLE)
             end)
         end
 
@@ -864,7 +865,7 @@ return function(ctx)
                 local cam = workspace.CurrentCamera
                 local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
                 local sz = getVisualSize(UI_SCALE_VISIBLE)
-                snapPos(vp.X - sz.X - MARGIN_X, MARGIN_Y)
+                snapPos(vp.X - sz.X - MARGIN_X, MARGIN_Y, UI_SCALE_VISIBLE)
             end
         end)
 
