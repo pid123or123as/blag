@@ -418,7 +418,7 @@ function BallTrajectoryModule.SetupUI(UI)
         section:Divider()
         uiElements.PredSteps = section:Slider({
             Name = "Pred Steps",
-            Minimum = 100,
+            Minimum = 1,
             Maximum = 400,
             Default = CONFIG.PRED_STEPS,
             Precision = 0,
