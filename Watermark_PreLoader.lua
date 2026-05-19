@@ -48,8 +48,12 @@ return function(ctx)
 
         local MARGIN_X = 22
         local MARGIN_Y = 22
-        local UI_SCALE_HIDDEN = 0.80
-        local UI_SCALE_VISIBLE = 1.00
+        -- FIX-V15-WM: автоскейл относительно FHD (1080p = scale 1.0)
+        local _wmVP = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
+        local _wmShort = math.min(_wmVP.X, _wmVP.Y)
+        local _wmAutoScale = math.clamp(_wmShort / 1080, 0.45, 1.6)
+        local UI_SCALE_VISIBLE = _wmAutoScale
+        local UI_SCALE_HIDDEN = _wmAutoScale * 0.80
 
         local gui = GetGui()
         gui.Name = "MacLibWatermark"
@@ -563,8 +567,8 @@ return function(ctx)
         local function savePos(px, py)
             posNX = px
             posNY = py
-            MacLib:SetData("WM_PosNX", px)
-            MacLib:SetData("WM_PosNY", py)
+            MacLib:FALSetData("WM_PosNX", px)
+            MacLib:FALSetData("WM_PosNY", py)
         end
 
         local function normToPixel(nx, ny)
@@ -850,8 +854,8 @@ return function(ctx)
         task.spawn(function()
             waitForStableLayout(2, UI_SCALE_VISIBLE)
 
-            local savedNX = MacLib:GetData("WM_PosNX", nil)
-            local savedNY = MacLib:GetData("WM_PosNY", nil)
+            local savedNX = MacLib:FALGetData("WM_PosNX", nil)
+            local savedNY = MacLib:FALGetData("WM_PosNY", nil)
             if savedNX and savedNY then
                 local px, py = normToPixel(savedNX, savedNY)
                 snapPos(px, py)
@@ -969,8 +973,8 @@ return function(ctx)
         function WM:MoveBottomLeft() moveBottomLeft() end
 
         function WM:ResetPosition()
-            MacLib:SetData("WM_PosNX", nil)
-            MacLib:SetData("WM_PosNY", nil)
+            MacLib:FALSetData("WM_PosNX", nil)
+            MacLib:FALSetData("WM_PosNY", nil)
             moveTopRight()
         end
 
