@@ -2366,7 +2366,7 @@ function MacLib:Window(Settings)
 					sliderElements.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					sliderElements.BorderSizePixel = 0
 					sliderElements.Position = UDim2.fromOffset(0, 0) -- FIX-V13
-					sliderElements.Size = UDim2.new(1, 0, 0, 24) -- FIX-V13: фиксированная высота строки
+					sliderElements.Size = isMobile and UDim2.new(1, 0, 0, 26) or UDim2.new(1, 0, 0, 22) -- FIX-V16: высота под размер head
 					sliderElements.LayoutOrder = 2
 
 					local sliderValue = Instance.new("TextBox")
@@ -2422,7 +2422,8 @@ function MacLib:Window(Settings)
 					sliderBar.BackgroundTransparency = 1
 					sliderBar.BorderColor3 = Color3.fromRGB(0, 0, 0)
 					sliderBar.BorderSizePixel = 0
-					sliderBar.Position = UDim2.fromScale(0.219, 0.457)
+					sliderBar.AnchorPoint = Vector2.new(0, 0.5) -- FIX-V16
+					sliderBar.Position = UDim2.new(0, 0, 0.5, 0) -- FIX-V16: бар по центру Y sliderElements
 					sliderBar.Size = UDim2.fromOffset(123, 3)
 
 					local sliderHead = Instance.new("ImageButton")
@@ -2435,7 +2436,7 @@ function MacLib:Window(Settings)
 					sliderHead.BorderSizePixel = 0
 					sliderHead.Position = UDim2.fromScale(1, 0.5)
 					-- FIX3: уменьшен ползунок на мобиле до 16px
-				sliderHead.Size = UDim2.fromOffset(12, 12) -- FIX-V12: uniform size, touch area handled by sliderTouchBar
+				sliderHead.Size = isMobile and UDim2.fromOffset(18, 18) or UDim2.fromOffset(12, 12) -- FIX-V16: крупнее на мобиле для точного касания
 					sliderHead.Parent = sliderBar
 
 					sliderBar.Parent = sliderElements
