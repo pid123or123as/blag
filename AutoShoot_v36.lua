@@ -31,12 +31,12 @@ local AnimationHoldTime = 0.6
 -- КОНФИГ — только параметры которые не зависят от ворот/позиции
 -- ============================================================
 local AutoShootEnabled   = false
+local AutoShootMode      = "Packet" -- "Packet" | "Hook"
 local AutoShootLegit     = true
 local AutoShootManualShot = true
 local AutoShootShootKey  = Enum.KeyCode.G
 local AutoShootMaxDistance = 200
 local AutoShootDebugText = false
-local AutoShootMode = "Packet" -- "Packet" | "Hook"
 local AutoShootSpoofPowerEnabled = false
 local AutoShootSpoofPowerType    = "math.huge"
 -- Физика
@@ -1235,11 +1235,13 @@ end
 local function UpdateModeText()
     if not Gui then return end
     if AutoShootMode == "Hook" then
-        Gui.Mode.Text = "Mode: Hook | Keybind: Disabled"
+        Gui.Mode.Text = "Mode: Hook (keybind disabled)"
+        Gui.Mode.Color = Color3.fromRGB(255, 100, 0)
     else
         Gui.Mode.Text = AutoShootManualShot
-            and string.format("Mode: Packet | Manual (%s)", GetKeyName(AutoShootShootKey))
+            and string.format("Mode: Packet | %s", GetKeyName(AutoShootShootKey))
             or "Mode: Packet | Auto"
+        Gui.Mode.Color = Color3.fromRGB(255, 255, 255)
     end
 end
 
@@ -1249,66 +1251,53 @@ end
 -- ============================================================
 -- HOOK MODE
 -- ============================================================
-local HookState = { Active = false, Connection = nil }
+local HookState = { Active = false, Unhook = nil, _orig = nil }
 
 local function DisableHook()
-    if HookState.Connection then
-        pcall(function() HookState.Connection:Disconnect() end)
-        HookState.Connection = nil
+    if HookState.Unhook then
+        pcall(HookState.Unhook)
+        HookState.Unhook = nil
     end
     HookState.Active = false
+    HookState._orig  = nil
 end
 
--- hookmetamethod + newcclosure перехват FireServer для Shooter remote.
--- При включённом Hook-режиме все FireServer у Shooter подменяют аргументы.
 local function EnableHook()
-    if HookState.Active then return true end
-    DisableHook()
-
-    local ok, err = pcall(function()
-        HookState.Connection = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    if HookState.Active then return end
+    local ok, result = pcall(function()
+        return hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local method = getnamecallmethod()
-            -- Перехватываем только FireServer у нашего remote
             if method == "FireServer" and self == Shooter then
-                local args = {...}
-                -- Заменяем аргументы если цель уже вычислена
-                if ShootDir and BallAttachment then
-                    local power = GetSpoofPower() or CurrentPower
-                    -- args: [dir, ballCFrame, power, vel, false, false, spin, nil, false]
-                    args[1] = ShootDir
-                    args[2] = BallAttachment.CFrame
-                    args[3] = power
-                    args[4] = ShootVel or args[4]
-                    args[7] = CurrentSpin or args[7]
+                if ShootDir then
+                    local power = (AutoShootSpoofPowerEnabled and GetSpoofPower()) or CurrentPower
+                    local a1, a2, a3, a4, a5, a6, a7, a8, a9 = ...
+                    -- Подменяем: dir, cframe(original), power, vel, flags, spin, nil, flag
+                    return HookState._orig(self, ShootDir, a2, power, ShootVel, a5, a6, CurrentSpin, a8, a9)
                 end
-                return self:FireServer(table.unpack(args))
             end
-            return self[method](self, ...)
+            return HookState._orig(self, ...)
         end))
     end)
-
-    if ok then
+    if ok and result then
         HookState.Active = true
-        if Gui then
-            Gui.Status.Text = "Hook: Active"
-            Gui.Status.Color = Color3.fromRGB(0, 200, 255)
+        HookState._orig  = result
+        HookState.Unhook = function()
+            pcall(hookmetamethod, game, "__namecall", result)
         end
-        return true
+        if Gui then Gui.Status.Text = "Hook: Active"; Gui.Status.Color = Color3.fromRGB(0, 255, 100) end
     else
-        HookState.Active = false
-        warn("[AutoShoot] Hook failed:", err)
-        return false
+        warn("[AutoShoot Hook] hookmetamethod error:", result)
     end
 end
 
 local function DoShoot()
     if not ShootDir then return false end
-
     if AutoShootMode == "Hook" then
-        -- Hook уже перехватывает FireServer автоматически, DoShoot не нужен
+        -- Hook-режим: подменяем аргументы при следующем FireServer от самой игры
+        if not HookState.Active then EnableHook() end
         return HookState.Active
     end
-
+    -- Packet-режим
     if IsAnimating and AutoShootLegit then return false end
     if AutoShootLegit then
         IsAnimating = true; RShootAnim:Play()
@@ -1320,6 +1309,7 @@ local function DoShoot()
     end)
     return ok
 end
+
 
 -- ============================================================
 -- AUTO SHOOT MODULE
@@ -1354,20 +1344,29 @@ AutoShoot.Start = function()
         end
     end)
 
-    AutoShootStatus.InputConnection = UserInputService.InputBegan:Connect(function(inp, gp)
-        if gp or not AutoShootEnabled or not AutoShootManualShot or not CanShoot then return end
-        if AutoShootMode == "Hook" then return end
-        if inp.KeyCode == AutoShootShootKey or inp.UserInputType == AutoShootShootKey then
-            local ball = Workspace:FindFirstChild("ball")
-            local hasBall = ball and ball:FindFirstChild("playerWeld") and ball.creator.Value == LocalPlayer
-            if hasBall and TargetPoint then
-                pcall(CalculateTarget)
-                if DoShoot() then
-                    if Gui then Gui.Status.Text = "SHOT! [" .. CurrentType .. "]"; Gui.Status.Color = Color3.fromRGB(0,255,0) end
-                    LastShoot = tick(); CanShoot = false
-                    task.delay(0.3, function() CanShoot = true end)
-                end
+    -- DoManualShoot: единая функция выстрела для PC (InputBegan) и mobile (MacLib FAB Callback)
+    local function DoManualShoot()
+        if not AutoShootEnabled or not AutoShootManualShot or not CanShoot then return end
+        if AutoShootMode ~= "Packet" then return end
+        local ball = Workspace:FindFirstChild("ball")
+        local hasBall = ball and ball:FindFirstChild("playerWeld") and ball.creator.Value == LocalPlayer
+        if hasBall and TargetPoint then
+            pcall(CalculateTarget)
+            if DoShoot() then
+                if Gui then Gui.Status.Text = "SHOT! [" .. CurrentType .. "]"; Gui.Status.Color = Color3.fromRGB(0,255,0) end
+                LastShoot = tick(); CanShoot = false
+                task.delay(0.3, function() CanShoot = true end)
             end
+        end
+    end
+    AutoShootStatus.ManualShootFn = DoManualShoot
+
+    -- PC: InputBegan — работает по клавише или UserInputType
+    AutoShootStatus.InputConnection = UserInputService.InputBegan:Connect(function(inp, gp)
+        if gp then return end
+        if AutoShootMode ~= "Packet" then return end
+        if inp.KeyCode == AutoShootShootKey or inp.UserInputType == AutoShootShootKey then
+            DoManualShoot()
         end
     end)
 
@@ -1417,7 +1416,6 @@ AutoShoot.Stop = function()
     if AutoShootStatus.Connection     then AutoShootStatus.Connection:Disconnect();      AutoShootStatus.Connection     = nil end
     if AutoShootStatus.RenderConnection then AutoShootStatus.RenderConnection:Disconnect(); AutoShootStatus.RenderConnection = nil end
     if AutoShootStatus.InputConnection  then AutoShootStatus.InputConnection:Disconnect();  AutoShootStatus.InputConnection  = nil end
-    DisableHook()
     AutoShootStatus.Running = false
     if Gui then for _, v in pairs(Gui) do if v.Remove then v:Remove() end end; Gui = nil end
     for i = 1, 12 do
@@ -1431,7 +1429,6 @@ AutoShoot.Stop = function()
     end
     for i = 1, #StartCircle do if StartCircle[i] and StartCircle[i].Remove then StartCircle[i]:Remove() end end
     StartCircle = {}
-    if AutoShootStatus.ButtonGui then AutoShootStatus.ButtonGui:Destroy(); AutoShootStatus. end
 end
 
 AutoShoot.SetDebugText = function(v)
@@ -1505,18 +1502,22 @@ local function SetupUI(UI)
         }, "AutoShootEnabled")
 
         uiElements.AutoShootMode = UI.Sections.AutoShoot:Dropdown({
-            Name = "Mode", Default = AutoShootMode,
-            Options = {"Packet", "Hook"}, Required = true,
+            Name = "Mode",
+            Options = {"Packet", "Hook"},
+            Default = 1,
+            Required = true,
             Callback = function(v)
                 AutoShootMode = v
                 UpdateModeText()
-                -- In Hook mode show/hide keybind element
                 if uiElements.AutoShootKey then
-                    uiElements.AutoShootKey:SetVisibility(AutoShootMode ~= "Hook")
+                    uiElements.AutoShootKey:SetVisibility(v == "Packet")
                 end
                 if AutoShootEnabled then
-                    AutoShoot.Stop()
-                    AutoShoot.Start()
+                    AutoShoot.Stop(); AutoShoot.Start()
+                elseif v == "Hook" then
+                    EnableHook()
+                else
+                    DisableHook()
                 end
             end
         }, "AutoShootMode")
@@ -1533,30 +1534,18 @@ local function SetupUI(UI)
             Callback = function(v) AutoShootManualShot = v; UpdateModeText() end
         }, "AutoShootManual")
 
+        -- Keybind: Callback срабатывает и при PC-клавише и при нажатии мобильного FAB (MacLib)
         uiElements.AutoShootKey = UI.Sections.AutoShoot:Keybind({
-            Name = "Shoot Key",
-            Default = AutoShootShootKey,
-            ForceAutoLoad = true,
-            -- Callback: срабатывает при нажатии кейбинда (ПК) и при тапе мобильной кнопки FAB
+            Name = "Shoot Key", Default = AutoShootShootKey,
             Callback = function(v)
-                if AutoShootMode == "Hook" then return end
-                local ball = Workspace:FindFirstChild("ball")
-                local hasBall = ball and ball:FindFirstChild("playerWeld")
-                    and ball.creator.Value == LocalPlayer
-                if hasBall and TargetPoint and CanShoot then
-                    pcall(CalculateTarget)
-                    if DoShoot() then
-                        if Gui then
-                            Gui.Status.Text = "SHOT! [" .. CurrentType .. "]"
-                            Gui.Status.Color = Color3.fromRGB(0, 255, 0)
-                        end
-                        LastShoot = tick(); CanShoot = false
-                        task.delay(0.3, function() CanShoot = true end)
-                    end
+                -- MacLib вызывает Callback и на PC и через мобильный FAB
+                if AutoShootMode ~= "Packet" then return end
+                if AutoShootStatus.ManualShootFn then
+                    AutoShootStatus.ManualShootFn()
                 end
             end,
-            -- onBinded: срабатывает когда пользователь выбирает новый бинд
             onBinded = function(v)
+                -- onBinded = пользователь сменил бинд
                 if AutoShootMode == "Hook" then return end
                 AutoShootShootKey = v
                 UpdateModeText()
