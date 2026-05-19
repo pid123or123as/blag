@@ -5860,6 +5860,9 @@ function MacLib:Window(Settings)
 		return SectionFunctions
 	end
 
+	-- FIX-V15: _notifyScale должен быть виден внутри Notify
+	local _notifyScale = 1
+
 	function WindowFunctions:Notify(Settings)
 		local NotificationFunctions = {}
 
@@ -7203,7 +7206,7 @@ function MacLib:Window(Settings)
 
 	--- Изменить масштаб Notify (по умолчанию 1)
 	--- Пример: WindowFunctions:SetNotifyScale(0.8)
-	local _notifyScale = 1
+	-- _notifyScale объявлен выше перед Notify (FIX-V15)
 	function WindowFunctions:SetNotifyScale(scale)
 		_notifyScale = scale
 		-- FIX-V14: применяем scale только к notificationUIScale каждого уведомления.
