@@ -1717,6 +1717,20 @@ function MacLib:Window(Settings)
 	function WindowFunctions:TabGroup()
 		local SectionFunctions = {}
 
+		-- FIX Bug3: mobile scroll guard helper
+		local function _isMobileScrolling(instance)
+			if not isMobile then return false end
+			local p = instance
+			for _ = 1, 12 do
+				if not p then break end
+				if p:IsA("ScrollingFrame") and p:GetAttribute("_mobileScrolling") then
+					return true
+				end
+				p = p.Parent
+			end
+			return false
+		end
+
 		local tabGroup = Instance.new("Frame")
 		tabGroup.Name = "Section"
 		tabGroup.AutomaticSize = Enum.AutomaticSize.Y
@@ -1870,7 +1884,7 @@ function MacLib:Window(Settings)
 			elementsScrolling.BottomImage = ""
 			elementsScrolling.CanvasSize = UDim2.new()
 			elementsScrolling.ScrollBarImageTransparency = 0.5
-			elementsScrolling.ScrollBarThickness = 1
+			elementsScrolling.ScrollBarThickness = isMobile and 4 or 1  -- FIX: wider scrollbar on mobile
 			elementsScrolling.TopImage = ""
 			elementsScrolling.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 			elementsScrolling.BackgroundTransparency = 1
@@ -1878,6 +1892,43 @@ function MacLib:Window(Settings)
 			elementsScrolling.BorderSizePixel = 0
 			elementsScrolling.Size = UDim2.fromScale(1, 1)
 			elementsScrolling.ClipsDescendants = false
+
+			-- FIX Bug3: mobile scroll guard — suppress element clicks during vertical swipe
+			if isMobile then
+				local _touchStart = nil
+				local _isScrolling = false
+				local _SCROLL_THRESH = 8  -- px vertical before we decide it's a scroll
+				local _TAP_THRESH = 4     -- px total move before we decide it's a drag not tap
+				local UserInputService2 = game:GetService("UserInputService")
+				elementsScrolling.InputBegan:Connect(function(inp)
+					if inp.UserInputType == Enum.UserInputType.Touch then
+						_touchStart = inp.Position
+						_isScrolling = false
+						inp.Changed:Connect(function()
+							if inp.UserInputState == Enum.UserInputState.End then
+								task.delay(0.05, function() _isScrolling = false end)
+							end
+						end)
+					end
+				end)
+				elementsScrolling.InputChanged:Connect(function(inp)
+					if inp.UserInputType == Enum.UserInputType.Touch and _touchStart then
+						local dy = math.abs(inp.Position.Y - _touchStart.Y)
+						local dx = math.abs(inp.Position.X - _touchStart.X)
+						if dy > _SCROLL_THRESH and dy > dx then
+							_isScrolling = true
+						end
+					end
+				end)
+				-- Expose scroll state so child elements can check it
+				elementsScrolling:SetAttribute("_mobileScrolling", false)
+				task.spawn(function()
+					while elementsScrolling.Parent do
+						elementsScrolling:SetAttribute("_mobileScrolling", _isScrolling)
+						task.wait(0.03)
+					end
+				end)
+			end
 
 			local elementsScrollingUIPadding = Instance.new("UIPadding")
 			elementsScrollingUIPadding.Name = "ElementsScrollingUIPadding"
@@ -2085,6 +2136,7 @@ function MacLib:Window(Settings)
 					end
 
 					local function Callback()
+						if _isMobileScrolling(button) then return end  -- FIX Bug3
 						if ButtonFunctions.Settings.Callback then
 							ButtonFunctions.Settings.Callback()
 						end
@@ -2249,6 +2301,7 @@ function MacLib:Window(Settings)
 					NewState(togglebool)
 
 					local function Toggle()
+						if _isMobileScrolling(toggle) then return end  -- FIX Bug3
 						togglebool = not togglebool
 						NewState(togglebool, ToggleFunctions.Settings.Callback)
 					end
@@ -3222,6 +3275,28 @@ function MacLib:Window(Settings)
 					end
 					-- === END MOBILE KEYBIND BUTTON ===
 
+					if Flag then
+						MacLib.Options[Flag] = KeybindFunctions
+					end
+
+					-- ForceAutoLoad: saves binded key + mobile button visible state
+					if Flag and Settings.ForceAutoLoad then
+						local _origBinded = KeybindFunctions.Settings.onBinded
+						KeybindFunctions.Settings.onBinded = function(bind)
+							MacLib:FALSave(Flag, KeybindFunctions)
+							if _origBinded then _origBinded(bind) end
+						end
+						-- Also save when mobile button visibility changes
+						local _origShow = showMobileBtn
+						showMobileBtn = function(state)
+							_origShow(state)
+							MacLib:FALSave(Flag, KeybindFunctions)
+						end
+						task.defer(function()
+							MacLib:FALLoad(Flag, KeybindFunctions, Settings.FALoadDelay)
+						end)
+					end
+
 					return KeybindFunctions
 				end
 
@@ -3341,7 +3416,7 @@ function MacLib:Window(Settings)
 					local dropdownFrameUIPadding = Instance.new("UIPadding")
 					dropdownFrameUIPadding.Name = "DropdownFrameUIPadding"
 					dropdownFrameUIPadding.PaddingTop = UDim.new(0, 6)
-					dropdownFrameUIPadding.PaddingBottom = UDim.new(0, 14)
+					dropdownFrameUIPadding.PaddingBottom = UDim.new(0, 6)  -- FIX: was 14, reduced bottom gap
 					dropdownFrameUIPadding.PaddingLeft = UDim.new(0, 10)
 					dropdownFrameUIPadding.PaddingRight = UDim.new(0, 10)
 					dropdownFrameUIPadding.Parent = dropdownFrame
@@ -3439,7 +3514,8 @@ function MacLib:Window(Settings)
 						-- defer so Roblox layout pass updates AbsoluteSize before we read it
 						if dropped then
 							task.defer(function()
-								local maxDropHeight = 200
+								local _uiScale = (MacLib._uiScale or 1)
+					local maxDropHeight = math.max(120, math.floor(200 * _uiScale))  -- FIX: scale-aware max height
 								local rawH = CalculateDropdownSize()
 								local frameH = math.min(rawH, maxDropHeight)
 								local openHeight = 38 + math.max(frameH, 1)
@@ -3537,11 +3613,13 @@ function MacLib:Window(Settings)
 					local db = false
 
 					local function ToggleDropdown()
+						if _isMobileScrolling(dropdown) then return end  -- FIX Bug3
 						if db then return end
 						db = true
 						local defaultDropdownSize = 38
 						local isDropdownOpen = not dropped
-						local maxDropHeight = 200
+						local _uiScale = (MacLib._uiScale or 1)
+					local maxDropHeight = math.max(120, math.floor(200 * _uiScale))  -- FIX: scale-aware max height
 						local rawHeight = CalculateDropdownSize()
 						-- FIX8: openHeight = заголовок(38) + список, dropdownFrame = только список
 						local frameH = math.min(rawHeight, maxDropHeight)
@@ -3718,7 +3796,8 @@ function MacLib:Window(Settings)
 
 						if dropped then
 							task.defer(function()
-								local maxDropHeight = 200
+								local _uiScale = (MacLib._uiScale or 1)
+					local maxDropHeight = math.max(120, math.floor(200 * _uiScale))  -- FIX: scale-aware max height
 								local rawH = CalculateDropdownSize()
 								local frameH2 = math.min(rawH, maxDropHeight)
 								local openHeight = 38 + math.max(frameH2, 1)
@@ -6454,6 +6533,7 @@ function MacLib:Window(Settings)
 
 	function WindowFunctions:SetScale(Scale)
 		baseUIScale.Scale = Scale
+		MacLib._uiScale = Scale  -- tracked for dropdown maxHeight
 	end
 	function WindowFunctions:GetScale()
 		return baseUIScale.Scale
@@ -6507,12 +6587,17 @@ function MacLib:Window(Settings)
 				return {
 					type = "Keybind", 
 					flag = Flag, 
-					bind = (typeof(data.Bind) == "EnumItem" and data.Bind.Name) or nil
+					bind = (typeof(data.Bind) == "EnumItem" and data.Bind.Name) or nil,
+					mbVisible = (MacLib.keybindBtnVisible and MacLib.keybindBtnVisible[Flag]) or false
 				}
 			end,
 			Load = function(Flag, data)
 				if MacLib.Options[Flag] and data.bind then
 					MacLib.Options[Flag]:Bind(Enum.KeyCode[data.bind])
+				end
+				-- Restore mobile button visible state
+				if MacLib.Options[Flag] and data.mbVisible ~= nil then
+					MacLib.Options[Flag]:SetMobileButtonVisibility(data.mbVisible)
 				end
 			end
 		},
