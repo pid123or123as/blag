@@ -2430,7 +2430,7 @@ function MacLib:Window(Settings)
 					sliderHead.BorderSizePixel = 0
 					sliderHead.Position = UDim2.fromScale(1, 0.5)
 					-- FIX3: уменьшен ползунок на мобиле до 16px
-				sliderHead.Size = isMobile and UDim2.fromOffset(18, 18) or UDim2.fromOffset(12, 12) -- FIX-V16: крупнее на мобиле для точного касания
+				sliderHead.Size = isMobile and UDim2.fromOffset(15, 15) or UDim2.fromOffset(12, 12) -- FIX-V19: чуть меньше на мобиле -- FIX-V16: крупнее на мобиле для точного касания
 					sliderHead.Parent = sliderBar
 
 					sliderBar.Parent = sliderElements
