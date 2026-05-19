@@ -2383,7 +2383,6 @@ function MacLib:Window(Settings)
 					-- FIX-V17: нет UIListLayout — позиционируем справа абсолютно
 					sliderValue.AnchorPoint = Vector2.new(1, 0.5)
 					sliderValue.Position = UDim2.new(1, 0, 0.5, 0)
-					sliderValue.Position = UDim2.fromScale(-0.0789, 0.171)
 					sliderValue.Size = UDim2.fromOffset(41, 21)
 					sliderValue.ClipsDescendants = true
 
