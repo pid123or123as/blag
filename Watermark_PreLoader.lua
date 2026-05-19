@@ -48,11 +48,9 @@ return function(ctx)
 
         local MARGIN_X = 22
         local MARGIN_Y = 22
-        -- FIX-V17: автоскейл — FHD=1.0, меньше FHD → пропорционально меньше
-        local _wmVP = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
-        local _wmScale = math.clamp(math.min(_wmVP.X, _wmVP.Y) / 1080, 0.25, 1.0) -- FIX-V20: мобиль ~0.36
-        local UI_SCALE_HIDDEN = _wmScale * 0.80
-        local UI_SCALE_VISIBLE = _wmScale
+        -- FIX-V21: scale вычисляется через gui.AbsoluteSize после рендера
+        local UI_SCALE_HIDDEN  = 0.001  -- временные, будут пересчитаны
+        local UI_SCALE_VISIBLE = 1.0
 
         local gui = GetGui()
         gui.Name = "MacLibWatermark"
@@ -65,6 +63,19 @@ return function(ctx)
         anchor.AnchorPoint = Vector2.new(0, 0)
         anchor.Position = UDim2.fromOffset(0, 0)
         anchor.Parent = gui
+
+        -- FIX-V21: пересчёт scale через реальный AbsoluteSize после рендера
+        local function recalcScale()
+            local h = gui.AbsoluteSize.Y
+            if h < 100 then
+                h = workspace.CurrentCamera and math.min(workspace.CurrentCamera.ViewportSize.X, workspace.CurrentCamera.ViewportSize.Y) or 1080
+            end
+            local s = math.clamp(h / 1080, 0.25, 1.0)
+            UI_SCALE_HIDDEN  = s * 0.80
+            UI_SCALE_VISIBLE = s
+        end
+        task.defer(recalcScale)
+        workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(recalcScale)
 
         local uiScale = Instance.new("UIScale")
         uiScale.Scale = UI_SCALE_HIDDEN
