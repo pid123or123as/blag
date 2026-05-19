@@ -47,11 +47,12 @@ return function(ctx)
         local particleTransparency = cfg.ParticleTransparency or 0.20
 
         local MARGIN_X = 22
-        local MARGIN_Y = 22
+        -- FIX-V15-WM: на мобиле добавляем отступ под TopBar/notch
+        local MARGIN_Y = isMobile and (GUI_INSET_Y + 8) or 22
         -- FIX-V15-WM: автоскейл относительно FHD (1080p = scale 1.0)
         local _wmVP = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
         local _wmShort = math.min(_wmVP.X, _wmVP.Y)
-        local _wmAutoScale = math.clamp(_wmShort / 1080, 0.45, 1.6)
+        local _wmAutoScale = math.clamp(_wmShort / 900, 0.55, 1.6)
         local UI_SCALE_VISIBLE = _wmAutoScale
         local UI_SCALE_HIDDEN = _wmAutoScale * 0.80
 
