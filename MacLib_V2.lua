@@ -3276,6 +3276,7 @@ function MacLib:Window(Settings)
 
 					function KeybindFunctions:SetMobileButtonVisibility(state)
 						showMobileBtn(state)
+						updatePlusText()  -- FIX: sync +/- button after FALLoad restore
 					end
 					-- === END MOBILE KEYBIND BUTTON ===
 
