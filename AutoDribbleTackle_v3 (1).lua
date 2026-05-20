@@ -1,8 +1,10 @@
 -- [v3.6] AUTO DRIBBLE + AUTO TACKLE
 -- Changelog v3.6:
 -- - AutoDribble: дек ТОЛЬКО при IsTackling == true, весь fallback убран
--- - AutoDribble: task.desynchronize() в Heartbeat для параллельного Luau
--- - AutoDribble: task.synchronize() перед FireServer и PerformDribble
+-- - AutoDribble: кэш результата ShouldDribbleNow (dirty-flag), пересчёт
+--   только при смене таклера/позиции/IsTackling — 0 лишних вычислений
+-- - PrecomputePlayers: RecordTargetPosition только в зоне DribbleActivation*1.5
+-- - Убраны task.desynchronize/synchronize (несовместимы без Actor)
 -- Changelog v3.5 (предыдущий):
 --   - Manual Button полностью удалён (кнопка, настройки, Toggle, Slider)
 --   - AutoTackle.ManualButton, ButtonScale, SetupManualTackleButton,
@@ -695,6 +697,8 @@ local function PrecomputePlayers()
     if ball and ball:FindFirstChild("playerWeld") and ball:FindFirstChild("creator") then
         HasBall = ball.creator.Value == LocalPlayer
     end
+    -- v3.6: если мяч у нас — нет смысла считать дальше для AutoTackle
+    -- (AutoDribble всё равно нуждается в PrecomputedPlayers, поэтому идём дальше)
     local bools = Workspace:FindFirstChild(LocalPlayer.Name) and Workspace[LocalPlayer.Name]:FindFirstChild("Bools")
     if bools then
         CanDribbleNow = not bools.dribbleDebounce.Value
@@ -728,7 +732,13 @@ local function PrecomputePlayers()
             RootPart   = targetRoot,
             Velocity   = velocity
         }
+        -- v3.6: историю позиций пишем только для игроков в зоне активации
+    if distance <= AutoDribbleConfig.DribbleActivationDistance * 1.5 then
+        -- v3.6: историю позиций пишем только для игроков в зоне активации
+    if distance <= AutoDribbleConfig.DribbleActivationDistance * 1.5 then
         RecordTargetPosition(targetRoot, player)
+    end
+    end
     end
 end
 
@@ -1128,7 +1138,6 @@ local function PerformDribble()
     if currentTime - AutoDribbleStatus.LastDribbleTime < 0.02 then return end
     local bools = Workspace:FindFirstChild(LocalPlayer.Name) and Workspace[LocalPlayer.Name]:FindFirstChild("Bools")
     if not bools or bools.dribbleDebounce.Value then return end
-    task.synchronize() -- обязательно перед FireServer из параллельного потока
     pcall(function() ActionRemote:FireServer("Deke") end)
     AutoDribbleStatus.LastDribbleTime = currentTime
     if Gui and AutoDribbleConfig.Enabled then
@@ -1139,6 +1148,34 @@ local function PerformDribble()
 end
 
 local AutoDribble = {}
+
+-- v3.6: кэш результата ShouldDribbleNow — пересчёт только при изменении входных данных
+local _dribbleCache = {
+    result = false,
+    lastTacklerPlayer = nil,
+    lastTacklerPos = Vector3.zero,
+    lastMyPos = Vector3.zero,
+    lastIsTackling = false,
+    lastCalcTime = 0,
+    RECALC_INTERVAL = 0.016, -- ~1 кадр при 60fps, пересчёт только если нужно
+}
+
+local function IsDribbleCacheDirty(specificTarget, tacklerData)
+    if not specificTarget or not tacklerData then return true end
+    local now = tick()
+    -- принудительный пересчёт каждые 16мс (1 кадр)
+    if now - _dribbleCache.lastCalcTime > _dribbleCache.RECALC_INTERVAL then return true end
+    -- пересчёт если таклер поменялся
+    if _dribbleCache.lastTacklerPlayer ~= specificTarget then return true end
+    -- пересчёт если IsTackling изменился
+    if _dribbleCache.lastIsTackling ~= tacklerData.IsTackling then return true end
+    -- пересчёт если таклер переместился больше чем на 0.3 студа
+    local root = tacklerData.RootPart
+    if root and (_dribbleCache.lastTacklerPos - root.Position).Magnitude > 0.3 then return true end
+    -- пересчёт если мы переместились больше чем на 0.3 студа
+    if (_dribbleCache.lastMyPos - HumanoidRootPart.Position).Magnitude > 0.3 then return true end
+    return false
+end
 AutoDribble.Start = function()
     if AutoDribbleStatus.Running then return end
     AutoDribbleStatus.Running = true
@@ -1160,7 +1197,6 @@ AutoDribble.Start = function()
 
     AutoDribbleStatus.Connection = RunService.Heartbeat:Connect(function()
         if not AutoDribbleConfig.Enabled then CleanupDebugText(); UpdateDebugVisibility(); return end
-        task.desynchronize() -- параллельный Luau: вычисляем геометрию угла без блокировки
 
         if not HasBall or not CanDribbleNow then
             if Gui then Gui.AutoDribbleLabel.Text = "AutoDribble: Idle" end
@@ -1193,8 +1229,23 @@ AutoDribble.Start = function()
             return
         end
 
-        if ShouldDribbleNow(specificTarget, nearestTacklerData) then
-            task.synchronize() -- возврат в серийный поток перед действием
+        -- v3.6: кэшируем результат ShouldDribbleNow, пересчитываем только при dirty
+        local dribbleShouldFire
+        if IsDribbleCacheDirty(specificTarget, nearestTacklerData) then
+            dribbleShouldFire = ShouldDribbleNow(specificTarget, nearestTacklerData)
+            -- обновляем кэш
+            _dribbleCache.result = dribbleShouldFire
+            _dribbleCache.lastCalcTime = tick()
+            _dribbleCache.lastTacklerPlayer = specificTarget
+            _dribbleCache.lastIsTackling = nearestTacklerData and nearestTacklerData.IsTackling or false
+            if nearestTacklerData and nearestTacklerData.RootPart then
+                _dribbleCache.lastTacklerPos = nearestTacklerData.RootPart.Position
+            end
+            _dribbleCache.lastMyPos = HumanoidRootPart.Position
+        else
+            dribbleShouldFire = _dribbleCache.result
+        end
+        if dribbleShouldFire then
             PerformDribble()
         else
             if Gui then Gui.AutoDribbleLabel.Text = "AutoDribble: Waiting" end
