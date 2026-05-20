@@ -1,10 +1,12 @@
 -- [v3.6] AUTO DRIBBLE + AUTO TACKLE
--- Changelog v3.6:
--- - FIX: Attack Angle теперь работает на ВСЕХ стадиях (включая DribbleActivation)
--- - FIX: кэш IsTackling=true → всегда пересчёт (точность момента удара)
--- - AutoDribble: дек ТОЛЬКО при IsTackling == true
--- - PrecomputePlayers: RecordTargetPosition только в зоне Activation*1.5
--- - Убраны task.desynchronize/synchronize (несовместимы без Actor)
+-- Changelog v3.7:
+-- - FIX: Drawing кругов перенесён в RenderStepped (не блокирует Heartbeat)
+-- - FIX: IsSpecificTackle кэш 50мс (не итерирует треки каждый кадр)
+-- - FIX: RecordTargetPosition — ring buffer вместо table.remove(1) O(N)
+-- - FIX: GetPositionBasedVelocity — O(1) из ring buffer
+-- - FIX: PrecomputePlayers не вызывается дважды при AutoDribble+AutoTackle
+-- - FIX: Attack Angle проверяется на всех стадиях
+-- - FIX: кэш IsTackling=true → всегда пересчёт точность
 -- Changelog v3.5 (предыдущий):
 --   - Manual Button полностью удалён (кнопка, настройки, Toggle, Slider)
 --   - AutoTackle.ManualButton, ButtonScale, SetupManualTackleButton,
@@ -92,6 +94,7 @@ local AutoTackleStatus = {
     Running = false,
     Connection = nil,
     HeartbeatConnection = nil,
+    RenderConnection = nil,
     InputConnection = nil,
     Ping = 0.1,
     LastPingUpdate = 0,
@@ -125,37 +128,43 @@ local SPECIFIC_TACKLE_ID = "rbxassetid://14317040670"
 local HISTORY_SIZE   = 12
 local HISTORY_WINDOW = 0.12
 
+-- v3.7: кольцевой буфер позиций — без table.remove(1) O(N)
+local _posRingHead = {} -- [player] = head index (1..HISTORY_SIZE)
+
 local function RecordTargetPosition(ownerRoot, player)
     local history = AutoTackleStatus.TargetPositionHistory[player]
     if not history then
         history = {}
         AutoTackleStatus.TargetPositionHistory[player] = history
+        _posRingHead[player] = 1
     end
-    table.insert(history, { time = tick(), pos = ownerRoot.Position })
-    while #history > HISTORY_SIZE do table.remove(history, 1) end
+    local head = _posRingHead[player]
+    history[head] = { time = tick(), pos = ownerRoot.Position }
+    _posRingHead[player] = (head % HISTORY_SIZE) + 1
 end
 
+-- v3.7: скорость из кольцевого буфера — O(N) итерация заменена на прямой доступ
 local function GetPositionBasedVelocity(player)
     local history = AutoTackleStatus.TargetPositionHistory[player]
-    if not history or #history < 2 then return Vector3.zero end
-    local now = tick()
-    local oldest, newest = nil, nil
-    for _, pt in ipairs(history) do
-        if now - pt.time <= HISTORY_WINDOW then
-            if not oldest then oldest = pt end
-            newest = pt
-        end
-    end
-    if not oldest or oldest == newest then
-        if #history >= 2 then
-            oldest = history[#history - 1]
-            newest = history[#history]
-        else
-            return Vector3.zero
-        end
+    if not history then return Vector3.zero end
+    local count = #history
+    if count < 2 then return Vector3.zero end
+    -- ring: head указывает на СЛЕДУЮЩУЮ ячейку для записи,
+    -- т.е. head-1 = newest, head-count = oldest (с wraparound)
+    local head = _posRingHead[player] or 1
+    local newestIdx = ((head - 2) % count) + 1  -- предыдущая запись
+    local oldestIdx = (head % count) + 1         -- самая старая (следующая после head)
+    local newest = history[newestIdx]
+    local oldest = history[oldestIdx]
+    if not newest or not oldest or newest == oldest then
+        -- буфер ещё не заполнен — берём первый и последний
+        oldest = history[1]; newest = history[count]
+        if not oldest or not newest then return Vector3.zero end
     end
     local dt = newest.time - oldest.time
     if dt < 0.001 then return Vector3.zero end
+    local now = tick()
+    if now - newest.time > HISTORY_WINDOW then return Vector3.zero end -- данные устарели
     return (newest.pos - oldest.pos) / dt
 end
 
@@ -532,7 +541,11 @@ local function Hide3DCircle(circle)
     for _, line in ipairs(circle) do line.Visible = false end
 end
 
+-- v3.7: данные кругов — обновляем в Heartbeat, рисуем в RenderStepped
+local _circleRenderData = {} -- { [player] = { pos, color, visible } }
+
 local function UpdateTargetCircles()
+    -- только обновляем данные (без Drawing вызовов)
     local currentPlayers = {}
     for player, data in pairs(PrecomputedPlayers) do
         if data.IsValid and TackleStates[player] and TackleStates[player].IsTackling then
@@ -540,22 +553,33 @@ local function UpdateTargetCircles()
             if not AutoTackleStatus.TargetCircles[player] then
                 AutoTackleStatus.TargetCircles[player] = Create3DCircle()
             end
-            local circle = AutoTackleStatus.TargetCircles[player]
             local targetRoot = data.RootPart
             if targetRoot then
                 local distance = data.Distance
-                local color = Color3.fromRGB(255, 0, 0)
-                if distance <= AutoDribbleConfig.DribbleActivationDistance then
-                    color = Color3.fromRGB(0, 255, 0)
-                elseif distance <= AutoDribbleConfig.MaxDribbleDistance then
-                    color = Color3.fromRGB(255, 165, 0)
-                end
-                Update3DCircle(circle, targetRoot.Position - Vector3.new(0, 0.5, 0), 2, color)
+                local color = distance <= AutoDribbleConfig.DribbleActivationDistance
+                    and Color3.fromRGB(0, 255, 0)
+                    or  Color3.fromRGB(255, 165, 0)
+                _circleRenderData[player] = { pos = targetRoot.Position - Vector3.new(0, 0.5, 0), color = color, visible = true }
             end
         end
     end
-    for player, circle in pairs(AutoTackleStatus.TargetCircles) do
-        if not currentPlayers[player] then Hide3DCircle(circle) end
+    for player in pairs(_circleRenderData) do
+        if not currentPlayers[player] then
+            _circleRenderData[player] = { visible = false }
+        end
+    end
+end
+
+-- вызывается из RenderStepped — безопасно делать Drawing здесь
+local function RenderTargetCircles()
+    for player, rd in pairs(_circleRenderData) do
+        local circle = AutoTackleStatus.TargetCircles[player]
+        if not circle then continue end
+        if rd.visible then
+            Update3DCircle(circle, rd.pos, 2, rd.color)
+        else
+            Hide3DCircle(circle)
+        end
     end
 end
 
@@ -629,16 +653,30 @@ local function IsDribbling(targetPlayer)
     return false
 end
 
+-- v3.7: кэш IsSpecificTackle — проверяем анимацию не чаще 50мс на игрока
+local _tackleCache = {} -- { [player] = { result, time } }
+local TACKLE_CACHE_TTL = 0.05
+
 local function IsSpecificTackle(targetPlayer)
-    if not targetPlayer or not targetPlayer.Character or not targetPlayer.Parent or targetPlayer.TeamColor == LocalPlayer.TeamColor then return false end
-    local humanoid = targetPlayer.Character:FindFirstChild("Humanoid")
-    if not humanoid then return false end
-    local animator = humanoid:FindFirstChild("Animator")
-    if not animator then return false end
-    for _, track in pairs(animator:GetPlayingAnimationTracks()) do
-        if track.Animation and track.Animation.AnimationId == SPECIFIC_TACKLE_ID then return true end
+    if not targetPlayer or not targetPlayer.Character or not targetPlayer.Parent
+        or targetPlayer.TeamColor == LocalPlayer.TeamColor then return false end
+    local now = tick()
+    local cached = _tackleCache[targetPlayer]
+    if cached and (now - cached.time) < TACKLE_CACHE_TTL then
+        return cached.result
     end
-    return false
+    local humanoid = targetPlayer.Character:FindFirstChild("Humanoid")
+    if not humanoid then _tackleCache[targetPlayer] = { result = false, time = now }; return false end
+    local animator = humanoid:FindFirstChild("Animator")
+    if not animator then _tackleCache[targetPlayer] = { result = false, time = now }; return false end
+    local result = false
+    for _, track in pairs(animator:GetPlayingAnimationTracks()) do
+        if track.Animation and track.Animation.AnimationId == SPECIFIC_TACKLE_ID then
+            result = true; break
+        end
+    end
+    _tackleCache[targetPlayer] = { result = result, time = now }
+    return result
 end
 
 local function IsPowerShooting(targetPlayer)
@@ -865,8 +903,13 @@ AutoTackle.Start = function()
         pcall(UpdatePing)
         pcall(UpdateDribbleStates)
         pcall(PrecomputePlayers)
-        pcall(UpdateTargetCircles)
+        pcall(UpdateTargetCircles)  -- только обновляет данные, не Drawing
         IsTypingInChat = CheckIfTypingInChat()
+    end)
+
+    -- v3.7: Drawing кругов перенесён в RenderStepped (правильный поток для Drawing)
+    AutoTackleStatus.RenderConnection = RunService.RenderStepped:Connect(function()
+        pcall(RenderTargetCircles)
     end)
 
     -- ПК fallback: InputBegan ловит клавиатуру
@@ -1000,6 +1043,7 @@ end
 AutoTackle.Stop = function()
     if AutoTackleStatus.Connection then AutoTackleStatus.Connection:Disconnect(); AutoTackleStatus.Connection = nil end
     if AutoTackleStatus.HeartbeatConnection then AutoTackleStatus.HeartbeatConnection:Disconnect(); AutoTackleStatus.HeartbeatConnection = nil end
+    if AutoTackleStatus.RenderConnection then AutoTackleStatus.RenderConnection:Disconnect(); AutoTackleStatus.RenderConnection = nil end
     if AutoTackleStatus.InputConnection then AutoTackleStatus.InputConnection:Disconnect(); AutoTackleStatus.InputConnection = nil end
     AutoTackleStatus.Running = false
     CleanupDebugText(); UpdateDebugVisibility()
@@ -1038,7 +1082,7 @@ end
 --
 -- [СОХРАНЕНО] Все оригинальные стадии 0/1/2 из v3.4.
 -- ============================================================
--- [v3.6 FIX] ShouldDribbleNow — Attack Angle работает на ВСЕХ стадиях
+-- [v3.7] ShouldDribbleNow — Attack Angle на всех стадиях, оптимизация ping-компенсации
 -- Стадия 0: point blank < 3 studs — return true всегда (физически уже в контакте)
 -- Стадия 1: DribbleActivationDistance + IsTackling → ОБЯЗАТЕЛЬНО проверяем угол
 -- Стадия 2: MaxDribble → угол + скорость + TTC (без изменений)
@@ -1048,8 +1092,14 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
     local tacklerRoot = tacklerData.RootPart
     if not tacklerRoot then return false end
 
-    local serverCF    = GetMyServerCFrame()
-    local myServerPos = Vector3.new(serverCF.Position.X, 0, serverCF.Position.Z)
+    -- v3.7: используем прямую ping-компенсацию без лишнего CFrame
+    local myVel2   = GetMyVelocityFromHistory()
+    local ping2    = AutoTackleStatus.Ping
+    local myServerPos = Vector3.new(
+        HumanoidRootPart.Position.X + myVel2.X * ping2,
+        0,
+        HumanoidRootPart.Position.Z + myVel2.Z * ping2
+    )
 
     -- ping-компенсация позиции таклера
     local histVel         = GetPositionBasedVelocity(specificTarget)
@@ -1187,17 +1237,12 @@ AutoDribble.Start = function()
     if AutoDribbleStatus.Running then return end
     AutoDribbleStatus.Running = true
 
+    -- v3.7: PrecomputePlayers/UpdateDribbleStates уже выполняется в AutoTackle HB
+    -- Здесь только то, что нужно исключительно AutoDribble
     AutoDribbleStatus.HeartbeatConnection = RunService.Heartbeat:Connect(function()
         if not AutoDribbleConfig.Enabled then return end
-        pcall(function()
-            UpdatePing()
-            UpdateDribbleStates()
-            PrecomputePlayers()
-            UpdateTargetCircles()
-            RecordMyPosition()
-            IsTypingInChat = CheckIfTypingInChat()
-            UpdateServerPosBox()
-        end)
+        pcall(RecordMyPosition)
+        pcall(UpdateServerPosBox)
     end)
 
     if not Gui then SetupGUI() end
