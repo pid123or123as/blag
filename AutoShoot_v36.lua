@@ -1,4 +1,4 @@
--- [v38.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
+-- [v39.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
 local Players = game:GetService("Players")
 print('2')
 local RunService = game:GetService("RunService")
@@ -86,8 +86,10 @@ local AutoPickupToggleKey  = Enum.KeyCode.H
 local AutoPickupStatus     = { Running = false, Connection = nil }
 
 local ShowTrajectory      = true
-local ShowPickupCircle    = true
-local PickupCircleColor   = Color3.fromRGB(80, 255, 140)
+local ShowPickupCircle       = true
+local PickupCircleIndicate    = true   -- true = не скрывать при выкл, а красить красным
+local PickupCircleColor      = Color3.fromRGB(80, 255, 140)
+local PICKUP_CIRCLE_DISABLED_COLOR = Color3.fromRGB(220, 50, 50)
 local Show3DBoxes         = true
 local VisualsOnlyWithBall = true
 local TrajectoryColor     = Color3.fromRGB(255, 165, 0)
@@ -106,10 +108,17 @@ local StartCircleThickness= 1.5
 local StartCircleAlpha    = 0.85
 
 -- ============================================================
--- AUTOPICKUP RADIUS CIRCLE (always visible, foot-level)
+-- AUTOPICKUP RADIUS CIRCLE (always visible, foot-level, animated)
 -- ============================================================
 local PickupCircle           = {}
 local PICKUP_CIRCLE_SEGMENTS = 64
+
+-- Состояние анимации круга
+local _pcAlpha        = 0.0     -- текущая прозрачность сегментов (0=невидим, 1=полный)
+local _pcRadius       = nil     -- текущий анимированный радиус (nil = skip lerp 1st frame)
+local _pcColor        = nil     -- текущий анимированный цвет
+local PICKUP_CIRCLE_BASE_ALPHA = 0.9   -- целевая прозрачность сегмента когда виден
+local PICKUP_CIRCLE_ANIM_SPEED = 8.0   -- скорость lerp (выше = быстрее)
 
 -- Y-уровень ног: RightFoot/LeftFoot или fallback HRP
 local function GetFeetY()
@@ -125,11 +134,20 @@ local function GetFeetY()
     return hrp.Position.Y - (Humanoid and (Humanoid.HipHeight + hrp.Size.Y * 0.5) or (hrp.Size.Y * 0.9)) + 0.05
 end
 
+local function _lerpColor(a, b, t)
+    return Color3.new(
+        a.R + (b.R - a.R) * t,
+        a.G + (b.G - a.G) * t,
+        a.B + (b.B - a.B) * t
+    )
+end
+
 local function ApplyPickupCircleStyle()
+    local col = _pcColor or PickupCircleColor
     for _, l in ipairs(PickupCircle) do
-        l.Color        = PickupCircleColor
+        l.Color        = col
         l.Thickness    = 1.6
-        l.Transparency = 0.9
+        l.Transparency = PICKUP_CIRCLE_BASE_ALPHA
         l.ZIndex       = 998
     end
 end
@@ -142,35 +160,79 @@ local function InitializePickupCircle()
     for i = 1, PICKUP_CIRCLE_SEGMENTS do
         if PickupCircle[i] and PickupCircle[i].Remove then PickupCircle[i]:Remove() end
         PickupCircle[i] = Drawing.new("Line")
+        PickupCircle[i].Thickness    = 1.6
+        PickupCircle[i].Transparency = PICKUP_CIRCLE_BASE_ALPHA
+        PickupCircle[i].ZIndex       = 998
+        PickupCircle[i].Visible      = false
     end
-    ApplyPickupCircleStyle()
-    HidePickupCircle()
+    _pcAlpha  = 0.0
+    _pcRadius = nil
+    _pcColor  = PickupCircleColor
 end
 
--- Каждый сегмент явно проецируется через WorldToViewportPoint —
--- это гарантирует что круг остаётся на уровне земли без эффекта "парения".
-local function DrawPickupCircle(centerXZ, footY, radius)
-    if not ShowPickupCircle or not centerXZ then HidePickupCircle(); return end
+-- Каждый сегмент проецируется через WorldToViewportPoint раздельно —
+-- это устраняет иллюзию "парения" при взгляде под углом на большой радиус.
+-- Анимация: плавный fade-in/out + lerp радиуса + lerp цвета через deltaTime.
+local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
+    local dt = dt or 0.016
+    -- Определяем целевой цвет: если PickupCircleIndicate и пикап выкл — красный
+    local targetColor = (PickupCircleIndicate and not AutoPickupEnabled)
+        and PICKUP_CIRCLE_DISABLED_COLOR
+        or  PickupCircleColor
+
+    -- Видим ли мы круг
+    local shouldShow = ShowPickupCircle and centerXZ ~= nil
+
+    -- Анимируем alpha (fade in/out)
+    local targetAlpha = shouldShow and PICKUP_CIRCLE_BASE_ALPHA or 0.0
+    _pcAlpha = _pcAlpha + (targetAlpha - _pcAlpha) * math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1)
+
+    -- Если полностью невидим — скрываем и выходим
+    if _pcAlpha < 0.005 then HidePickupCircle(); return end
+
+    -- Анимируем радиус (плавное изменение при смене AutoPickupDist)
+    if _pcRadius == nil then _pcRadius = targetRadius end
+    _pcRadius = _pcRadius + (targetRadius - _pcRadius) * math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1)
+
+    -- Анимируем цвет (fade между enabled/disabled)
+    if _pcColor == nil then _pcColor = targetColor end
+    _pcColor = _lerpColor(_pcColor, targetColor, math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1))
+
     local origin = Vector3.new(centerXZ.X, footY, centerXZ.Z)
     local prev2D, prevOk = nil, false
     local first2D, firstOk = nil, false
+    local alpha = 1.0 - _pcAlpha   -- Drawing.Transparency: 0=opaque, 1=invisible
     for i = 1, PICKUP_CIRCLE_SEGMENTS do
         local a   = ((i - 1) / PICKUP_CIRCLE_SEGMENTS) * math.pi * 2
-        local p   = origin + Vector3.new(math.cos(a) * radius, 0, math.sin(a) * radius)
+        local p   = origin + Vector3.new(math.cos(a) * _pcRadius, 0, math.sin(a) * _pcRadius)
         local s, onScreen = Camera:WorldToViewportPoint(p)
         local ok  = onScreen and s.Z > 0
         local cur = Vector2.new(s.X, s.Y)
         if i == 1 then first2D, firstOk = cur, ok end
         if i > 1 then
             local line = PickupCircle[i - 1]
-            if prevOk and ok then line.From = prev2D; line.To = cur; line.Visible = true
-            else line.Visible = false end
+            if prevOk and ok then
+                line.From        = prev2D
+                line.To          = cur
+                line.Color       = _pcColor
+                line.Transparency = alpha
+                line.Visible     = true
+            else
+                line.Visible = false
+            end
         end
         prev2D, prevOk = cur, ok
     end
     local last = PickupCircle[PICKUP_CIRCLE_SEGMENTS]
-    if prevOk and firstOk then last.From = prev2D; last.To = first2D; last.Visible = true
-    else last.Visible = false end
+    if prevOk and firstOk then
+        last.From        = prev2D
+        last.To          = first2D
+        last.Color       = _pcColor
+        last.Transparency = alpha
+        last.Visible     = true
+    else
+        last.Visible = false
+    end
 end
 
 -- ============================================================
@@ -191,7 +253,7 @@ local function SetupGUI()
         v.Size = 18; v.Color = Color3.fromRGB(255,255,255); v.Outline = true; v.Center = true
         v.Position = Vector2.new(cx, y + (i-1)*20); v.Visible = AutoShootDebugText
     end
-    Gui.Status.Text = "v38.0: Ready"
+    Gui.Status.Text = "v39.0: Ready"
 end
 
 local function ToggleDebugText(value)
@@ -699,7 +761,16 @@ local function GetTarget(dist, gkX, gkY, isAggressive, gkHrp, gkVel, gkIsNPC, gk
     if dist > AutoShootMaxDistance then return nil end
 
     local startPos     = GetBallStartPos()
-    local halfW        = GoalWidth / 2 - INSET
+    -- Умный inset: базовый отступ + позиционный компонент.
+    -- Чем острее угол между игроком и штангой (playerLocalX близко к halfW),
+    -- тем сильнее нужно отодвигаться от штанги, т.к. мяч летит наискосок
+    -- и физически "срезается" о неё.
+    local halfWRaw = GoalWidth / 2
+    local angleFrac = math.clamp(math.abs(GoalCFrame:PointToObjectSpace(startPos).X) / math.max(halfWRaw - 0.5, 0.1), 0, 1)
+    -- Дальние удары (>130 studs) тоже требуют большего отступа из-за разброса физики.
+    local distInsetBonus = math.clamp((dist - 100) / 150, 0, 1) * 0.55
+    local dynamicInset = INSET + angleFrac * 0.85 + distInsetBonus
+    local halfW        = halfWRaw - dynamicInset
     local playerLocalX = GoalCFrame:PointToObjectSpace(startPos).X
     gkVel = gkVel or Vector3.zero
     gkHitRadius = gkHitRadius or 2.2
@@ -935,7 +1006,8 @@ local function GetTarget(dist, gkX, gkY, isAggressive, gkHrp, gkVel, gkIsNPC, gk
 
             -- shootPos = с учётом деривации (реальная точка куда направляем мяч)
             -- Clamp: центр мяча должен быть минимум BALL_RADIUS от внутреннего края штанги
-            local safeEdge    = GoalWidth/2 - BALL_RADIUS
+            -- safeEdge учитывает тот же динамический инсет что и сетка кандидатов
+            local safeEdge    = GoalWidth/2 - dynamicInset - BALL_RADIUS * 0.5
             local shootLocalX = math.clamp(localX + derivation, -safeEdge, safeEdge)
             local shootLocalY = localY
             -- Закрученные удары в игре приходят чуть ВЫШЕ ожидаемого, поэтому физически целимся немного ниже.
@@ -1457,18 +1529,20 @@ AutoShoot.Start = function()
         end
     end)
 
-    AutoShootStatus.RenderConnection = RunService.RenderStepped:Connect(function()
+    AutoShootStatus.RenderConnection = RunService.RenderStepped:Connect(function(dt)
         local width = UpdateGoal()
         local hasTarget = TargetPoint ~= nil
         local ball = Workspace:FindFirstChild("ball")
         local hasBall = ball and ball:FindFirstChild("playerWeld") and ball.creator.Value == LocalPlayer
         local showVisuals = (not VisualsOnlyWithBall) or hasBall
 
-        -- 🟢 Круг радиуса AutoPickup — рисуется ВСЕГДА, уровень ног
-        if HumanoidRootPart then
-            DrawPickupCircle(HumanoidRootPart.Position, GetFeetY(), AutoPickupDist)
+        -- 🟢 Круг AutoPickup — показывается только если AutoPickup включён (или PickupCircleIndicate)
+        -- При выключенном AutoPickup: Indicate=true → красный, Indicate=false → исчезает
+        local pickupCircleShouldDraw = ShowPickupCircle and (AutoPickupEnabled or PickupCircleIndicate) and HumanoidRootPart ~= nil
+        if pickupCircleShouldDraw then
+            DrawPickupCircle(HumanoidRootPart.Position, GetFeetY(), AutoPickupDist, dt)
         else
-            HidePickupCircle()
+            DrawPickupCircle(nil, 0, AutoPickupDist, dt)   -- fade out
         end
 
         -- 🟠 Траектория дуги (оранжевые линии) — главный визуал
@@ -1777,9 +1851,14 @@ local function SetupUI(UI)
             Name = "Show Pickup Circle", Default = ShowPickupCircle,
             Callback = function(v)
                 ShowPickupCircle = v
-                if not v then HidePickupCircle() end
             end
         }, "ShowPickupCircle")
+
+        uiElements.PickupCircleIndicate = UI.Sections.AutoPickup:Toggle({
+            Name = "Indicate Toggle", Default = PickupCircleIndicate,
+            Callback = function(v) PickupCircleIndicate = v end
+        }, "PickupCircleIndicate")
+        UI.Sections.AutoPickup:SubLabel({Text = "[🔴/🟢] Circle stays red when pickup disabled"})
     end
 
     -- ═══════════════════════════════════════════════════════════
