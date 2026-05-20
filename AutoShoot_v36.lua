@@ -1,4 +1,4 @@
--- [v40.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
+-- [v41.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
 local Players = game:GetService("Players")
 print('2')
 local RunService = game:GetService("RunService")
@@ -120,7 +120,7 @@ local PICKUP_CIRCLE_SEGMENTS = 64
 local _pcAlpha        = 1.0     -- начинаем невидимым; lerp к BASE_ALPHA при показе
 local _pcRadius       = nil
 local _pcColor        = nil
-local PICKUP_CIRCLE_BASE_ALPHA = 0.08  -- целевая прозрачность когда виден (почти непрозрачный)
+local PICKUP_CIRCLE_BASE_ALPHA = 0.0   -- Drawing.Transparency 0=fully opaque, 1=invisible
 local PICKUP_CIRCLE_ANIM_SPEED = 8.0   -- скорость lerp (выше = быстрее)
 
 -- Y-уровень ног: RightFoot/LeftFoot или fallback HRP
@@ -149,7 +149,7 @@ local function ApplyPickupCircleStyle()
     local col = _pcColor or PickupCircleColor
     for _, l in ipairs(PickupCircle) do
         l.Color        = col
-        l.Thickness    = 1.6
+        l.Thickness    = 2.5
         l.Transparency = PICKUP_CIRCLE_BASE_ALPHA
         l.ZIndex       = 998
     end
@@ -163,7 +163,7 @@ local function InitializePickupCircle()
     for i = 1, PICKUP_CIRCLE_SEGMENTS do
         if PickupCircle[i] and PickupCircle[i].Remove then PickupCircle[i]:Remove() end
         PickupCircle[i] = Drawing.new("Line")
-        PickupCircle[i].Thickness    = 1.6
+        PickupCircle[i].Thickness    = 2.5
         PickupCircle[i].Transparency = PICKUP_CIRCLE_BASE_ALPHA  -- ~opaque
         PickupCircle[i].ZIndex       = 998
         PickupCircle[i].Visible      = false
@@ -217,6 +217,7 @@ local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
                 line.From        = prev2D
                 line.To          = cur
                 line.Color        = _pcColor
+                line.Thickness    = 2.5
                 line.Transparency = _pcAlpha
                 line.Visible      = true
             else
@@ -230,6 +231,7 @@ local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
         last.From        = prev2D
         last.To          = first2D
         last.Color        = _pcColor
+        last.Thickness    = 2.5
         last.Transparency = _pcAlpha
         last.Visible      = true
     else
@@ -1616,10 +1618,10 @@ local function SetAutoPickupState(enabled)
     AutoPickupEnabled = enabled
     if enabled then
         AutoPickup.Start()
-        Notify("AutoPickup", "Enabled", true)
+        Notify("AutoPickup", "Enabled")
     else
         AutoPickup.Stop()
-        Notify("AutoPickup", "Disabled", true)
+        Notify("AutoPickup", "Disabled")
     end
     if uiElements and uiElements.AutoPickupEnabled and uiElements.AutoPickupEnabled.UpdateState then
         pcall(function() uiElements.AutoPickupEnabled:UpdateState(enabled) end)
@@ -1718,6 +1720,12 @@ local function SetupUI(UI)
             Name = "Legit Animation", Default = AutoShootLegit,
             Callback = function(v) AutoShootLegit = v end
         }, "AutoShootLegit")
+
+        uiElements.AutoShootPreferSpin = UI.Sections.AutoShoot:Toggle({
+            Name = "Prefer Spin", Default = AutoShootPreferSpin,
+            Callback = function(v) AutoShootPreferSpin = v end
+        }, "AutoShootPreferSpin")
+        UI.Sections.AutoShoot:SubLabel({Text = "[\xF0\x9F\x8C\x80] Prefer curved shots vs non-NPC GK"})
 
         UI.Sections.AutoShoot:Divider()
 
