@@ -1,4 +1,4 @@
--- [v43.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
+-- [v44.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
 local Players = game:GetService("Players")
 print('2')
 local RunService = game:GetService("RunService")
@@ -174,7 +174,8 @@ local function InitializePickupCircle()
     end
     _pcAlpha  = 1.0   -- начинаем невидимым
     _pcRadius = nil
-    _pcColor  = PickupCircleColor
+    -- Не сбрасываем _pcColor чтобы не было резкого скачка цвета при реинициализации
+    if _pcColor == nil then _pcColor = PickupCircleColor end
 end
 
 -- Каждый сегмент проецируется через WorldToViewportPoint раздельно —
@@ -1453,16 +1454,17 @@ local function EnableHook()
         return hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local method = getnamecallmethod()
             if method == "FireServer" and self == Shooter then
-                -- Читаем аргументы ПЕРВЫМ делом до любых вычислений
+                -- Читаем ВСЕ аргументы первым делом
                 local a1, a2, a3, a4, a5, a6, a7, a8, a9 = ...
-                -- Перехватываем только если AutoShoot включён, есть цель и в радиусе
+                -- a1 = shotType (string), a2 = dir (Vector3), a3 = CFrame,
+                -- a4 = power, a5 = vel (Vector3), a6 = isMobile (bool), a7 = flag, a8 = spin, a9...
                 local hookDist = GoalCFrame and (GetBallStartPos() - GoalCFrame.Position).Magnitude or 999
                 if ShootDir and AutoShootEnabled and hookDist <= AutoShootMaxDistance then
                     local power = (AutoShootSpoofPowerEnabled and GetSpoofPower()) or CurrentPower
-                    -- a5 (isMobile) принудительно false — иначе сервер считает траекторию по мобильной физике
-                    return HookState._orig(self, ShootDir, a2, power, ShootVel, false, a6, CurrentSpin, a8, a9)
+                    -- Сохраняем a1 (string тип удара), подменяем dir/power/vel/isMobile
+                    return HookState._orig(self, a1, ShootDir, a3, power, ShootVel, false, a7, CurrentSpin, a9)
                 end
-                -- Вне радиуса / скрипт выкл — пропускаем без изменений
+                -- Вне радиуса / скрипт выкл — без изменений
                 return HookState._orig(self, a1, a2, a3, a4, a5, a6, a7, a8, a9)
             end
             return HookState._orig(self, ...)
@@ -1684,9 +1686,16 @@ AutoPickup.Stop = function()
         AutoPickupStatus.RenderConnection = nil
         -- Запускаем fade-out: один финальный RenderStepped тикает пока круг не исчезнет
         local fadeConn; fadeConn = RunService.RenderStepped:Connect(function(dt)
-            -- При Indicate: круг становится красным (не исчезает), nil позиция → используем кеш
-            DrawPickupCircle(nil, _pcLastFootY, AutoPickupDist, dt)
-            if not PickupCircleIndicate and _pcAlpha > 0.97 then fadeConn:Disconnect() end
+            if PickupCircleIndicate then
+                -- Indicate: круг остаётся красным и следует за игроком
+                local pos   = HumanoidRootPart and HumanoidRootPart.Position or nil
+                local feetY = HumanoidRootPart and GetFeetY() or _pcLastFootY
+                DrawPickupCircle(pos, feetY, AutoPickupDist, dt)
+            else
+                -- Indicate выкл: fade-out и стоп
+                DrawPickupCircle(nil, _pcLastFootY, AutoPickupDist, dt)
+                if _pcAlpha > 0.97 then fadeConn:Disconnect() end
+            end
         end)
     end
     AutoPickupStatus.Running = false
