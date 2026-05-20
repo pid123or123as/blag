@@ -1,4 +1,4 @@
--- [v44.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
+-- [v45.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
 local Players = game:GetService("Players")
 print('2')
 local RunService = game:GetService("RunService")
@@ -1454,18 +1454,20 @@ local function EnableHook()
         return hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local method = getnamecallmethod()
             if method == "FireServer" and self == Shooter then
-                -- Читаем ВСЕ аргументы первым делом
+                -- Читаем ВСЕ аргументы первым делом (без method name — он в getnamecallmethod)
+                -- Игра вызывает: Shooter:FireServer(dir, cframe, power, vel, isMobile, flag, spin, ...)
+                -- Hook получает:  self=Shooter, a1=dir(V3), a2=cframe, a3=power,
+                --                 a4=vel(V3), a5=isMobile(bool), a6=flag, a7=spin, a8=nil, a9=bool
+                -- _orig (raw __namecall C-func) ожидает: (self, "MethodName", arg1, arg2, ...)
                 local a1, a2, a3, a4, a5, a6, a7, a8, a9 = ...
-                -- a1 = shotType (string), a2 = dir (Vector3), a3 = CFrame,
-                -- a4 = power, a5 = vel (Vector3), a6 = isMobile (bool), a7 = flag, a8 = spin, a9...
                 local hookDist = GoalCFrame and (GetBallStartPos() - GoalCFrame.Position).Magnitude or 999
                 if ShootDir and AutoShootEnabled and hookDist <= AutoShootMaxDistance then
                     local power = (AutoShootSpoofPowerEnabled and GetSpoofPower()) or CurrentPower
-                    -- Сохраняем a1 (string тип удара), подменяем dir/power/vel/isMobile
-                    return HookState._orig(self, a1, ShootDir, a3, power, ShootVel, false, a7, CurrentSpin, a9)
+                    -- Передаём "FireServer" как первый аргумент _orig (raw __namecall требует имя метода)
+                    return HookState._orig(self, "FireServer", ShootDir, a2, power, ShootVel, false, a6, CurrentSpin, a8, a9)
                 end
-                -- Вне радиуса / скрипт выкл — без изменений
-                return HookState._orig(self, a1, a2, a3, a4, a5, a6, a7, a8, a9)
+                -- Вне радиуса — передаём оригинальные аргументы как есть (включая имя метода)
+                return HookState._orig(self, "FireServer", a1, a2, a3, a4, a5, a6, a7, a8, a9)
             end
             return HookState._orig(self, ...)
         end))
