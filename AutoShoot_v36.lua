@@ -1042,15 +1042,15 @@ local function GetTarget(dist, gkX, gkY, isAggressive, gkHrp, gkVel, gkIsNPC, gk
             -- Закрученные удары в игре приходят чуть ВЫШЕ ожидаемого, поэтому физически целимся немного ниже.
             if spinDir ~= "None" then
                 local hFrac = localY / math.max(GoalHeight, 1)
-                local spinDrop = 0.18 + 0.34 * hFrac
+                local spinDrop = 0.20 + 0.35 * hFrac
                 shootLocalY = math.max(Y_BOT_INSET, localY - spinDrop)
             else
                 local midBand = math.clamp((dist - 95) / 40, 0, 1) * math.clamp((160 - dist) / 60, 0, 1)
                 local npcBand = gkIsNPC and 1 or 0
                 -- No-spin мяч физически летит выше spin-мяча (сервер применяет Magnus-lift).
                 -- Компенсируем: целимся ниже на ~35% больше чем раньше.
-                local noSpinDrop = (0.18 + 0.28 * hFrac) * midBand * (1.35 + 0.45 * npcBand)
-                local extraFlatDrop = (0.12 + 0.10 * math.clamp(1 - hFrac, 0, 1)) * midBand
+                local noSpinDrop = (0.21 + 0.30 * hFrac) * midBand * (1.35 + 0.45 * npcBand)
+                local extraFlatDrop = (0.13 + 0.11 * math.clamp(1 - hFrac, 0, 1)) * midBand
                 shootLocalY = math.max(Y_BOT_INSET, localY - noSpinDrop - extraFlatDrop)
             end
 
@@ -1332,7 +1332,7 @@ end
 local function CalculateTarget()
     local width = UpdateGoal()
     if not GoalCFrame or not width then
-        TargetPoint = nil; ShootDir = nil; ShootVel = nil; CurrentSpin = nil; CurrentPower = nil; CurrentType = nil; AimPoint = nil; PredictedLand = nil; CurrentFlightTime = 0; CurrentLaunchDir = nil; CurrentSpeed = 0; CurrentPeakPos = nil; CurrentIsLob = false; LastShootRedBox = nil
+        TargetPoint = nil; LastShootRedBox = nil
         if Gui then Gui.Target.Text = "Target: --"; Gui.Power.Text = "Power: --"; Gui.Spin.Text = "Spin: --" end
         return
     end
@@ -1343,8 +1343,13 @@ local function CalculateTarget()
     end
 
     if dist > AutoShootMaxDistance then
+        TargetPoint = nil; ShootDir = nil; ShootVel = nil
+        CurrentSpin = "None"; CurrentPower = FIXEDPOWER; CurrentType = nil
+        AimPoint = nil; PredictedLand = nil
+        CurrentFlightTime = 0; CurrentLaunchDir = nil; CurrentSpeed = 0
+        CurrentPeakPos = nil; CurrentPeakFrac = 0.40; CurrentIsLob = false
         CurrentDist = dist
-        TargetPoint = nil; ShootDir = nil; ShootVel = nil; CurrentSpin = nil; CurrentPower = nil; CurrentType = nil; AimPoint = nil; PredictedLand = nil; CurrentFlightTime = 0; CurrentLaunchDir = nil; CurrentSpeed = 0; CurrentPeakPos = nil; CurrentIsLob = false; LastShootRedBox = nil
+        LastShootRedBox = nil
         if Gui then Gui.Target.Text = "Too Far" end
         return
     end
@@ -1352,7 +1357,12 @@ local function CalculateTarget()
     local gkHrp, gkX, gkY, isAggressive, gkVel, gkIsNPC, gkHitRadius, gkBiasX, gkDriftX = GetEnemyGoalie()
     local result = GetTarget(dist, gkX or 0, gkY or 0, isAggressive or false, gkHrp, gkVel, gkIsNPC or false, gkHitRadius or 2.2, gkBiasX or 0, gkDriftX or 0)
     if not result then
-        TargetPoint = nil; ShootDir = nil; ShootVel = nil; CurrentSpin = nil; CurrentPower = nil; CurrentType = nil; AimPoint = nil; PredictedLand = nil; CurrentFlightTime = 0; CurrentLaunchDir = nil; CurrentSpeed = 0; CurrentPeakPos = nil; CurrentIsLob = false; LastShootRedBox = nil
+        TargetPoint = nil; ShootDir = nil; ShootVel = nil
+        CurrentSpin = "None"; CurrentType = nil
+        AimPoint = nil; PredictedLand = nil
+        CurrentFlightTime = 0; CurrentLaunchDir = nil; CurrentSpeed = 0
+        CurrentPeakPos = nil; CurrentIsLob = false
+        LastShootRedBox = nil
         if Gui then Gui.Target.Text = "No Candidate" end
         return
     end
@@ -1468,7 +1478,10 @@ local function EnableHook()
                 -- Логика v40: подменяем только если ShootDir задан (CalculateTarget отработал)
                 -- Не проверяем дистанцию — CalculateTarget уже валидировал её до выставления ShootDir
                 -- a1=dir(V3), a2=CFrame, a3=power, a4=vel(V3), a5=isMobile, a6=flag, a7=spin, a8, a9
-                if ShootDir and CurrentDist <= AutoShootMaxDistance then
+                if ShootDir then
+                    -- CurrentDist обновляется каждый Heartbeat в CalculateTarget.
+                    -- Используем его вместо пересчёта в хуке — безопасно и без лишних вызовов.
+                    if CurrentDist <= AutoShootMaxDistance then
                         local power = (AutoShootSpoofPowerEnabled and GetSpoofPower()) or CurrentPower
                         -- a5 (isMobile) принудительно false — фикс мобильной траектории
                         return HookState._orig(self, ShootDir, a2, power, ShootVel, false, a6, CurrentSpin, a8, a9)
@@ -1551,8 +1564,8 @@ AutoShoot.Start = function()
         if AutoShootMode ~= "Packet" then return end
         local ball = Workspace:FindFirstChild("ball")
         local hasBall = ball and ball:FindFirstChild("playerWeld") and ball.creator.Value == LocalPlayer
-        pcall(CalculateTarget)
-        if hasBall and TargetPoint and ShootDir and CurrentDist <= AutoShootMaxDistance then
+        if hasBall and TargetPoint then
+            pcall(CalculateTarget)
             if DoShoot() then
                 if Gui then Gui.Status.Text = "SHOT! [" .. CurrentType .. "]"; Gui.Status.Color = Color3.fromRGB(0,255,0) end
                 LastShoot = tick(); CanShoot = false
