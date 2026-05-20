@@ -1,4 +1,4 @@
--- [v48.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
+-- [v49.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
 local Players = game:GetService("Players")
 print('2')
 local RunService = game:GetService("RunService")
@@ -1468,9 +1468,14 @@ local function EnableHook()
                 -- Не проверяем дистанцию — CalculateTarget уже валидировал её до выставления ShootDir
                 -- a1=dir(V3), a2=CFrame, a3=power, a4=vel(V3), a5=isMobile, a6=flag, a7=spin, a8, a9
                 if ShootDir then
-                    local power = (AutoShootSpoofPowerEnabled and GetSpoofPower()) or CurrentPower
-                    -- a5 (isMobile) принудительно false — фикс мобильной траектории
-                    return HookState._orig(self, ShootDir, a2, power, ShootVel, false, a6, CurrentSpin, a8, a9)
+                    -- Проверка дистанции: ShootDir уже выставлен CalculateTarget,
+                    -- но позиция могла измениться с момента расчёта — проверяем снова
+                    local dist = GoalCFrame and (GetBallStartPos() - GoalCFrame.Position).Magnitude
+                    if dist and dist <= AutoShootMaxDistance then
+                        local power = (AutoShootSpoofPowerEnabled and GetSpoofPower()) or CurrentPower
+                        -- a5 (isMobile) принудительно false — фикс мобильной траектории
+                        return HookState._orig(self, ShootDir, a2, power, ShootVel, false, a6, CurrentSpin, a8, a9)
+                    end
                 end
                 return HookState._orig(self, ...)
             end
