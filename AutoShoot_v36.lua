@@ -1,4 +1,4 @@
--- [v37.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
+-- [v38.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
 local Players = game:GetService("Players")
 print('2')
 local RunService = game:GetService("RunService")
@@ -86,8 +86,8 @@ local AutoPickupToggleKey  = Enum.KeyCode.H
 local AutoPickupStatus     = { Running = false, Connection = nil }
 
 local ShowTrajectory      = true
-local ShowDistanceCircle  = true
-local DistanceCircleColor = Color3.fromRGB(80, 255, 140)
+local ShowPickupCircle    = true
+local PickupCircleColor   = Color3.fromRGB(80, 255, 140)
 local Show3DBoxes         = true
 local VisualsOnlyWithBall = true
 local TrajectoryColor     = Color3.fromRGB(255, 165, 0)
@@ -106,70 +106,69 @@ local StartCircleThickness= 1.5
 local StartCircleAlpha    = 0.85
 
 -- ============================================================
--- DISTANCE CIRCLE (always visible, foot-level)
+-- AUTOPICKUP RADIUS CIRCLE (always visible, foot-level)
 -- ============================================================
-local DistanceCircle         = {}
-local DIST_CIRCLE_SEGMENTS   = 64
+local PickupCircle           = {}
+local PICKUP_CIRCLE_SEGMENTS = 64
 
-local function GetFeetCircleY()
+-- Y-уровень ног: RightFoot/LeftFoot или fallback HRP
+local function GetFeetY()
     local rf = Character and Character:FindFirstChild("RightFoot")
     local lf = Character and Character:FindFirstChild("LeftFoot")
     if rf and lf and rf:IsA("BasePart") and lf:IsA("BasePart") then
         return math.min(rf.Position.Y, lf.Position.Y) + 0.05
-    elseif rf and rf:IsA("BasePart") then
-        return rf.Position.Y + 0.05
-    elseif lf and lf:IsA("BasePart") then
-        return lf.Position.Y + 0.05
+    elseif rf and rf:IsA("BasePart") then return rf.Position.Y + 0.05
+    elseif lf and lf:IsA("BasePart") then return lf.Position.Y + 0.05
     end
     local hrp = HumanoidRootPart
     if not hrp then return 0 end
     return hrp.Position.Y - (Humanoid and (Humanoid.HipHeight + hrp.Size.Y * 0.5) or (hrp.Size.Y * 0.9)) + 0.05
 end
 
-local function ApplyDistanceCircleStyle()
-    for _, l in ipairs(DistanceCircle) do
-        l.Color     = DistanceCircleColor
-        l.Thickness = 1.6
+local function ApplyPickupCircleStyle()
+    for _, l in ipairs(PickupCircle) do
+        l.Color        = PickupCircleColor
+        l.Thickness    = 1.6
         l.Transparency = 0.9
-        l.ZIndex    = 998
+        l.ZIndex       = 998
     end
 end
 
-local function HideDistanceCircle()
-    for _, l in ipairs(DistanceCircle) do l.Visible = false end
+local function HidePickupCircle()
+    for _, l in ipairs(PickupCircle) do l.Visible = false end
 end
 
-local function InitializeDistanceCircle()
-    for i = 1, DIST_CIRCLE_SEGMENTS do
-        if DistanceCircle[i] and DistanceCircle[i].Remove then DistanceCircle[i]:Remove() end
-        DistanceCircle[i] = Drawing.new("Line")
+local function InitializePickupCircle()
+    for i = 1, PICKUP_CIRCLE_SEGMENTS do
+        if PickupCircle[i] and PickupCircle[i].Remove then PickupCircle[i]:Remove() end
+        PickupCircle[i] = Drawing.new("Line")
     end
-    ApplyDistanceCircleStyle()
-    HideDistanceCircle()
+    ApplyPickupCircleStyle()
+    HidePickupCircle()
 end
 
-local function DrawDistanceCircle(centerPos, footY, radius)
-    if not ShowDistanceCircle or not centerPos then
-        HideDistanceCircle(); return
-    end
-    local origin   = Vector3.new(centerPos.X, footY, centerPos.Z)
+-- Каждый сегмент явно проецируется через WorldToViewportPoint —
+-- это гарантирует что круг остаётся на уровне земли без эффекта "парения".
+local function DrawPickupCircle(centerXZ, footY, radius)
+    if not ShowPickupCircle or not centerXZ then HidePickupCircle(); return end
+    local origin = Vector3.new(centerXZ.X, footY, centerXZ.Z)
     local prev2D, prevOk = nil, false
     local first2D, firstOk = nil, false
-    for i = 1, DIST_CIRCLE_SEGMENTS do
-        local a   = ((i - 1) / DIST_CIRCLE_SEGMENTS) * math.pi * 2
+    for i = 1, PICKUP_CIRCLE_SEGMENTS do
+        local a   = ((i - 1) / PICKUP_CIRCLE_SEGMENTS) * math.pi * 2
         local p   = origin + Vector3.new(math.cos(a) * radius, 0, math.sin(a) * radius)
         local s, onScreen = Camera:WorldToViewportPoint(p)
         local ok  = onScreen and s.Z > 0
         local cur = Vector2.new(s.X, s.Y)
         if i == 1 then first2D, firstOk = cur, ok end
         if i > 1 then
-            local line = DistanceCircle[i - 1]
+            local line = PickupCircle[i - 1]
             if prevOk and ok then line.From = prev2D; line.To = cur; line.Visible = true
             else line.Visible = false end
         end
         prev2D, prevOk = cur, ok
     end
-    local last = DistanceCircle[DIST_CIRCLE_SEGMENTS]
+    local last = PickupCircle[PICKUP_CIRCLE_SEGMENTS]
     if prevOk and firstOk then last.From = prev2D; last.To = first2D; last.Visible = true
     else last.Visible = false end
 end
@@ -192,7 +191,7 @@ local function SetupGUI()
         v.Size = 18; v.Color = Color3.fromRGB(255,255,255); v.Outline = true; v.Center = true
         v.Position = Vector2.new(cx, y + (i-1)*20); v.Visible = AutoShootDebugText
     end
-    Gui.Status.Text = "v37.0: Ready"
+    Gui.Status.Text = "v38.0: Ready"
 end
 
 local function ToggleDebugText(value)
@@ -236,7 +235,7 @@ local function ApplyVisualStyles()
         l.ZIndex = 1000
         l.Visible = false
     end
-    ApplyDistanceCircleStyle()
+    ApplyPickupCircleStyle()
 end
 
 local function InitializeCubes()
@@ -259,7 +258,7 @@ local function InitializeCubes()
         StartCircle[i] = Drawing.new("Line")
     end
     ApplyVisualStyles()
-    InitializeDistanceCircle()
+    InitializePickupCircle()
 end
 
 -- DrawTrajectory: кубический Безье с боковым смещением для Магнус-эффекта.
@@ -375,6 +374,16 @@ end
 -- Начальная позиция мяча: Character.ball (реальное положение мяча на поле),
 -- а не HumanoidRootPart (центр тела игрока, сдвинут на ~1-3 stud)
 local function GetBallStartPos()
+    -- Workspace.[PlayerName].ball — реальная физическая позиция мяча в мире
+    -- (не смещённая weld-attachment на персонаже), это критично для точного CalcLaunchDir
+    local wsModel = Workspace:FindFirstChild(LocalPlayer.Name)
+    if wsModel then
+        local wsBall = wsModel:FindFirstChild("ball")
+        if wsBall then
+            if wsBall:IsA("BasePart")   then return wsBall.Position end
+            if wsBall:IsA("Attachment") then return wsBall.WorldPosition end
+        end
+    end
     local ballPart = Character:FindFirstChild("ball")
     if ballPart then
         if ballPart:IsA("BasePart")   then return ballPart.Position     end
@@ -937,8 +946,10 @@ local function GetTarget(dist, gkX, gkY, isAggressive, gkHrp, gkVel, gkIsNPC, gk
             else
                 local midBand = math.clamp((dist - 95) / 40, 0, 1) * math.clamp((160 - dist) / 60, 0, 1)
                 local npcBand = gkIsNPC and 1 or 0
-                local noSpinDrop = (0.18 + 0.28 * hFrac) * midBand * (1.0 + 0.45 * npcBand)
-                local extraFlatDrop = (0.05 + 0.07 * math.clamp(1 - hFrac, 0, 1)) * midBand
+                -- No-spin мяч физически летит выше spin-мяча (сервер применяет Magnus-lift).
+                -- Компенсируем: целимся ниже на ~35% больше чем раньше.
+                local noSpinDrop = (0.18 + 0.28 * hFrac) * midBand * (1.35 + 0.45 * npcBand)
+                local extraFlatDrop = (0.12 + 0.10 * math.clamp(1 - hFrac, 0, 1)) * midBand
                 shootLocalY = math.max(Y_BOT_INSET, localY - noSpinDrop - extraFlatDrop)
             end
 
@@ -1453,11 +1464,11 @@ AutoShoot.Start = function()
         local hasBall = ball and ball:FindFirstChild("playerWeld") and ball.creator.Value == LocalPlayer
         local showVisuals = (not VisualsOnlyWithBall) or hasBall
 
-        -- 🟢 Круг дистанции — рисуется ВСЕГДА (не зависит от hasBall)
+        -- 🟢 Круг радиуса AutoPickup — рисуется ВСЕГДА, уровень ног
         if HumanoidRootPart then
-            DrawDistanceCircle(HumanoidRootPart.Position, GetFeetCircleY(), AutoShootMaxDistance)
+            DrawPickupCircle(HumanoidRootPart.Position, GetFeetY(), AutoPickupDist)
         else
-            HideDistanceCircle()
+            HidePickupCircle()
         end
 
         -- 🟠 Траектория дуги (оранжевые линии) — главный визуал
@@ -1512,10 +1523,10 @@ AutoShoot.Stop = function()
     end
     for i = 1, #StartCircle do if StartCircle[i] and StartCircle[i].Remove then StartCircle[i]:Remove() end end
     StartCircle = {}
-    for i = 1, #DistanceCircle do
-        if DistanceCircle[i] and DistanceCircle[i].Remove then DistanceCircle[i]:Remove() end
+    for i = 1, #PickupCircle do
+        if PickupCircle[i] and PickupCircle[i].Remove then PickupCircle[i]:Remove() end
     end
-    DistanceCircle = {}
+    PickupCircle = {}
 end
 
 AutoShoot.SetDebugText = function(v)
@@ -1573,23 +1584,7 @@ end
 -- UI
 -- ============================================================
 local uiElements = {}
-local function SynchronizeConfigValues()
-    if not uiElements then return end
-    local pairs_sync = {
-        { uiElements.AutoShootMaxDist,            function(v) AutoShootMaxDistance = v end },
-        { uiElements.AutoShootCurveDistanceLimit, function(v) AutoShootCurveDistanceLimit = v end },
-        { uiElements.AutoShootBallSpeed,          function(v) AutoShootBallSpeed = v end },
-        { uiElements.AutoShootDragComp,           function(v) AutoShootDragComp = v end },
-        { uiElements.AutoShootDerivMult,          function(v) AutoShootDerivMult = v end },
-        { uiElements.AutoPickupDist,              function(v) AutoPickupDist = v end },
-        { uiElements.AutoPickupSpoof,             function(v) AutoPickupSpoofValue = v end },
-        { uiElements.AutoPickupMaxHeight,         function(v) AutoPickupMaxHeight = v end },
-    }
-    for _, pair in ipairs(pairs_sync) do
-        local elem, setter = pair[1], pair[2]
-        if elem and elem.GetValue then pcall(function() setter(elem:GetValue()) end) end
-    end
-end
+
 
 local function SetupUI(UI)
     -- ═══════════════════════════════════════════════════════════
@@ -1726,13 +1721,7 @@ local function SetupUI(UI)
             Callback = function(v) VisualsOnlyWithBall = v end
         }, "VisualsOnlyWithBall")
 
-        uiElements.ShowDistanceCircle = UI.Sections.AutoShoot:Toggle({
-            Name = "Show Distance Circle", Default = ShowDistanceCircle,
-            Callback = function(v)
-                ShowDistanceCircle = v
-                if not v then HideDistanceCircle() end
-            end
-        }, "ShowDistanceCircle")
+
     end
 
     if UI.Sections.AutoPickup then
@@ -1782,6 +1771,15 @@ local function SetupUI(UI)
         }, "AutoPickupSpoof")
 
         UI.Sections.AutoPickup:SubLabel({Text = "[💠] Distance sent to server for pickup"})
+
+        UI.Sections.AutoPickup:Divider()
+        uiElements.ShowPickupCircle = UI.Sections.AutoPickup:Toggle({
+            Name = "Show Pickup Circle", Default = ShowPickupCircle,
+            Callback = function(v)
+                ShowPickupCircle = v
+                if not v then HidePickupCircle() end
+            end
+        }, "ShowPickupCircle")
     end
 
     -- ═══════════════════════════════════════════════════════════
@@ -1817,10 +1815,14 @@ local function SetupUI(UI)
             Name = "Peak Box Color", Default = PeakCubeColor,
             Callback = function(v) PeakCubeColor = v; ApplyVisualStyles() end
         }, "PeakCubeColor")
-        uiElements.DistanceCircleColor = UI.Sections.AutoShoot:Colorpicker({
-            Name = "Distance Circle Color", Default = DistanceCircleColor,
-            Callback = function(v) DistanceCircleColor = v; ApplyDistanceCircleStyle() end
-        }, "DistanceCircleColor")
+
+    end
+    -- Colorpicker AutoPickup — после всех Toggle/Slider
+    if UI.Sections.AutoPickup then
+        uiElements.PickupCircleColor = UI.Sections.AutoPickup:Colorpicker({
+            Name = "Pickup Circle Color", Default = PickupCircleColor,
+            Callback = function(v) PickupCircleColor = v; ApplyPickupCircleStyle() end
+        }, "PickupCircleColor")
     end
 end
 
@@ -1832,17 +1834,6 @@ function AutoShootModule.Init(UI, coreParam, notifyFunc)
     local notify = notifyFunc or function(t,m) print("["..t.."]: "..m) end
     Notify = notify
     SetupUI(UI)
-
-    -- Синхронизация слайдеров каждую секунду (слайдеры иногда
-    -- не вызывают Callback при загрузке конфига)
-    local synchronizationTimer = 0
-    RunService.Heartbeat:Connect(function(deltaTime)
-        synchronizationTimer += deltaTime
-        if synchronizationTimer >= 1.0 then
-            synchronizationTimer = 0
-            SynchronizeConfigValues()
-        end
-    end)
 
     if AutoPickupEnabled then AutoPickup.Start() end
     if AutoShootEnabled then AutoShoot.Start() end
@@ -1858,7 +1849,7 @@ function AutoShootModule.Init(UI, coreParam, notifyFunc)
         GoalCFrame = nil; TargetPoint = nil; PredictedLand = nil; AimPoint = nil
         CurrentFlightTime = 0; CurrentLaunchDir = nil; CurrentSpeed = 0; CurrentPeakPos = nil
         LastShoot = 0; IsAnimating = false; CanShoot = true
-        InitializeDistanceCircle()
+        InitializePickupCircle()
         if AutoShootEnabled then AutoShoot.Start() end
         if AutoPickupEnabled then AutoPickup.Start() end
     end)
