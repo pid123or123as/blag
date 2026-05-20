@@ -1468,10 +1468,9 @@ local function EnableHook()
                 -- Не проверяем дистанцию — CalculateTarget уже валидировал её до выставления ShootDir
                 -- a1=dir(V3), a2=CFrame, a3=power, a4=vel(V3), a5=isMobile, a6=flag, a7=spin, a8, a9
                 if ShootDir then
-                    -- Проверка дистанции: ShootDir уже выставлен CalculateTarget,
-                    -- но позиция могла измениться с момента расчёта — проверяем снова
-                    local dist = GoalCFrame and (GetBallStartPos() - GoalCFrame.Position).Magnitude
-                    if dist and dist <= AutoShootMaxDistance then
+                    -- CurrentDist обновляется каждый Heartbeat в CalculateTarget.
+                    -- Используем его вместо пересчёта в хуке — безопасно и без лишних вызовов.
+                    if CurrentDist <= AutoShootMaxDistance then
                         local power = (AutoShootSpoofPowerEnabled and GetSpoofPower()) or CurrentPower
                         -- a5 (isMobile) принудительно false — фикс мобильной траектории
                         return HookState._orig(self, ShootDir, a2, power, ShootVel, false, a6, CurrentSpin, a8, a9)
