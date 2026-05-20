@@ -1,4 +1,4 @@
--- [v41.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
+-- [v42.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
 local Players = game:GetService("Players")
 print('2')
 local RunService = game:GetService("RunService")
@@ -120,7 +120,7 @@ local PICKUP_CIRCLE_SEGMENTS = 64
 local _pcAlpha        = 1.0     -- начинаем невидимым; lerp к BASE_ALPHA при показе
 local _pcRadius       = nil
 local _pcColor        = nil
-local PICKUP_CIRCLE_BASE_ALPHA = 0.0   -- Drawing.Transparency 0=fully opaque, 1=invisible
+local PICKUP_CIRCLE_BASE_ALPHA = 0.18  -- Drawing.Transparency: 0=opaque, 1=invisible. 0.18=slight transparency
 local PICKUP_CIRCLE_ANIM_SPEED = 8.0   -- скорость lerp (выше = быстрее)
 
 -- Y-уровень ног: RightFoot/LeftFoot или fallback HRP
@@ -156,7 +156,9 @@ local function ApplyPickupCircleStyle()
 end
 
 local function HidePickupCircle()
-    for _, l in ipairs(PickupCircle) do l.Visible = false end
+    for _, l in ipairs(PickupCircle) do
+        if l and l.Visible ~= nil then l.Visible = false end
+    end
 end
 
 local function InitializePickupCircle()
@@ -324,7 +326,6 @@ local function InitializeCubes()
         StartCircle[i] = Drawing.new("Line")
     end
     ApplyVisualStyles()
-    InitializePickupCircle()
 end
 
 -- DrawTrajectory: кубический Безье с боковым смещением для Магнус-эффекта.
@@ -1437,10 +1438,11 @@ local function EnableHook()
         return hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local method = getnamecallmethod()
             if method == "FireServer" and self == Shooter then
-                if ShootDir then
+                -- Только перехватываем если скрипт включён, есть цель и в радиусе
+                local hookDist = GoalCFrame and (GetBallStartPos() - GoalCFrame.Position).Magnitude or 999
+                if ShootDir and AutoShootEnabled and hookDist <= AutoShootMaxDistance then
                     local power = (AutoShootSpoofPowerEnabled and GetSpoofPower()) or CurrentPower
                     local a1, a2, a3, a4, a5, a6, a7, a8, a9 = ...
-                    -- Подменяем: dir, cframe(original), power, vel, flags, spin, nil, flag
                     -- a5 (isMobile) принудительно false — иначе сервер считает траекторию по мобильной физике
                     return HookState._orig(self, ShootDir, a2, power, ShootVel, false, a6, CurrentSpin, a8, a9)
                 end
@@ -1643,6 +1645,8 @@ end
 AutoPickup.Start = function()
     if AutoPickupStatus.Running then return end
     AutoPickupStatus.Running = true
+    -- Инициализируем линии круга при каждом старте пикапа
+    InitializePickupCircle()
     pcall(AutoPickupTick)
     AutoPickupStatus.Connection = RunService.Heartbeat:Connect(function()
         AutoPickupTick()
