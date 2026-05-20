@@ -1,2016 +1,8213 @@
--- [v50.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
-local Players = game:GetService("Players")
-print('2')
-local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
-local Camera = Workspace.CurrentCamera
-local UserInputService = game:GetService("UserInputService")
-
-local LocalPlayer = Players.LocalPlayer
-local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
-local BallAttachment = Character:WaitForChild("ball")
-local Humanoid = Character:WaitForChild("Humanoid")
-
-local Shooter = ReplicatedStorage.Remotes:WaitForChild("ShootTheBaII")
-local PickupRemote
-for _, r in ReplicatedStorage.Remotes:GetChildren() do
-    if r:IsA("RemoteEvent") and r:GetAttribute("Attribute") then
-        PickupRemote = r; break
-    end
-end
-
-local Animations = ReplicatedStorage:WaitForChild("Animations")
-local RShootAnim = Humanoid:LoadAnimation(Animations:WaitForChild("RShoot"))
-RShootAnim.Priority = Enum.AnimationPriority.Action4
-local IsAnimating = false
-local AnimationHoldTime = 0.6
-
--- ============================================================
--- КОНФИГ — только параметры которые не зависят от ворот/позиции
--- ============================================================
-local AutoShootEnabled   = false
-local AutoShootMode      = "Packet" -- "Packet" | "Hook"
-local AutoShootPreferSpin = false   -- Предпочитать закрученные удары (не NPC)
-local AutoShootLegit     = true
-local AutoShootManualShot = true
-local AutoShootShootKey  = Enum.KeyCode.G
-local AutoShootMaxDistance = 200
-local AutoShootDebugText = false
-local HookDebugMode      = false  -- true: логировать аргументы FireServer без подмены
-local AutoShootSpoofPowerEnabled = false
-local AutoShootSpoofPowerType    = "math.huge"
--- Физика
-local GRAVITY              = 196.2   -- studs/s² (Roblox workspace gravity)
-local AutoShootBallSpeed   = 400     -- Скорость мяча studs/s. Мяч выше цели → увеличь. Мяч ниже → уменьши.
-local AutoShootDragComp    = 1.05    -- k (1/s): экспоненц. затухание v_h=V·e^(-k·t). Не долетает → увеличь. Летит выше → уменьши.
-local FIXED_POWER          = 5.0
-local GK_REACH_RADIUS      = 5.0    -- Радиус статичного покрытия GK (studs)
-local GK_REACH_SPEED       = 12.0   -- Скорость реакции GK для предикта дайва (studs/s)
-local PAST_GOAL_BASE       = 45     -- Базовое расширение цели (studs) для всех ударов
-local PAST_GOAL_CLOSE      = 70     -- Доп. расширение для ближних (<SPIN_TRICK_DIST) ударов
-local SPIN_TRICK_DIST      = 72     -- Граница "близкой" дистанции
-local SPIN_SERVER_MIN_DIST = 130    -- Ниже ~130 studs сервер почти не принимает закручивание
-local AutoShootCurveDistanceLimit = 300 -- Максимальная дистанция, на которой разрешён закрут
-local RICOCHET_MIN_DIST       = 72  -- Ниже рикошет от земли редко полезен
-local RICOCHET_MAX_DIST       = 175 -- Слишком далеко рикошет теряет точность
-local SPIN_CROSS_BLOCK_X   = 0.18   -- Cross-goal spin (слева→вправо / справа→влево) часто не принимается
-local AutoShootDerivMult   = 4.5    -- studs деривации при d=100. Мяч улетает меньше → увеличь.
-local BALL_RADIUS           = 1.168  -- радиус мяча: 2.336 / 2 studs
--- Безопасный отступ = радиус мяча + небольшой запас чтобы мяч не касался штанги
-local INSET                = BALL_RADIUS + 0.6  -- ~1.72 studs (горизонтальный, от штанг)
--- Вертикальный инсет: центр мяча должен быть минимум BALL_RADIUS от перекладины/пола
--- Дополнительный запас 0.25 studs покрывает неточность физической модели
--- Y_TOP_TARGET: используется для сетки кандидатов (мал → можно целиться выше в ворота)
-local Y_TOP_TARGET         = BALL_RADIUS + 0.28   -- 1.45 studs от перекладины
--- Y_TOP_SAFETY: используется в crossbar-штрафе (больше → жёстче защита от перелёта)
-local Y_TOP_SAFETY         = BALL_RADIUS + 0.48   -- 1.65 studs порог штрафа
-local Y_BOT_INSET          = 0.22                 -- studs от пола
-local GOAL_DEPTH_MIN         = 1.0                  -- минимально целимся внутрь ворот
-local GOAL_DEPTH_MAX         = 1.00                 -- максимально целимся вглубь на дальних
-local VIS_CURL_MAX           = 1.45                 -- max визуальный боковой Magnus изгиб
-local VIS_CURL_PEAK          = 0.38                 -- пик Magnus-изгиба раньше середины
-local VIS_FALL_EARLY_BIAS    = 0.92                 -- падение начинается чуть раньше, чем симм. дуга
-
--- ============================================================
--- STATUS
--- ============================================================
-local AutoShootStatus = {
-    Running = false, Connection = nil, RenderConnection = nil,
-    InputConnection = nil
+local MacLib = { 
+	Options = {}, 
+	Folder = "Maclib", 
+	GetService = function(service)
+		return cloneref and cloneref(game:GetService(service)) or game:GetService(service)
+	end
 }
-local AutoPickupEnabled    = true
-local AutoPickupDist       = 180
-local AutoPickupSpoofValue = 2.8
-local AutoPickupMaxHeight  = 50       -- Макс. высота мяча относительно HRP (studs) для авто-подбора
-local AutoPickupToggleKey  = Enum.KeyCode.H
-local AutoPickupStatus     = { Running = false, Connection = nil }
 
-local ShowTrajectory      = true
-local ShowPickupCircle       = true
-local PickupCircleIndicate    = true   -- true = не скрывать при выкл, а красить красным
-local PickupCircleColor      = Color3.fromRGB(80, 255, 140)
-local PICKUP_CIRCLE_DISABLED_COLOR = Color3.fromRGB(220, 50, 50)
-local Show3DBoxes         = true
-local VisualsOnlyWithBall = true
-local TrajectoryColor     = Color3.fromRGB(255, 165, 0)
-local StartCircleColor    = Color3.fromRGB(255, 210, 80)
-local TargetCubeColor     = Color3.fromRGB(0,255,0)
-local GoalCubeColor       = Color3.fromRGB(255,0,0)
-local NoSpinCubeColor     = Color3.fromRGB(0,200,255)
-local PeakCubeColor       = Color3.fromRGB(255,255,0)
-local TrajectoryAlpha     = 0.55
-local BoxAlpha            = 0.90
-local TrajectoryThickness = 1.6
-local BoxThicknessMain    = 2.2
-local BoxThicknessThin    = 1.2
-local StartCircleRadius   = 4
-local StartCircleThickness= 1.5
-local StartCircleAlpha    = 0.85
+--// Services
+local TweenService = MacLib.GetService("TweenService")
+local RunService = MacLib.GetService("RunService")
+local HttpService = MacLib.GetService("HttpService")
+local ContentProvider = MacLib.GetService("ContentProvider")
+local UserInputService = MacLib.GetService("UserInputService")
+local Lighting = MacLib.GetService("Lighting")
+local Players = MacLib.GetService("Players")
 
--- ============================================================
--- AUTOPICKUP RADIUS CIRCLE (always visible, foot-level, animated)
--- ============================================================
-local PickupCircle           = {}
-local PICKUP_CIRCLE_SEGMENTS = 64
+--// Variables
+local isStudio = RunService:IsStudio()
+local LocalPlayer = Players.LocalPlayer
 
--- Состояние анимации круга
--- Drawing.Transparency: 0 = полностью непрозрачный, 1 = полностью невидимый
--- _pcAlpha хранит ТЕКУЩЕЕ Drawing.Transparency: старт 1.0 (невидим), fade in → BASE_ALPHA
-local _pcAlpha        = 1.0     -- начинаем невидимым; lerp к BASE_ALPHA при показе
-local _pcRadius       = nil
-local _pcColor        = nil
-local _pcLastCenter   = nil     -- последняя известная позиция (для fade-out)
-local _pcLastFootY    = 0
-local PICKUP_CIRCLE_BASE_ALPHA = 0.18  -- Drawing.Transparency: 0=opaque, 1=invisible. 0.18=slight transparency
-local PICKUP_CIRCLE_ANIM_SPEED = 8.0   -- скорость lerp (выше = быстрее)
+local windowState
+local acrylicBlur
+local hasGlobalSetting
 
--- Y-уровень ног: RightFoot/LeftFoot или fallback HRP
-local function GetFeetY()
-    local rf = Character and Character:FindFirstChild("RightFoot")
-    local lf = Character and Character:FindFirstChild("LeftFoot")
-    if rf and lf and rf:IsA("BasePart") and lf:IsA("BasePart") then
-        return math.min(rf.Position.Y, lf.Position.Y) + 0.05
-    elseif rf and rf:IsA("BasePart") then return rf.Position.Y + 0.05
-    elseif lf and lf:IsA("BasePart") then return lf.Position.Y + 0.05
-    end
-    local hrp = HumanoidRootPart
-    if not hrp then return 0 end
-    return hrp.Position.Y - (Humanoid and (Humanoid.HipHeight + hrp.Size.Y * 0.5) or (hrp.Size.Y * 0.9)) + 0.05
+local tabs = {}
+local currentTabInstance = nil
+local tabIndex = 0
+local unloaded = false
+
+local assets = {
+	interFont = "rbxassetid://12187365364",
+	userInfoBlurred = "rbxassetid://18824089198",
+	toggleBackground = "rbxassetid://18772190202",
+	togglerHead = "rbxassetid://18772309008",
+	buttonImage = "rbxassetid://10709791437",
+	searchIcon = "rbxassetid://86737463322606",
+	colorWheel = "rbxassetid://102199950536953",
+	colorTarget = "rbxassetid://73265255323268",
+	grid = "rbxassetid://121484455191370",
+	globe = "rbxassetid://108952102602834",
+	transform = "rbxassetid://90336395745819",
+	dropdown = "rbxassetid://18865373378",
+	sliderbar = "rbxassetid://18772615246",
+	sliderhead = "rbxassetid://18772834246",
+}
+
+--// Functions
+local function GetGui()
+	local newGui = Instance.new("ScreenGui")
+	newGui.ScreenInsets = Enum.ScreenInsets.None
+	newGui.ResetOnSpawn = false
+	newGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	newGui.DisplayOrder = 2147483647
+
+	local parent = RunService:IsStudio() 
+		and LocalPlayer:FindFirstChild("PlayerGui")
+		or (gethui and gethui())
+		or (cloneref and cloneref(MacLib.GetService("CoreGui")) or MacLib.GetService("CoreGui"))
+
+	newGui.Parent = parent
+	return newGui
 end
 
-local function _lerpColor(a, b, t)
-    return Color3.new(
-        a.R + (b.R - a.R) * t,
-        a.G + (b.G - a.G) * t,
-        a.B + (b.B - a.B) * t
-    )
+local function Tween(instance, tweeninfo, propertytable)
+	return TweenService:Create(instance, tweeninfo, propertytable)
 end
 
-local function ApplyPickupCircleStyle()
-    local col = _pcColor or PickupCircleColor
-    for _, l in ipairs(PickupCircle) do
-        l.Color        = col
-        l.Thickness    = 2.5
-        l.Transparency = PICKUP_CIRCLE_BASE_ALPHA
-        l.ZIndex       = 998
-    end
+--// Library Functions
+function MacLib:Window(Settings)
+	local WindowFunctions = {Settings = Settings}
+	if Settings.AcrylicBlur ~= nil then
+		acrylicBlur = Settings.AcrylicBlur
+	else
+		acrylicBlur = true
+	end
+
+	local macLib = GetGui()
+
+	local notifications = Instance.new("Frame")
+	notifications.Name = "Notifications"
+	notifications.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	notifications.BackgroundTransparency = 1
+	notifications.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	notifications.BorderSizePixel = 0
+	notifications.Size = UDim2.fromScale(1, 1)
+	notifications.Parent = macLib
+	notifications.ZIndex = 2
+
+	local notificationsUIListLayout = Instance.new("UIListLayout")
+	notificationsUIListLayout.Name = "NotificationsUIListLayout"
+	notificationsUIListLayout.Padding = UDim.new(0, 10)
+	notificationsUIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	notificationsUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	notificationsUIListLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+	notificationsUIListLayout.Parent = notifications
+
+	local notificationsUIPadding = Instance.new("UIPadding")
+	notificationsUIPadding.Name = "NotificationsUIPadding"
+	notificationsUIPadding.PaddingBottom = UDim.new(0, 10)
+	notificationsUIPadding.PaddingLeft = UDim.new(0, 10)
+	notificationsUIPadding.PaddingRight = UDim.new(0, 10)
+	notificationsUIPadding.PaddingTop = UDim.new(0, 10)
+	notificationsUIPadding.Parent = notifications
+
+	-- Notifications UIScale синхронизируется с baseUIScale
+	local notifUIScale = Instance.new("UIScale")
+	notifUIScale.Name = "NotificationsUIScale"
+	notifUIScale.Parent = notifications
+	-- sync будет выполнен после создания baseUIScale
+
+	local base = Instance.new("Frame")
+	base.Name = "Base"
+	base.AnchorPoint = Vector2.new(0.5, 0.5)
+	base.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+	base.BackgroundTransparency = Settings.AcrylicBlur and 0.05 or 0
+	base.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	base.BorderSizePixel = 0
+	base.Position = UDim2.fromScale(0.5, 0.5)
+	base.Size = Settings.Size or UDim2.fromOffset(868, 650)
+
+	local baseUIScale = Instance.new("UIScale")
+	baseUIScale.Name = "BaseUIScale"
+	baseUIScale.Parent = base
+
+	-- FIX6: Автоскейл убран — Scale фиксирован в 1
+	baseUIScale.Scale = 1
+	notifUIScale.Scale = 1
+
+	local baseUICorner = Instance.new("UICorner")
+	baseUICorner.Name = "BaseUICorner"
+	baseUICorner.CornerRadius = UDim.new(0, 10)
+	baseUICorner.Parent = base
+
+	local baseUIStroke = Instance.new("UIStroke")
+	baseUIStroke.Name = "BaseUIStroke"
+	baseUIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	baseUIStroke.Color = Color3.fromRGB(255, 255, 255)
+	baseUIStroke.Transparency = 0.9
+	baseUIStroke.Parent = base
+
+	local sidebar = Instance.new("Frame")
+	sidebar.Name = "Sidebar"
+	sidebar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	sidebar.BackgroundTransparency = 1
+	sidebar.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	sidebar.BorderSizePixel = 0
+	sidebar.Position = UDim2.fromScale(-3.52e-08, 4.69e-08)
+	sidebar.Size = UDim2.fromScale(0.325, 1)
+
+	local divider = Instance.new("Frame")
+	divider.Name = "Divider"
+	divider.AnchorPoint = Vector2.new(1, 0)
+	divider.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	divider.BackgroundTransparency = 0.9
+	divider.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	divider.BorderSizePixel = 0
+	divider.Position = UDim2.fromScale(1, 0)
+	divider.Size = UDim2.new(0, 1, 1, 0)
+	divider.Parent = sidebar
+
+	local dividerInteract = Instance.new("TextButton")
+	dividerInteract.Name = "DividerInteract"
+	dividerInteract.AnchorPoint = Vector2.new(0.5, 0)
+	dividerInteract.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	dividerInteract.BackgroundTransparency = 1
+	dividerInteract.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	dividerInteract.BorderSizePixel = 0
+	dividerInteract.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json")
+	dividerInteract.Position = UDim2.fromScale(0.5, 0)
+	dividerInteract.Size = UDim2.new(1, 6, 1, 0)
+	dividerInteract.Text = ""
+	dividerInteract.TextColor3 = Color3.fromRGB(0, 0, 0)
+	dividerInteract.TextSize = 14
+	dividerInteract.Parent = divider
+
+	local windowControls = Instance.new("Frame")
+	windowControls.Name = "WindowControls"
+	windowControls.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	windowControls.BackgroundTransparency = 1
+	windowControls.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	windowControls.BorderSizePixel = 0
+	windowControls.Size = UDim2.new(1, 0, 0, 31)
+
+	local controls = Instance.new("Frame")
+	controls.Name = "Controls"
+	controls.BackgroundColor3 = Color3.fromRGB(119, 174, 94)
+	controls.BackgroundTransparency = 1
+	controls.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	controls.BorderSizePixel = 0
+	controls.Size = UDim2.fromScale(1, 1)
+
+	local uIListLayout = Instance.new("UIListLayout")
+	uIListLayout.Name = "UIListLayout"
+	uIListLayout.Padding = UDim.new(0, 4)
+	uIListLayout.FillDirection = Enum.FillDirection.Horizontal
+	uIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	uIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	uIListLayout.Parent = controls
+
+	local uIPadding = Instance.new("UIPadding")
+	uIPadding.Name = "UIPadding"
+	uIPadding.PaddingLeft = UDim.new(0, 11)
+	uIPadding.Parent = controls
+
+	local windowControlSettings = {
+		sizes = { enabled = UDim2.fromOffset(22, 22), disabled = UDim2.fromOffset(22, 22) },
+		transparencies = { enabled = 0, disabled = 1 },
+		strokeTransparency = 0.9,
+	}
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Name = "BaseUIStroke"
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Color = Color3.fromRGB(255, 255, 255)
+	stroke.Transparency = windowControlSettings.strokeTransparency
+
+	local exit = Instance.new("TextButton")
+	exit.Name = "Exit"
+	exit.Text = "×"
+	exit.TextColor3 = Color3.fromRGB(255, 255, 255)
+	exit.TextSize = 16
+	exit.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Bold)
+	exit.TextTransparency = 0.1
+	exit.AutoButtonColor = false
+	exit.BackgroundColor3 = Color3.fromRGB(200, 55, 50)
+	exit.BackgroundTransparency = 0.05
+	exit.BorderSizePixel = 0
+	exit.LayoutOrder = 0
+
+	local uICorner = Instance.new("UICorner")
+	uICorner.Name = "UICorner"
+	uICorner.CornerRadius = UDim.new(0, 6)
+	uICorner.Parent = exit
+
+	exit.Parent = controls
+
+	local minimize = Instance.new("TextButton")
+	minimize.Name = "Minimize"
+	minimize.Text = "−"
+	minimize.TextColor3 = Color3.fromRGB(255, 255, 255)
+	minimize.TextSize = 18
+	minimize.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Bold)
+	minimize.TextTransparency = 0.1
+	minimize.AutoButtonColor = false
+	minimize.BackgroundColor3 = Color3.fromRGB(190, 140, 25)
+	minimize.BackgroundTransparency = 0.05
+	minimize.BorderSizePixel = 0
+	minimize.LayoutOrder = 1
+
+	local uICorner1 = Instance.new("UICorner")
+	uICorner1.Name = "UICorner"
+	uICorner1.CornerRadius = UDim.new(0, 6)
+	uICorner1.Parent = minimize
+
+	minimize.Parent = controls
+
+	local maximize = Instance.new("TextButton")
+	maximize.Name = "Maximize"
+	maximize.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json")
+	maximize.Text = ""
+	maximize.TextColor3 = Color3.fromRGB(0, 0, 0)
+	maximize.TextSize = 14
+	maximize.AutoButtonColor = false
+	maximize.BackgroundColor3 = Color3.fromRGB(119, 174, 94)
+	maximize.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	maximize.BorderSizePixel = 0
+	maximize.LayoutOrder = 1
+
+	local uICorner2 = Instance.new("UICorner")
+	uICorner2.Name = "UICorner"
+	uICorner2.CornerRadius = UDim.new(1, 0)
+	uICorner2.Parent = maximize
+
+	maximize.Parent = controls
+
+	local function applyState(button, enabled)
+		local size = enabled and windowControlSettings.sizes.enabled or windowControlSettings.sizes.disabled
+		local transparency = enabled and windowControlSettings.transparencies.enabled or windowControlSettings.transparencies.disabled
+
+		button.Size = size
+		button.BackgroundTransparency = transparency
+		button.Active = enabled
+		button.Interactable = enabled
+
+		for _, child in ipairs(button:GetChildren()) do
+			if child:IsA("UIStroke") then
+				child.Transparency = transparency
+			end
+		end
+		if not enabled then
+			stroke:Clone().Parent = button
+		end
+	end
+
+	applyState(maximize, false)
+
+	local controlsList = {exit, minimize}
+	for _, button in pairs(controlsList) do
+		local buttonName = button.Name
+		local isEnabled = true
+
+		if Settings.DisabledWindowControls and table.find(Settings.DisabledWindowControls, buttonName) then
+			isEnabled = false
+		end
+
+		applyState(button, isEnabled)
+	end
+
+	-- FIX4b: кастомные кнопки в controls (рядом с exit/minimize)
+	-- Возвращается объект с методами :Destroy(), :SetLabel(), :SetColor(), :SetVisible()
+	local function _addWindowControl(ctrlSettings)
+		local btn = Instance.new("TextButton")
+		btn.Name = "CustomControl_" .. (ctrlSettings.Name or "Btn")
+		btn.Text = ctrlSettings.Label or ""
+		btn.TextColor3 = ctrlSettings.TextColor or Color3.fromRGB(255, 255, 255)
+		btn.TextSize = ctrlSettings.TextSize or 14
+		btn.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Bold)
+		btn.TextTransparency = 0.1
+		btn.AutoButtonColor = false
+		btn.BackgroundColor3 = ctrlSettings.Color or Color3.fromRGB(80, 80, 200)
+		btn.BackgroundTransparency = ctrlSettings.Transparency or 0.05
+		btn.BorderSizePixel = 0
+		btn.Size = windowControlSettings.sizes.enabled
+		btn.LayoutOrder = ctrlSettings.LayoutOrder or 10
+
+		-- иконка внутри кнопки (опционально)
+		if ctrlSettings.Image then
+			local img = Instance.new("ImageLabel")
+			img.Name = "Icon"
+			img.Image = ctrlSettings.Image
+			img.BackgroundTransparency = 1
+			img.AnchorPoint = Vector2.new(0.5, 0.5)
+			img.Position = UDim2.fromScale(0.5, 0.5)
+			img.Size = UDim2.fromOffset(12, 12)
+			img.Parent = btn
+		end
+
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+		if ctrlSettings.Callback then
+			btn.MouseButton1Click:Connect(function()
+				task.spawn(ctrlSettings.Callback)
+			end)
+		end
+
+		btn.Parent = controls
+
+		local ctrlObj = {}
+		function ctrlObj:Destroy() btn:Destroy() end
+		function ctrlObj:SetLabel(t) btn.Text = t end
+		function ctrlObj:SetColor(c) btn.BackgroundColor3 = c end
+		function ctrlObj:SetImage(id)
+			local ic = btn:FindFirstChild("Icon")
+			if ic then ic.Image = id end
+		end
+		function ctrlObj:SetVisible(s) btn.Visible = s end
+		return ctrlObj
+	end
+
+	controls.Parent = windowControls
+
+	local divider1 = Instance.new("Frame")
+	divider1.Name = "Divider"
+	divider1.AnchorPoint = Vector2.new(0, 1)
+	divider1.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	divider1.BackgroundTransparency = 0.9
+	divider1.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	divider1.BorderSizePixel = 0
+	divider1.Position = UDim2.fromScale(0, 1)
+	divider1.Size = UDim2.new(1, 0, 0, 1)
+	divider1.Parent = windowControls
+
+	windowControls.Parent = sidebar
+
+	local information = Instance.new("Frame")
+	information.Name = "Information"
+	information.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	information.BackgroundTransparency = 1
+	information.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	information.BorderSizePixel = 0
+	information.Position = UDim2.fromOffset(0, 31)
+	information.Size = UDim2.new(1, 0, 0, 60)
+
+	local divider2 = Instance.new("Frame")
+	divider2.Name = "Divider"
+	divider2.AnchorPoint = Vector2.new(0, 1)
+	divider2.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	divider2.BackgroundTransparency = 0.9
+	divider2.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	divider2.BorderSizePixel = 0
+	divider2.Position = UDim2.fromScale(0, 1)
+	divider2.Size = UDim2.new(1, 0, 0, 1)
+	divider2.Parent = information
+
+	local informationHolder = Instance.new("Frame")
+	informationHolder.Name = "InformationHolder"
+	informationHolder.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	informationHolder.BackgroundTransparency = 1
+	informationHolder.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	informationHolder.BorderSizePixel = 0
+	informationHolder.Size = UDim2.fromScale(1, 1)
+
+	local informationHolderUIPadding = Instance.new("UIPadding")
+	informationHolderUIPadding.Name = "InformationHolderUIPadding"
+	informationHolderUIPadding.PaddingBottom = UDim.new(0, 10)
+	informationHolderUIPadding.PaddingLeft = UDim.new(0, 23)
+	informationHolderUIPadding.PaddingRight = UDim.new(0, 22)
+	informationHolderUIPadding.PaddingTop = UDim.new(0, 10)
+	informationHolderUIPadding.Parent = informationHolder
+
+	local globalSettingsButton = Instance.new("ImageButton")
+	globalSettingsButton.Name = "GlobalSettingsButton"
+	globalSettingsButton.Image = assets.globe
+	globalSettingsButton.ImageTransparency = 0.5
+	globalSettingsButton.AnchorPoint = Vector2.new(1, 0.5)
+	globalSettingsButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	globalSettingsButton.BackgroundTransparency = 1
+	globalSettingsButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	globalSettingsButton.BorderSizePixel = 0
+	globalSettingsButton.Position = UDim2.fromScale(1, 0.5)
+	-- FIX3: размер зависит от устройства
+	do
+		local _isMobileGS = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+		globalSettingsButton.Size = _isMobileGS and UDim2.fromOffset(28, 28) or UDim2.fromOffset(16, 16)
+	end
+	globalSettingsButton.Parent = informationHolder
+
+	local function ChangeGlobalSettingsButtonState(State)
+		if State == "Default" then
+			Tween(globalSettingsButton, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {
+				ImageTransparency = 0.5
+			}):Play()
+		elseif State == "Hover" then
+			Tween(globalSettingsButton, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {
+				ImageTransparency = 0.3
+			}):Play()
+		end
+	end
+
+	globalSettingsButton.MouseEnter:Connect(function()
+		ChangeGlobalSettingsButtonState("Hover")
+	end)
+	globalSettingsButton.MouseLeave:Connect(function()
+		ChangeGlobalSettingsButtonState("Default")
+	end)
+
+	local titleFrame = Instance.new("Frame")
+	titleFrame.Name = "TitleFrame"
+	titleFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	titleFrame.BackgroundTransparency = 1
+	titleFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	titleFrame.BorderSizePixel = 0
+	titleFrame.Size = UDim2.fromScale(1, 1)
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.FontFace = Font.new(
+		assets.interFont,
+		Enum.FontWeight.SemiBold,
+		Enum.FontStyle.Normal
+	)
+	title.Text = Settings.Title
+	title.TextColor3 = Color3.fromRGB(255, 255, 255)
+	title.RichText = true
+	title.TextSize = 18
+	title.TextTransparency = 0.1
+	title.TextTruncate = Enum.TextTruncate.SplitWord
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextYAlignment = Enum.TextYAlignment.Top
+	title.AutomaticSize = Enum.AutomaticSize.Y
+	title.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	title.BackgroundTransparency = 1
+	title.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	title.BorderSizePixel = 0
+	title.Size = UDim2.new(1, -20, 0, 0)
+	title.Parent = titleFrame
+
+	local subtitle = Instance.new("TextLabel")
+	subtitle.Name = "Subtitle"
+	subtitle.FontFace = Font.new(
+		assets.interFont,
+		Enum.FontWeight.Medium,
+		Enum.FontStyle.Normal
+	)
+	subtitle.RichText = true
+	subtitle.Text = Settings.Subtitle
+	subtitle.RichText = true
+	subtitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+	subtitle.TextSize = 12
+	subtitle.TextTransparency = 0.7
+	subtitle.TextTruncate = Enum.TextTruncate.SplitWord
+	subtitle.TextXAlignment = Enum.TextXAlignment.Left
+	subtitle.TextYAlignment = Enum.TextYAlignment.Top
+	subtitle.AutomaticSize = Enum.AutomaticSize.Y
+	subtitle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	subtitle.BackgroundTransparency = 1
+	subtitle.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	subtitle.BorderSizePixel = 0
+	subtitle.LayoutOrder = 1
+	subtitle.Size = UDim2.new(1, -20, 0, 0)
+	subtitle.Parent = titleFrame
+
+	local titleFrameUIListLayout = Instance.new("UIListLayout")
+	titleFrameUIListLayout.Name = "TitleFrameUIListLayout"
+	titleFrameUIListLayout.Padding = UDim.new(0, 3)
+	titleFrameUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	titleFrameUIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	titleFrameUIListLayout.Parent = titleFrame
+
+	titleFrame.Parent = informationHolder
+
+	informationHolder.Parent = information
+
+	information.Parent = sidebar
+
+	local sidebarGroup = Instance.new("Frame")
+	sidebarGroup.Name = "SidebarGroup"
+	sidebarGroup.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	sidebarGroup.BackgroundTransparency = 1
+	sidebarGroup.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	sidebarGroup.BorderSizePixel = 0
+	sidebarGroup.Position = UDim2.fromOffset(0, 91)
+	sidebarGroup.Size = UDim2.new(1, 0, 1, -91)
+
+	local userInfo = Instance.new("Frame")
+	userInfo.Name = "UserInfo"
+	userInfo.AnchorPoint = Vector2.new(0, 1)
+	userInfo.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	userInfo.BackgroundTransparency = 1
+	userInfo.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	userInfo.BorderSizePixel = 0
+	userInfo.Position = UDim2.fromScale(0, 1)
+	userInfo.Size = UDim2.new(1, 0, 0, 107)
+
+	local informationGroup = Instance.new("Frame")
+	informationGroup.Name = "InformationGroup"
+	informationGroup.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	informationGroup.BackgroundTransparency = 1
+	informationGroup.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	informationGroup.BorderSizePixel = 0
+	informationGroup.Size = UDim2.fromScale(1, 1)
+
+	local informationGroupUIPadding = Instance.new("UIPadding")
+	informationGroupUIPadding.Name = "InformationGroupUIPadding"
+	informationGroupUIPadding.PaddingBottom = UDim.new(0, 17)
+	informationGroupUIPadding.PaddingLeft = UDim.new(0, 25)
+	informationGroupUIPadding.Parent = informationGroup
+
+	local informationGroupUIListLayout = Instance.new("UIListLayout")
+	informationGroupUIListLayout.Name = "InformationGroupUIListLayout"
+	informationGroupUIListLayout.FillDirection = Enum.FillDirection.Horizontal
+	informationGroupUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	informationGroupUIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	informationGroupUIListLayout.Parent = informationGroup
+
+	local userId = LocalPlayer.UserId
+	local thumbType = Enum.ThumbnailType.AvatarBust
+	local thumbSize = Enum.ThumbnailSize.Size48x48
+	local headshotImage, isReady = Players:GetUserThumbnailAsync(userId, thumbType, thumbSize)
+
+	local headshot = Instance.new("ImageLabel")
+	headshot.Name = "Headshot"
+	headshot.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	headshot.BackgroundTransparency = 1
+	headshot.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	headshot.BorderSizePixel = 0
+	headshot.Size = UDim2.fromOffset(32, 32)
+	headshot.Image = (isReady and headshotImage) or "rbxassetid://0"
+
+	local uICorner3 = Instance.new("UICorner")
+	uICorner3.Name = "UICorner"
+	uICorner3.CornerRadius = UDim.new(1, 0)
+	uICorner3.Parent = headshot
+
+	local baseUIStroke2 = Instance.new("UIStroke")
+	baseUIStroke2.Name = "BaseUIStroke"
+	baseUIStroke2.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	baseUIStroke2.Color = Color3.fromRGB(255, 255, 255)
+	baseUIStroke2.Transparency = 0.9
+	baseUIStroke2.Parent = headshot
+
+	headshot.Parent = informationGroup
+
+	local userAndDisplayFrame = Instance.new("Frame")
+	userAndDisplayFrame.Name = "UserAndDisplayFrame"
+	userAndDisplayFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	userAndDisplayFrame.BackgroundTransparency = 1
+	userAndDisplayFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	userAndDisplayFrame.BorderSizePixel = 0
+	userAndDisplayFrame.LayoutOrder = 1
+	userAndDisplayFrame.Size = UDim2.new(1, -42, 0, 32)
+
+	local displayName = Instance.new("TextLabel")
+	displayName.Name = "DisplayName"
+	displayName.FontFace = Font.new(
+		assets.interFont,
+		Enum.FontWeight.SemiBold,
+		Enum.FontStyle.Normal
+	)
+	displayName.Text = LocalPlayer.DisplayName
+	displayName.TextColor3 = Color3.fromRGB(255, 255, 255)
+	displayName.TextSize = 13
+	displayName.TextTransparency = 0.1
+	displayName.TextTruncate = Enum.TextTruncate.SplitWord
+	displayName.TextXAlignment = Enum.TextXAlignment.Left
+	displayName.TextYAlignment = Enum.TextYAlignment.Top
+	displayName.AutomaticSize = Enum.AutomaticSize.XY
+	displayName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	displayName.BackgroundTransparency = 1
+	displayName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	displayName.BorderSizePixel = 0
+	displayName.Parent = userAndDisplayFrame
+	displayName.Size = UDim2.fromScale(1,0)
+
+	local userAndDisplayFrameUIPadding = Instance.new("UIPadding")
+	userAndDisplayFrameUIPadding.Name = "UserAndDisplayFrameUIPadding"
+	userAndDisplayFrameUIPadding.PaddingLeft = UDim.new(0, 8)
+	userAndDisplayFrameUIPadding.PaddingTop = UDim.new(0, 3)
+	userAndDisplayFrameUIPadding.Parent = userAndDisplayFrame
+
+	local userAndDisplayFrameUIListLayout = Instance.new("UIListLayout")
+	userAndDisplayFrameUIListLayout.Name = "UserAndDisplayFrameUIListLayout"
+	userAndDisplayFrameUIListLayout.Padding = UDim.new(0, 1)
+	userAndDisplayFrameUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	userAndDisplayFrameUIListLayout.Parent = userAndDisplayFrame
+
+	local username = Instance.new("TextLabel")
+	username.Name = "Username"
+	username.FontFace = Font.new(
+		assets.interFont,
+		Enum.FontWeight.SemiBold,
+		Enum.FontStyle.Normal
+	)
+	username.Text = "@" .. LocalPlayer.Name
+	username.TextColor3 = Color3.fromRGB(255, 255, 255)
+	username.TextSize = 12
+	username.TextTransparency = 0.7
+	username.TextTruncate = Enum.TextTruncate.SplitWord
+	username.TextXAlignment = Enum.TextXAlignment.Left
+	username.TextYAlignment = Enum.TextYAlignment.Top
+	username.AutomaticSize = Enum.AutomaticSize.XY
+	username.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	username.BackgroundTransparency = 1
+	username.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	username.BorderSizePixel = 0
+	username.LayoutOrder = 1
+	username.Parent = userAndDisplayFrame
+	username.Size = UDim2.fromScale(1,0)
+
+	userAndDisplayFrame.Parent = informationGroup
+
+	informationGroup.Parent = userInfo
+
+	local userInfoUIPadding = Instance.new("UIPadding")
+	userInfoUIPadding.Name = "UserInfoUIPadding"
+	userInfoUIPadding.PaddingLeft = UDim.new(0, 10)
+	userInfoUIPadding.PaddingRight = UDim.new(0, 10)
+	userInfoUIPadding.Parent = userInfo
+
+	userInfo.Parent = sidebarGroup
+
+	local sidebarGroupUIPadding = Instance.new("UIPadding")
+	sidebarGroupUIPadding.Name = "SidebarGroupUIPadding"
+	sidebarGroupUIPadding.PaddingLeft = UDim.new(0, 10)
+	sidebarGroupUIPadding.PaddingRight = UDim.new(0, 10)
+	sidebarGroupUIPadding.PaddingTop = UDim.new(0, 31)
+	sidebarGroupUIPadding.Parent = sidebarGroup
+
+	local tabSwitchers = Instance.new("Frame")
+	tabSwitchers.Name = "TabSwitchers"
+	tabSwitchers.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	tabSwitchers.BackgroundTransparency = 1
+	tabSwitchers.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	tabSwitchers.BorderSizePixel = 0
+	tabSwitchers.Size = UDim2.new(1, 0, 1, -107)
+
+	local tabSwitchersScrollingFrame = Instance.new("ScrollingFrame")
+	tabSwitchersScrollingFrame.Name = "TabSwitchersScrollingFrame"
+	tabSwitchersScrollingFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	tabSwitchersScrollingFrame.BottomImage = ""
+	tabSwitchersScrollingFrame.CanvasSize = UDim2.new()
+	tabSwitchersScrollingFrame.ScrollBarImageTransparency = 0.8
+	tabSwitchersScrollingFrame.ScrollBarThickness = 1
+	tabSwitchersScrollingFrame.TopImage = ""
+	tabSwitchersScrollingFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	tabSwitchersScrollingFrame.BackgroundTransparency = 1
+	tabSwitchersScrollingFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	tabSwitchersScrollingFrame.BorderSizePixel = 0
+	tabSwitchersScrollingFrame.Size = UDim2.fromScale(1, 1)
+
+	local tabSwitchersScrollingFrameUIListLayout = Instance.new("UIListLayout")
+	tabSwitchersScrollingFrameUIListLayout.Name = "TabSwitchersScrollingFrameUIListLayout"
+	tabSwitchersScrollingFrameUIListLayout.Padding = UDim.new(0, 17)
+	tabSwitchersScrollingFrameUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	tabSwitchersScrollingFrameUIListLayout.Parent = tabSwitchersScrollingFrame
+
+	local tabSwitchersScrollingFrameUIPadding = Instance.new("UIPadding")
+	tabSwitchersScrollingFrameUIPadding.Name = "TabSwitchersScrollingFrameUIPadding"
+	tabSwitchersScrollingFrameUIPadding.PaddingTop = UDim.new(0, 2)
+	tabSwitchersScrollingFrameUIPadding.Parent = tabSwitchersScrollingFrame
+
+	tabSwitchersScrollingFrame.Parent = tabSwitchers
+
+	tabSwitchers.Parent = sidebarGroup
+
+	sidebarGroup.Parent = sidebar
+
+	sidebar.Parent = base
+
+	local content = Instance.new("Frame")
+	content.Name = "Content"
+	content.AnchorPoint = Vector2.new(1, 0)
+	content.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	content.BackgroundTransparency = 1
+	content.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	content.BorderSizePixel = 0
+	content.Position = UDim2.fromScale(1, 4.69e-08)
+	content.Size = UDim2.new(0, (base.AbsoluteSize.X - sidebar.AbsoluteSize.X), 1, 0)
+
+	local resizingContent = false
+	local defaultSidebarWidth = sidebar.AbsoluteSize.X
+	local initialMouseX, initialSidebarWidth
+	local snapRange = 20
+	local minSidebarWidth = 107
+	local maxSidebarWidth = base.AbsoluteSize.X - minSidebarWidth
+
+	local TweenSettings = {
+		DefaultTransparency = 0.9,
+		HoverTransparency = 0.85,
+
+		EasingStyle = Enum.EasingStyle.Sine
+	}
+
+	local function ChangeState(State)
+		Tween(divider, TweenInfo.new(0.2, TweenSettings.EasingStyle), {
+			BackgroundTransparency = State == "Idle" and TweenSettings.DefaultTransparency or TweenSettings.HoverTransparency
+		}):Play()  
+	end
+
+	dividerInteract.MouseEnter:Connect(function()
+		ChangeState("Hover")
+	end)
+	dividerInteract.MouseLeave:Connect(function()
+		ChangeState("Idle")
+	end)
+
+	dividerInteract.MouseButton1Down:Connect(function()
+		resizingContent = true
+		initialMouseX = UserInputService:GetMouseLocation().X
+		initialSidebarWidth = sidebar.AbsoluteSize.X
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			resizingContent = false
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if resizingContent and input.UserInputType == Enum.UserInputType.MouseMovement then
+			local deltaX = UserInputService:GetMouseLocation().X - initialMouseX
+			local newSidebarWidth = initialSidebarWidth + deltaX
+
+			if math.abs(newSidebarWidth - defaultSidebarWidth) < snapRange then
+				newSidebarWidth = defaultSidebarWidth
+			else
+				newSidebarWidth = math.clamp(newSidebarWidth, minSidebarWidth, maxSidebarWidth)
+			end
+
+			sidebar.Size = UDim2.new(0, newSidebarWidth, 1, 0)
+			content.Size = UDim2.new(0, base.AbsoluteSize.X - newSidebarWidth, 1, 0)
+		end
+	end)
+
+	local topbar = Instance.new("Frame")
+	topbar.Name = "Topbar"
+	topbar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	topbar.BackgroundTransparency = 1
+	topbar.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	topbar.BorderSizePixel = 0
+	topbar.Size = UDim2.new(1, 0, 0, 63)
+
+	local divider4 = Instance.new("Frame")
+	divider4.Name = "Divider"
+	divider4.AnchorPoint = Vector2.new(0, 1)
+	divider4.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	divider4.BackgroundTransparency = 0.9
+	divider4.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	divider4.BorderSizePixel = 0
+	divider4.Position = UDim2.fromScale(0, 1)
+	divider4.Size = UDim2.new(1, 0, 0, 1)
+	divider4.Parent = topbar
+
+	local elements = Instance.new("Frame")
+	elements.Name = "Elements"
+	elements.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	elements.BackgroundTransparency = 1
+	elements.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	elements.BorderSizePixel = 0
+	elements.Size = UDim2.fromScale(1, 1)
+
+	local uIPadding2 = Instance.new("UIPadding")
+	uIPadding2.Name = "UIPadding"
+	uIPadding2.PaddingLeft = UDim.new(0, 20)
+	uIPadding2.PaddingRight = UDim.new(0, 20)
+	uIPadding2.Parent = elements
+
+	local moveIcon = Instance.new("ImageButton")
+	moveIcon.Name = "MoveIcon"
+	moveIcon.Image = assets.transform
+	moveIcon.ImageTransparency = 0.7
+	moveIcon.AnchorPoint = Vector2.new(1, 0.5)
+	moveIcon.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	moveIcon.BackgroundTransparency = 1
+	moveIcon.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	moveIcon.BorderSizePixel = 0
+	moveIcon.Position = UDim2.fromScale(1, 0.5)
+	-- FIX3: _isMobileHide нужна до moveIcon и hideIconBtn
+	local _isMobileHide = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	moveIcon.Size = _isMobileHide and UDim2.fromOffset(26, 26) or UDim2.fromOffset(15, 15)
+	moveIcon.Parent = elements
+	moveIcon.Visible = (not Settings.DragStyle or Settings.DragStyle == 1)
+
+	-- Кнопка скрытия UI (только на мобильных, рядом с drag иконкой, симметрично слева)
+	local hideIconBtn = Instance.new("ImageButton")
+	hideIconBtn.Name = "HideIconBtn"
+	hideIconBtn.Image = "rbxassetid://125716871945612"
+	hideIconBtn.ImageTransparency = 0.5
+	hideIconBtn.BackgroundTransparency = 1
+	hideIconBtn.BorderSizePixel = 0
+	-- FIX3+FIX4: умеренная hit-area для мобильных, левее moveIcon
+	hideIconBtn.AnchorPoint = Vector2.new(1, 0.5)
+	hideIconBtn.Position = UDim2.new(1, -46, 0.5, 0)
+	hideIconBtn.Size = UDim2.fromOffset(26, 26)
+	hideIconBtn.Visible = _isMobileHide and (not Settings.DragStyle or Settings.DragStyle == 1)
+	hideIconBtn.ZIndex = 5
+	hideIconBtn.AutoButtonColor = false
+	hideIconBtn.Parent = elements
+
+	-- FIX4: таблица кастомных topbar иконок (добавляются левее hideIconBtn)
+	local _topbarIcons = {}
+	local _topbarIconBaseOffset = 46  -- начальный отступ от правого края (левее hideIconBtn)
+
+	local function _refreshTopbarIconPositions()
+		local offset = _topbarIconBaseOffset
+		for i = #_topbarIcons, 1, -1 do
+			local btn = _topbarIcons[i]
+			local sz = btn.Size.X.Offset
+			offset = offset + sz + 4
+			btn.Position = UDim2.new(1, -offset + sz/2 + _topbarIconBaseOffset - sz/2, 0.5, 0)
+		end
+	end
+
+	-- Метод добавления кастомной topbar иконки (вызывается через WindowFunctions)
+	-- Возвращает объект с методом :Destroy()
+	local function _addTopbarIcon(iconSettings)
+		local iconBtn = Instance.new("ImageButton")
+		iconBtn.Name = "TopbarCustomIcon"
+		iconBtn.Image = iconSettings.Image or ""
+		iconBtn.ImageTransparency = iconSettings.ImageTransparency or 0.5
+		iconBtn.BackgroundTransparency = 1
+		iconBtn.BorderSizePixel = 0
+		iconBtn.AnchorPoint = Vector2.new(1, 0.5)
+		local sz = iconSettings.Size or (_isMobileHide and 24 or 16)
+		iconBtn.Size = UDim2.fromOffset(sz, sz)
+		iconBtn.ZIndex = 5
+		iconBtn.AutoButtonColor = false
+		iconBtn.Visible = true
+		iconBtn.Parent = elements
+
+		table.insert(_topbarIcons, iconBtn)
+		-- пересчитать позиции
+		local offset = 0
+		for i = #_topbarIcons, 1, -1 do
+			local btn = _topbarIcons[i]
+			local bsz = btn.Size.X.Offset
+			offset = offset + bsz + 4
+			btn.Position = UDim2.new(1, -(_topbarIconBaseOffset + offset - bsz - 4) - bsz/2 - 4, 0.5, 0)
+		end
+
+		if iconSettings.Callback then
+			local _db = false
+			iconBtn.Activated:Connect(function()
+				if _db then return end
+				_db = true
+				Tween(iconBtn, TweenInfo.new(0.07, Enum.EasingStyle.Sine), {ImageTransparency = 0.05}):Play()
+				task.delay(0.12, function()
+					Tween(iconBtn, TweenInfo.new(0.15, Enum.EasingStyle.Sine), {
+						ImageTransparency = iconSettings.ImageTransparency or 0.5
+					}):Play()
+					_db = false
+				end)
+				task.spawn(iconSettings.Callback)
+			end)
+		end
+
+		local iconObj = {}
+		function iconObj:Destroy()
+			iconBtn:Destroy()
+			for i, v in ipairs(_topbarIcons) do
+				if v == iconBtn then table.remove(_topbarIcons, i) break end
+			end
+		end
+		function iconObj:SetImage(id) iconBtn.Image = id end
+		function iconObj:SetVisible(s) iconBtn.Visible = s end
+		function iconObj:SetTransparency(t) iconBtn.ImageTransparency = t end
+		return iconObj
+	end
+
+	hideIconBtn.MouseEnter:Connect(function()
+		Tween(hideIconBtn, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {ImageTransparency = 0.2}):Play()
+	end)
+	hideIconBtn.MouseLeave:Connect(function()
+		Tween(hideIconBtn, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {ImageTransparency = 0.5}):Play()
+	end)
+	-- FIX2c+FIX3: единый Activated — работает на Touch и Mouse без ручного трекинга
+	local _hideDebounce = false
+	hideIconBtn.Activated:Connect(function()
+		if _hideDebounce then return end
+		_hideDebounce = true
+		Tween(hideIconBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {ImageTransparency = 0.05}):Play()
+		task.delay(0.1, function()
+			Tween(hideIconBtn, TweenInfo.new(0.12, Enum.EasingStyle.Sine), {ImageTransparency = 0.5}):Play()
+		end)
+		local ns = not WindowFunctions:GetState()
+		WindowFunctions:SetState(ns)
+		task.delay(0.4, function() _hideDebounce = false end)
+	end)
+
+	local interact = Instance.new("TextButton")
+	interact.Name = "Interact"
+	interact.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json")
+	interact.Text = ""
+	interact.TextColor3 = Color3.fromRGB(0, 0, 0)
+	interact.TextSize = 14
+	interact.AnchorPoint = Vector2.new(0.5, 0.5)
+	interact.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	interact.BackgroundTransparency = 1
+	interact.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	interact.BorderSizePixel = 0
+	interact.Position = UDim2.fromScale(0.5, 0.5)
+	interact.Size = UDim2.fromOffset(40, 40)
+	-- === iOS STYLE BAR (DragStyle=2) ===
+	-- Тонкая белая полоска внизу окна. Свайп вниз = скрыть, вверх = показать.
+	-- Тап по полоске = toggle hide/show.
+	if Settings.DragStyle == 2 then
+		-- Скрываем drag иконку и hide кнопку (они не нужны в style 2)
+		moveIcon.Visible = false
+		hideIconBtn.Visible = false
+
+		local iosBar = Instance.new("Frame")
+		iosBar.Name = "iOSBar"
+		iosBar.AnchorPoint = Vector2.new(0.5, 1)
+		iosBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		iosBar.BackgroundTransparency = 0.6
+		iosBar.BorderSizePixel = 0
+		iosBar.Position = UDim2.new(0.5, 0, 1, -8)
+		iosBar.Size = UDim2.fromOffset(120, 5)
+		iosBar.ZIndex = 10
+		iosBar.Parent = base
+		Instance.new("UICorner", iosBar).CornerRadius = UDim.new(1, 0)
+
+		-- Интерактивная зона — шире и выше полоски
+		local iosInteract = Instance.new("TextButton")
+		iosInteract.Text = ""
+		iosInteract.BackgroundTransparency = 1
+		iosInteract.AnchorPoint = Vector2.new(0.5, 1)
+		iosInteract.Position = UDim2.new(0.5, 0, 1, 0)
+		iosInteract.Size = UDim2.fromOffset(220, 40)
+		iosInteract.ZIndex = 11
+		iosInteract.Parent = base
+
+		-- Пульсация при ховере
+		iosInteract.MouseEnter:Connect(function()
+			Tween(iosBar, TweenInfo.new(0.15, Enum.EasingStyle.Sine), {
+				BackgroundTransparency = 0.3,
+				Size = UDim2.fromOffset(140, 6)
+			}):Play()
+		end)
+		iosInteract.MouseLeave:Connect(function()
+			Tween(iosBar, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {
+				BackgroundTransparency = 0.6,
+				Size = UDim2.fromOffset(120, 5)
+			}):Play()
+		end)
+
+		-- Тач: свайп вниз → скрыть, свайп вверх → показать, тап → toggle
+		local _iosTouchStart
+		local _iosTouchStartY
+		iosInteract.InputBegan:Connect(function(inp)
+			if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+				_iosTouchStart = inp.Position
+				_iosTouchStartY = inp.Position.Y
+				-- Анимация нажатия
+				Tween(iosBar, TweenInfo.new(0.08, Enum.EasingStyle.Sine), {
+					BackgroundTransparency = 0.1,
+					Size = UDim2.fromOffset(100, 5)
+				}):Play()
+			end
+		end)
+		iosInteract.InputEnded:Connect(function(inp)
+			if (inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1) and _iosTouchStart then
+				local dy = inp.Position.Y - _iosTouchStartY
+				Tween(iosBar, TweenInfo.new(0.15, Enum.EasingStyle.Sine), {
+					BackgroundTransparency = 0.6,
+					Size = UDim2.fromOffset(120, 5)
+				}):Play()
+				if math.abs(dy) > 30 then
+					-- Свайп
+					local shouldHide = dy > 0  -- вниз = скрыть
+					local newState = not shouldHide
+					if WindowFunctions:GetState() ~= newState then
+						WindowFunctions:SetState(newState)
+						updateToggleBtnIcon(newState)
+					end
+				else
+					-- Тап = toggle
+					local ns = not WindowFunctions:GetState()
+					WindowFunctions:SetState(ns)
+					updateToggleBtnIcon(ns)
+				end
+				_iosTouchStart = nil
+			end
+		end)
+	end
+	-- === END iOS STYLE BAR ===
+
+	interact.Parent = moveIcon
+
+	local function ChangemoveIconState(State)
+		if State == "Default" then
+			Tween(moveIcon, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {
+				ImageTransparency = 0.7
+			}):Play()
+		elseif State == "Hover" then
+			Tween(moveIcon, TweenInfo.new(0.2, Enum.EasingStyle.Sine), {
+				ImageTransparency = 0.4
+			}):Play()
+		end
+	end
+
+	interact.MouseEnter:Connect(function()
+		ChangemoveIconState("Hover")
+	end)
+	interact.MouseLeave:Connect(function()
+		ChangemoveIconState("Default")
+	end)
+
+	local dragging_ = false
+	local dragInput
+	local dragStart
+	local startPos
+
+	local function update(input)
+		local delta = input.Position - dragStart
+		base.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+
+	local function onDragStart(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging_ = true
+			dragStart = input.Position
+			startPos = base.Position
+
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging_ = false
+				end
+			end)
+		end
+	end
+
+	local function onDragUpdate(input)
+		if dragging_ and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			dragInput = input
+		end
+	end
+
+	if not Settings.DragStyle or Settings.DragStyle == 1 then
+		interact.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				onDragStart(input)
+			end
+		end)
+
+		interact.InputChanged:Connect(onDragUpdate)
+
+		UserInputService.InputChanged:Connect(function(input)
+			if input == dragInput and dragging_ then
+				update(input)
+			end
+		end)
+
+		interact.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				dragging_ = false
+			end
+		end)
+	elseif Settings.DragStyle == 2 then
+		base.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				onDragStart(input)
+			end
+		end)
+
+		base.InputChanged:Connect(onDragUpdate)
+
+		UserInputService.InputChanged:Connect(function(input)
+			if input == dragInput and dragging_ then
+				update(input)
+			end
+		end)
+
+		base.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				dragging_ = false
+			end
+		end)
+	end
+
+	local currentTab = Instance.new("TextLabel")
+	currentTab.Name = "CurrentTab"
+	currentTab.FontFace = Font.new(assets.interFont)
+	currentTab.RichText = true
+	currentTab.Text = ""
+	currentTab.RichText = true
+	currentTab.TextColor3 = Color3.fromRGB(255, 255, 255)
+	currentTab.TextSize = 15
+	currentTab.TextTransparency = 0.5
+	currentTab.TextTruncate = Enum.TextTruncate.SplitWord
+	currentTab.TextXAlignment = Enum.TextXAlignment.Left
+	currentTab.TextYAlignment = Enum.TextYAlignment.Top
+	currentTab.AnchorPoint = Vector2.new(0, 0.5)
+	currentTab.AutomaticSize = Enum.AutomaticSize.Y
+	currentTab.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	currentTab.BackgroundTransparency = 1
+	currentTab.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	currentTab.BorderSizePixel = 0
+	currentTab.Position = UDim2.fromScale(0, 0.5)
+	currentTab.Size = UDim2.fromScale(0.9, 0)
+	currentTab.Parent = elements
+
+	elements.Parent = topbar
+
+	topbar.Parent = content
+
+	content.Parent = base
+
+	local globalSettings = Instance.new("Frame")
+	globalSettings.Name = "GlobalSettings"
+	globalSettings.AutomaticSize = Enum.AutomaticSize.XY
+	globalSettings.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+	globalSettings.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	globalSettings.BorderSizePixel = 0
+	globalSettings.Position = UDim2.fromScale(0.298, 0.104)
+
+	local globalSettingsUIStroke = Instance.new("UIStroke")
+	globalSettingsUIStroke.Name = "GlobalSettingsUIStroke"
+	globalSettingsUIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	globalSettingsUIStroke.Color = Color3.fromRGB(255, 255, 255)
+	globalSettingsUIStroke.Transparency = 0.9
+	globalSettingsUIStroke.Parent = globalSettings
+
+	local globalSettingsUICorner = Instance.new("UICorner")
+	globalSettingsUICorner.Name = "GlobalSettingsUICorner"
+	globalSettingsUICorner.CornerRadius = UDim.new(0, 10)
+	globalSettingsUICorner.Parent = globalSettings
+
+	local globalSettingsUIPadding = Instance.new("UIPadding")
+	globalSettingsUIPadding.Name = "GlobalSettingsUIPadding"
+	globalSettingsUIPadding.PaddingBottom = UDim.new(0, 10)
+	globalSettingsUIPadding.PaddingTop = UDim.new(0, 10)
+	globalSettingsUIPadding.Parent = globalSettings
+
+	local globalSettingsUIListLayout = Instance.new("UIListLayout")
+	globalSettingsUIListLayout.Name = "GlobalSettingsUIListLayout"
+	globalSettingsUIListLayout.Padding = UDim.new(0, 5)
+	globalSettingsUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	globalSettingsUIListLayout.Parent = globalSettings
+
+	local globalSettingsUIScale = Instance.new("UIScale")
+	globalSettingsUIScale.Name = "GlobalSettingsUIScale"
+	globalSettingsUIScale.Scale = 1e-07
+	globalSettingsUIScale.Parent = globalSettings
+	globalSettings.Parent = base
+	base.Parent = macLib
+
+	-- === FLOATING TOGGLE BUTTON (fixed, no drag) ===
+	local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	local TOGGLE_ICON_OPEN  = "rbxassetid://7908530085"
+	local TOGGLE_ICON_CLOSE = "rbxassetid://130629964514885"
+	-- Реестр всех GUI созданных MacLib — уничтожаются при Unload
+	local _macLibGuis = {}
+	local function _registerGui(g) _macLibGuis[#_macLibGuis+1] = g end
+
+	-- FIX2: toggleBtn в том же macLib ScreenGui с максимальным ZIndex → всегда поверх UI
+	local toggleBtn = Instance.new("ImageButton")
+	toggleBtn.Name = "MacLibToggleBtn"
+	toggleBtn.AnchorPoint = Vector2.new(0.5, 0)
+	toggleBtn.Position    = UDim2.new(0.5, 0, 0, 14)
+	-- FIX2: мобайл = 40px + 75% прозрачность; ПК = скрыт по умолчанию
+	local _isMobileToggle = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	toggleBtn.Size = _isMobileToggle and UDim2.fromOffset(40, 40) or UDim2.fromOffset(44, 44)
+	toggleBtn.BackgroundColor3 = Color3.fromRGB(12, 12, 14)
+	toggleBtn.BackgroundTransparency = _isMobileToggle and 0.75 or 0.08
+	toggleBtn.Visible = _isMobileToggle  -- ПК: скрыт, включить через SetToggleBtnVisible(true)
+	toggleBtn.BorderSizePixel = 0
+	toggleBtn.Image = ""
+	toggleBtn.AutoButtonColor = false
+	toggleBtn.ZIndex = 9999
+	toggleBtn.Parent = macLib
+	Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 12)
+	local _tbs = Instance.new("UIStroke")
+	_tbs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	_tbs.Color = Color3.fromRGB(255, 255, 255)
+	_tbs.Transparency = 0.88
+	_tbs.Thickness = 1
+	_tbs.Parent = toggleBtn
+	local toggleBtnIcon = Instance.new("ImageLabel")
+	toggleBtnIcon.Name = "Icon"
+	toggleBtnIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+	toggleBtnIcon.Position = UDim2.fromScale(0.5, 0.5)
+	toggleBtnIcon.Size = UDim2.fromOffset(24, 24)
+	toggleBtnIcon.BackgroundTransparency = 1
+	toggleBtnIcon.BorderSizePixel = 0
+	toggleBtnIcon.Image = TOGGLE_ICON_OPEN
+	toggleBtnIcon.ImageColor3 = Color3.fromRGB(255, 255, 255)
+	toggleBtnIcon.ImageTransparency = 0.05
+	toggleBtnIcon.ZIndex = 11
+	toggleBtnIcon.Parent = toggleBtn
+	-- FIX7: делаем updateToggleBtnIcon доступной для SetState через upvalue
+	-- Хранит пользовательский цвет кнопки (через StyleToggleButton), чтобы не сбрасывать его при клике
+	local _toggleBtnCustomColor = nil  -- nil = использовать дефолт
+	local _updateToggleBtnIcon
+	local function updateToggleBtnIcon(state)
+		-- FIX4: плавная анимация иконки — fade out → swap → fade in + лёгкое вращение
+		local tweenOut = Tween(toggleBtnIcon, TweenInfo.new(0.1, Enum.EasingStyle.Sine, Enum.EasingDirection.In), {
+			ImageTransparency = 1,
+			Rotation = state and 45 or -45
+		})
+		tweenOut:Play()
+		tweenOut.Completed:Connect(function()
+			toggleBtnIcon.Image = state and TOGGLE_ICON_CLOSE or TOGGLE_ICON_OPEN
+			toggleBtnIcon.Rotation = state and -45 or 45
+			Tween(toggleBtnIcon, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+				ImageTransparency = 0.05,
+				Rotation = 0
+			}):Play()
+		end)
+		-- Используем пользовательский цвет если он задан, иначе дефолтные
+		local defaultOpen  = Color3.fromRGB(12, 12, 14)
+		local defaultClose = Color3.fromRGB(16, 6, 6)
+		local targetColor = _toggleBtnCustomColor or (state and defaultClose or defaultOpen)
+		Tween(toggleBtn, TweenInfo.new(0.18, Enum.EasingStyle.Sine), {
+			BackgroundColor3 = targetColor
+		}):Play()
+	end
+	_updateToggleBtnIcon = updateToggleBtnIcon
+	-- FIX2: используем UIScale для анимации нажатия, Size не трогаем
+	local _toggleBtnScale = Instance.new("UIScale")
+	_toggleBtnScale.Scale = 1
+	_toggleBtnScale.Parent = toggleBtn
+	local function animateToggleBtn()
+		Tween(_toggleBtnScale, TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 0.82}):Play()
+		task.delay(0.1, function()
+			Tween(_toggleBtnScale, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+		end)
+	end
+
+	-- FIX1: Activated работает и на Touch и на Mouse — единый обработчик
+	local _toggleBtnDebounce = false
+	local function _doToggle()
+		if _toggleBtnDebounce then return end
+		_toggleBtnDebounce = true
+		animateToggleBtn()
+		local ns = not WindowFunctions:GetState()
+		WindowFunctions:SetState(ns)
+		-- updateToggleBtnIcon вызовется через SetState→_updateToggleBtnIcon
+		task.delay(0.3, function() _toggleBtnDebounce = false end)
+	end
+	toggleBtn.Activated:Connect(_doToggle)
+	toggleBtn.MouseButton1Click:Connect(_doToggle)
+	updateToggleBtnIcon(true)
+
+	-- Применяем параметры Window для toggleBtn
+	if Settings.ToggleBtnPosition  then toggleBtn.Position = Settings.ToggleBtnPosition end
+	if Settings.ToggleBtnSize      then toggleBtn.Size = UDim2.fromOffset(Settings.ToggleBtnSize, Settings.ToggleBtnSize) end
+	if Settings.ToggleBtnColor     then toggleBtn.BackgroundColor3 = Settings.ToggleBtnColor end
+	if Settings.ToggleBtnVisible   ~= nil then toggleBtn.Visible = Settings.ToggleBtnVisible end
+
+	-- Clean up when window is unloaded
+	local _origUnload = WindowFunctions.Unload
+	function WindowFunctions:Unload()
+		for _, g in ipairs(_macLibGuis) do
+			pcall(function() g:Destroy() end)
+		end
+		_origUnload(self)
+	end
+	-- === END MOBILE TOGGLE BUTTON ===
+
+	function WindowFunctions:UpdateTitle(NewTitle)
+		title.Text = NewTitle
+	end
+
+	function WindowFunctions:UpdateSubtitle(NewSubtitle)
+		subtitle.Text = NewSubtitle
+	end
+
+	local hovering
+	local toggled = globalSettingsUIScale.Scale == 1 and true or false
+	local function toggle()
+		if not toggled then
+			local intween = Tween(globalSettingsUIScale, TweenInfo.new(0.2, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
+				Scale = 1
+			})
+			intween:Play()
+			intween.Completed:Wait()
+			toggled = true
+		elseif toggled then
+			local outtween = Tween(globalSettingsUIScale, TweenInfo.new(0.2, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
+				Scale = 0
+			})
+			outtween:Play()
+			outtween.Completed:Wait()
+			toggled = false
+		end
+	end
+	-- FIX3: Activated работает и на Touch
+	globalSettingsButton.Activated:Connect(function()
+		if not hasGlobalSetting then return end
+		toggle()
+	end)
+	globalSettings.MouseEnter:Connect(function()
+		hovering = true
+	end)
+	globalSettings.MouseLeave:Connect(function()
+		hovering = false
+	end)
+	UserInputService.InputEnded:Connect(function(inp)
+		if inp.UserInputType == Enum.UserInputType.MouseButton1 and toggled and not hovering then
+			toggle()
+		end
+	end)
+
+	local BlurTarget = base
+
+	local HS = HttpService
+	local camera = workspace.CurrentCamera
+	local MTREL = "Glass"
+	local binds = {}
+	local wedgeguid = HS:GenerateGUID(true)
+
+	local DepthOfField
+
+	for _,v in pairs(Lighting:GetChildren()) do
+		if not v:IsA("DepthOfFieldEffect") and v:HasTag(".") then
+			DepthOfField = Instance.new('DepthOfFieldEffect')
+			DepthOfField.FarIntensity = 0
+			DepthOfField.FocusDistance = 51.6
+			DepthOfField.InFocusRadius = 50
+			DepthOfField.NearIntensity = 1
+			DepthOfField.Name = HS:GenerateGUID(true)
+			DepthOfField:AddTag(".")
+		elseif v:IsA("DepthOfFieldEffect") and v:HasTag(".") then
+			DepthOfField = v
+		end
+	end
+
+	if not DepthOfField then
+		DepthOfField = Instance.new('DepthOfFieldEffect')
+		DepthOfField.FarIntensity = 0
+		DepthOfField.FocusDistance = 51.6
+		DepthOfField.InFocusRadius = 50
+		DepthOfField.NearIntensity = 1
+		DepthOfField.Name = HS:GenerateGUID(true)
+		DepthOfField:AddTag(".")
+	end
+
+	local frame = Instance.new('Frame')
+	frame.Parent = BlurTarget
+	frame.Size = UDim2.new(0.97, 0, 0.97, 0)
+	frame.Position = UDim2.new(0.5, 0, 0.5, 0)
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.BackgroundTransparency = 1
+	frame.Name = HS:GenerateGUID(true)
+
+	do
+		local function IsNotNaN(x)
+			return x == x
+		end
+		local continue = IsNotNaN(camera:ScreenPointToRay(0,0).Origin.x)
+		while not continue do
+			RunService.RenderStepped:Wait()
+			continue = IsNotNaN(camera:ScreenPointToRay(0,0).Origin.x)
+		end
+	end
+
+	local DrawQuad; do
+		local acos, max, pi, sqrt = math.acos, math.max, math.pi, math.sqrt
+		local sz = 0.2
+
+		local function DrawTriangle(v1, v2, v3, p0, p1)
+			local s1 = (v1 - v2).magnitude
+			local s2 = (v2 - v3).magnitude
+			local s3 = (v3 - v1).magnitude
+			local smax = max(s1, s2, s3)
+			local A, B, C
+			if s1 == smax then
+				A, B, C = v1, v2, v3
+			elseif s2 == smax then
+				A, B, C = v2, v3, v1
+			elseif s3 == smax then
+				A, B, C = v3, v1, v2
+			end
+
+			local para = ( (B-A).x*(C-A).x + (B-A).y*(C-A).y + (B-A).z*(C-A).z ) / (A-B).magnitude
+			local perp = sqrt((C-A).magnitude^2 - para*para)
+			local dif_para = (A - B).magnitude - para
+
+			local st = CFrame.new(B, A)
+			local za = CFrame.Angles(pi/2,0,0)
+
+			local cf0 = st
+
+			local Top_Look = (cf0 * za).lookVector
+			local Mid_Point = A + CFrame.new(A, B).lookVector * para
+			local Needed_Look = CFrame.new(Mid_Point, C).lookVector
+			local dot = Top_Look.x*Needed_Look.x + Top_Look.y*Needed_Look.y + Top_Look.z*Needed_Look.z
+
+			local ac = CFrame.Angles(0, 0, acos(dot))
+
+			cf0 = cf0 * ac
+			if ((cf0 * za).lookVector - Needed_Look).magnitude > 0.01 then
+				cf0 = cf0 * CFrame.Angles(0, 0, -2*acos(dot))
+			end
+			cf0 = cf0 * CFrame.new(0, perp/2, -(dif_para + para/2))
+
+			local cf1 = st * ac * CFrame.Angles(0, pi, 0)
+			if ((cf1 * za).lookVector - Needed_Look).magnitude > 0.01 then
+				cf1 = cf1 * CFrame.Angles(0, 0, 2*acos(dot))
+			end
+			cf1 = cf1 * CFrame.new(0, perp/2, dif_para/2)
+
+			if not p0 then
+				p0 = Instance.new('Part')
+				p0.FormFactor = 'Custom'
+				p0.TopSurface = 0
+				p0.BottomSurface = 0
+				p0.Anchored = true
+				p0.CanCollide = false
+				p0.CastShadow = false
+				p0.Material = MTREL
+				p0.Size = Vector3.new(sz, sz, sz)
+				p0.Name = HS:GenerateGUID(true)
+				local mesh = Instance.new('SpecialMesh', p0)
+				mesh.MeshType = 2
+				mesh.Name = wedgeguid
+			end
+			p0[wedgeguid].Scale = Vector3.new(0, perp/sz, para/sz)
+			p0.CFrame = cf0
+
+			if not p1 then
+				p1 = p0:clone()
+			end
+			p1[wedgeguid].Scale = Vector3.new(0, perp/sz, dif_para/sz)
+			p1.CFrame = cf1
+
+			return p0, p1
+		end
+
+		function DrawQuad(v1, v2, v3, v4, parts)
+			parts[1], parts[2] = DrawTriangle(v1, v2, v3, parts[1], parts[2])
+			parts[3], parts[4] = DrawTriangle(v3, v2, v4, parts[3], parts[4])
+		end
+	end
+
+	if binds[frame] then
+		return binds[frame].parts
+	end
+
+	local parts = {}
+
+	local parents = {}
+	do
+		local function add(child)
+			if child:IsA'GuiObject' then
+				parents[#parents + 1] = child
+				add(child.Parent)
+			end
+		end
+		add(frame)
+	end
+
+	local function IsVisible(instance)
+		while instance do
+			if instance:IsA("GuiObject") then
+				if not instance.Visible then
+					return false
+				end
+			elseif instance:IsA("ScreenGui") then
+				if not instance.Enabled then
+					return false
+				end
+				break
+			end
+			instance = instance.Parent
+		end
+		return true
+	end
+
+	local function UpdateOrientation(fetchProps)
+		if not IsVisible(frame) or not acrylicBlur or unloaded then
+			for _, pt in pairs(parts) do
+				pt.Parent = nil
+				DepthOfField.Enabled = false
+				DepthOfField.Parent = nil
+			end
+			return
+		end
+		if not DepthOfField.Parent then
+			DepthOfField.Parent = Lighting
+		end
+		DepthOfField.Enabled = true
+		local properties = {
+			Transparency = 0.98;
+			BrickColor = BrickColor.new('Institutional white');
+		}
+		local zIndex = 1 - 0.05*frame.ZIndex
+
+		local tl, br = frame.AbsolutePosition, frame.AbsolutePosition + frame.AbsoluteSize
+		local tr, bl = Vector2.new(br.x, tl.y), Vector2.new(tl.x, br.y)
+		do
+			local rot = 0;
+			for _, v in ipairs(parents) do
+				rot = rot + v.Rotation
+			end
+			if rot ~= 0 and rot%180 ~= 0 then
+				local mid = tl:lerp(br, 0.5)
+				local s, c = math.sin(math.rad(rot)), math.cos(math.rad(rot))
+				local vec = tl
+				tl = Vector2.new(c*(tl.x - mid.x) - s*(tl.y - mid.y), s*(tl.x - mid.x) + c*(tl.y - mid.y)) + mid
+				tr = Vector2.new(c*(tr.x - mid.x) - s*(tr.y - mid.y), s*(tr.x - mid.x) + c*(tr.y - mid.y)) + mid
+				bl = Vector2.new(c*(bl.x - mid.x) - s*(bl.y - mid.y), s*(bl.x - mid.x) + c*(bl.y - mid.y)) + mid
+				br = Vector2.new(c*(br.x - mid.x) - s*(br.y - mid.y), s*(br.x - mid.x) + c*(br.y - mid.y)) + mid
+			end
+		end
+		DrawQuad(
+			camera:ScreenPointToRay(tl.x, tl.y, zIndex).Origin, 
+			camera:ScreenPointToRay(tr.x, tr.y, zIndex).Origin, 
+			camera:ScreenPointToRay(bl.x, bl.y, zIndex).Origin, 
+			camera:ScreenPointToRay(br.x, br.y, zIndex).Origin, 
+			parts
+		)
+		if fetchProps then
+			for _, pt in pairs(parts) do
+				pt.Parent = camera
+			end
+			for propName, propValue in pairs(properties) do
+				for _, pt in pairs(parts) do
+					pt[propName] = propValue
+				end
+			end
+		end
+	end
+
+	UpdateOrientation(true)
+
+	RunService.RenderStepped:Connect(UpdateOrientation)
+
+	function WindowFunctions:GlobalSetting(Settings)
+		hasGlobalSetting = true
+		local GlobalSettingFunctions = {}
+		local globalSetting = Instance.new("TextButton")
+		globalSetting.Name = "GlobalSetting"
+		globalSetting.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json")
+		globalSetting.Text = ""
+		globalSetting.TextColor3 = Color3.fromRGB(0, 0, 0)
+		globalSetting.TextSize = 14
+		globalSetting.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		globalSetting.BackgroundTransparency = 1
+		globalSetting.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		globalSetting.BorderSizePixel = 0
+		globalSetting.Size = UDim2.fromOffset(200, 30)
+
+		local globalSettingToggleUIPadding = Instance.new("UIPadding")
+		globalSettingToggleUIPadding.Name = "GlobalSettingToggleUIPadding"
+		globalSettingToggleUIPadding.PaddingLeft = UDim.new(0, 15)
+		globalSettingToggleUIPadding.Parent = globalSetting
+
+		local settingName = Instance.new("TextLabel")
+		settingName.Name = "SettingName"
+		settingName.FontFace = Font.new(assets.interFont)
+		settingName.Text = Settings.Name
+		settingName.RichText = true
+		settingName.TextColor3 = Color3.fromRGB(255, 255, 255)
+		settingName.TextSize = 13
+		settingName.TextTransparency = 0.5
+		settingName.TextTruncate = Enum.TextTruncate.SplitWord
+		settingName.TextXAlignment = Enum.TextXAlignment.Left
+		settingName.TextYAlignment = Enum.TextYAlignment.Top
+		settingName.AnchorPoint = Vector2.new(0, 0.5)
+		settingName.AutomaticSize = Enum.AutomaticSize.Y
+		settingName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		settingName.BackgroundTransparency = 1
+		settingName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		settingName.BorderSizePixel = 0
+		settingName.Position = UDim2.fromScale(1.3e-07, 0.5)
+		settingName.Size = UDim2.new(1,-40,0,0)
+		settingName.Parent = globalSetting
+
+		local globalSettingToggleUIListLayout = Instance.new("UIListLayout")
+		globalSettingToggleUIListLayout.Name = "GlobalSettingToggleUIListLayout"
+		globalSettingToggleUIListLayout.Padding = UDim.new(0, 10)
+		globalSettingToggleUIListLayout.FillDirection = Enum.FillDirection.Horizontal
+		globalSettingToggleUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		globalSettingToggleUIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+		globalSettingToggleUIListLayout.Parent = globalSetting
+
+		local checkmark = Instance.new("TextLabel")
+		checkmark.Name = "Checkmark"
+		checkmark.FontFace = Font.new(
+			assets.interFont,
+			Enum.FontWeight.Medium,
+			Enum.FontStyle.Normal
+		)
+		checkmark.Text = "✓"
+		checkmark.TextColor3 = Color3.fromRGB(255, 255, 255)
+		checkmark.TextSize = 13
+		checkmark.TextTransparency = 1
+		checkmark.TextXAlignment = Enum.TextXAlignment.Left
+		checkmark.TextYAlignment = Enum.TextYAlignment.Top
+		checkmark.AnchorPoint = Vector2.new(0, 0.5)
+		checkmark.AutomaticSize = Enum.AutomaticSize.Y
+		checkmark.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		checkmark.BackgroundTransparency = 1
+		checkmark.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		checkmark.BorderSizePixel = 0
+		checkmark.LayoutOrder = -1
+		checkmark.Position = UDim2.fromScale(1.3e-07, 0.5)
+		checkmark.Size = UDim2.fromOffset(-10, 0)
+		checkmark.Parent = globalSetting
+
+		globalSetting.Parent = globalSettings
+
+		local tweensettings = {
+			duration = 0.2,
+			easingStyle = Enum.EasingStyle.Quint,
+			transparencyIn = 0.2,
+			transparencyOut = 0.5,
+			checkSizeIncrease = 12,
+			checkSizeDecrease = -globalSettingToggleUIListLayout.Padding.Offset,
+			waitTime = 1
+		}
+
+		local tweens = {
+			checkIn = Tween(checkmark, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle), {
+				Size = UDim2.new(checkmark.Size.X.Scale, tweensettings.checkSizeIncrease, checkmark.Size.Y.Scale, checkmark.Size.Y.Offset)
+			}),
+			checkOut = Tween(checkmark, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle),{
+				Size = UDim2.new(checkmark.Size.X.Scale, tweensettings.checkSizeDecrease, checkmark.Size.Y.Scale, checkmark.Size.Y.Offset)
+			}),
+			nameIn = Tween(settingName, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle),{
+				TextTransparency = tweensettings.transparencyIn
+			}),
+			nameOut = Tween(settingName, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle),{
+				TextTransparency = tweensettings.transparencyOut
+			})
+		}
+
+		local function Toggle(State)
+			if not State then
+				tweens.checkOut:Play()
+				tweens.nameOut:Play()
+				checkmark:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+					if checkmark.AbsoluteSize.X <= 0 then
+						checkmark.TextTransparency = 1
+					end
+				end)
+			else
+				tweens.checkIn:Play()
+				tweens.nameIn:Play()
+				checkmark:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+					if checkmark.AbsoluteSize.X > 0 then
+						checkmark.TextTransparency = 0
+					end
+				end)
+			end
+		end
+
+		local toggled = Settings.Default
+		Toggle(toggled)
+
+		globalSetting.MouseButton1Click:Connect(function()
+			toggled = not toggled
+			Toggle(toggled)
+
+			task.spawn(function()
+				if Settings.Callback then
+					Settings.Callback(toggled)
+				end
+			end)
+		end)
+
+		function GlobalSettingFunctions:UpdateName(NewName)
+			settingName.Text = NewName
+		end
+
+		function GlobalSettingFunctions:UpdateState(NewState)
+			Toggle(NewState)
+			toggled = NewState
+		end
+
+		return GlobalSettingFunctions
+	end
+
+	function WindowFunctions:TabGroup()
+		local SectionFunctions = {}
+
+		-- FIX Bug3: mobile scroll guard helper
+		local function _isMobileScrolling(instance)
+			if not isMobile then return false end
+			local p = instance
+			for _ = 1, 12 do
+				if not p then break end
+				if p:IsA("ScrollingFrame") and p:GetAttribute("_mobileScrolling") then
+					return true
+				end
+				p = p.Parent
+			end
+			return false
+		end
+
+		local tabGroup = Instance.new("Frame")
+		tabGroup.Name = "Section"
+		tabGroup.AutomaticSize = Enum.AutomaticSize.Y
+		tabGroup.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		tabGroup.BackgroundTransparency = 1
+		tabGroup.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		tabGroup.BorderSizePixel = 0
+		tabGroup.Size = UDim2.fromScale(1, 0)
+
+		local divider3 = Instance.new("Frame")
+		divider3.Name = "Divider"
+		divider3.AnchorPoint = Vector2.new(0.5, 1)
+		divider3.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		divider3.BackgroundTransparency = 0.9
+		divider3.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		divider3.BorderSizePixel = 0
+		divider3.Position = UDim2.fromScale(0.5, 1)
+		divider3.Size = UDim2.new(1, -21, 0, 1)
+		divider3.Parent = tabGroup
+
+		local sectionTabSwitchers = Instance.new("Frame")
+		sectionTabSwitchers.Name = "SectionTabSwitchers"
+		sectionTabSwitchers.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		sectionTabSwitchers.BackgroundTransparency = 1
+		sectionTabSwitchers.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		sectionTabSwitchers.BorderSizePixel = 0
+		sectionTabSwitchers.Size = UDim2.fromScale(1, 1)
+
+		local uIListLayout1 = Instance.new("UIListLayout")
+		uIListLayout1.Name = "UIListLayout"
+		uIListLayout1.Padding = UDim.new(0, 15)
+		uIListLayout1.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		uIListLayout1.SortOrder = Enum.SortOrder.LayoutOrder
+		uIListLayout1.Parent = sectionTabSwitchers
+
+		local uIPadding1 = Instance.new("UIPadding")
+		uIPadding1.Name = "UIPadding"
+		uIPadding1.PaddingBottom = UDim.new(0, 15)
+		uIPadding1.Parent = sectionTabSwitchers
+
+		sectionTabSwitchers.Parent = tabGroup
+		tabGroup.Parent = tabSwitchersScrollingFrame
+
+		function SectionFunctions:Tab(Settings)
+			local TabFunctions = {Settings = Settings}
+			local tabSwitcher = Instance.new("TextButton")
+			tabSwitcher.Name = "TabSwitcher"
+			tabSwitcher.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json")
+			tabSwitcher.Text = ""
+			tabSwitcher.TextColor3 = Color3.fromRGB(0, 0, 0)
+			tabSwitcher.TextSize = 14
+			tabSwitcher.AutoButtonColor = false
+			tabSwitcher.AnchorPoint = Vector2.new(0.5, 0)
+			tabSwitcher.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			tabSwitcher.BackgroundTransparency = 1
+			tabSwitcher.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			tabSwitcher.BorderSizePixel = 0
+			tabSwitcher.Position = UDim2.fromScale(0.5, 0)
+			tabSwitcher.Size = UDim2.new(1, -21, 0, 40)
+
+			tabIndex += 1
+			tabSwitcher.LayoutOrder = tabIndex
+
+			local tabSwitcherUICorner = Instance.new("UICorner")
+			tabSwitcherUICorner.Name = "TabSwitcherUICorner"
+			tabSwitcherUICorner.Parent = tabSwitcher
+
+			local tabSwitcherUIStroke = Instance.new("UIStroke")
+			tabSwitcherUIStroke.Name = "TabSwitcherUIStroke"
+			tabSwitcherUIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+			tabSwitcherUIStroke.Color = Color3.fromRGB(255, 255, 255)
+			tabSwitcherUIStroke.Transparency = 1
+			tabSwitcherUIStroke.Parent = tabSwitcher
+
+			local tabSwitcherUIListLayout = Instance.new("UIListLayout")
+			tabSwitcherUIListLayout.Name = "TabSwitcherUIListLayout"
+			tabSwitcherUIListLayout.Padding = UDim.new(0, 9)
+			tabSwitcherUIListLayout.FillDirection = Enum.FillDirection.Horizontal
+			tabSwitcherUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+			tabSwitcherUIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+			tabSwitcherUIListLayout.Parent = tabSwitcher
+
+			local tabImage
+
+			if Settings.Image then
+				tabImage = Instance.new("ImageLabel")
+				tabImage.Name = "TabImage"
+				tabImage.Image = Settings.Image
+				tabImage.ImageTransparency = 0.5
+				tabImage.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				tabImage.BackgroundTransparency = 1
+				tabImage.BorderColor3 = Color3.fromRGB(0, 0, 0)
+				tabImage.BorderSizePixel = 0
+				tabImage.Size = UDim2.fromOffset(18, 18)
+				tabImage.Parent = tabSwitcher
+			end
+
+			local tabSwitcherName = Instance.new("TextLabel")
+			tabSwitcherName.Name = "TabSwitcherName"
+			tabSwitcherName.FontFace = Font.new(
+				assets.interFont,
+				Enum.FontWeight.Medium,
+				Enum.FontStyle.Normal
+			)
+			tabSwitcherName.Text = Settings.Name
+			tabSwitcherName.RichText = true
+			tabSwitcherName.TextColor3 = Color3.fromRGB(255, 255, 255)
+			tabSwitcherName.TextSize = 16
+			tabSwitcherName.TextTransparency = 0.5
+			tabSwitcherName.TextTruncate = Enum.TextTruncate.SplitWord
+			tabSwitcherName.TextXAlignment = Enum.TextXAlignment.Left
+			tabSwitcherName.TextYAlignment = Enum.TextYAlignment.Top
+			tabSwitcherName.AutomaticSize = Enum.AutomaticSize.Y
+			tabSwitcherName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			tabSwitcherName.BackgroundTransparency = 1
+			tabSwitcherName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			tabSwitcherName.BorderSizePixel = 0
+			tabSwitcherName.Size = UDim2.fromScale(1, 0)
+			tabSwitcherName.Parent = tabSwitcher
+			tabSwitcherName.LayoutOrder = 1
+
+			local tabSwitcherUIPadding = Instance.new("UIPadding")
+			tabSwitcherUIPadding.Name = "TabSwitcherUIPadding"
+			tabSwitcherUIPadding.PaddingLeft = UDim.new(0, 24)
+			tabSwitcherUIPadding.PaddingRight = UDim.new(0, 35)
+			tabSwitcherUIPadding.PaddingTop = UDim.new(0, 1)
+			tabSwitcherUIPadding.Parent = tabSwitcher
+
+			tabSwitcher.Parent = sectionTabSwitchers
+
+			local elements1 = Instance.new("Frame")
+			elements1.Name = "Elements"
+			elements1.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			elements1.BackgroundTransparency = 1
+			elements1.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			elements1.BorderSizePixel = 0
+			elements1.Position = UDim2.fromOffset(0, 63)
+			elements1.Size = UDim2.new(1, 0, 1, -63)
+			elements1.ClipsDescendants = true
+
+			local elementsUIPadding = Instance.new("UIPadding")
+			elementsUIPadding.Name = "ElementsUIPadding"
+			elementsUIPadding.PaddingRight = UDim.new(0, 5)
+			elementsUIPadding.PaddingTop = UDim.new(0, 10)
+			elementsUIPadding.PaddingBottom = UDim.new(0, 10)
+			elementsUIPadding.Parent = elements1
+
+			local elementsScrolling = Instance.new("ScrollingFrame")
+			elementsScrolling.Name = "ElementsScrolling"
+			elementsScrolling.AutomaticCanvasSize = Enum.AutomaticSize.Y
+			elementsScrolling.BottomImage = ""
+			elementsScrolling.CanvasSize = UDim2.new()
+			elementsScrolling.ScrollBarImageTransparency = isMobile and 0.2 or 0.5  -- FIX: more visible on mobile
+			elementsScrolling.ScrollBarThickness = isMobile and 12 or 2  -- FIX: wider scrollbar on mobile
+			elementsScrolling.TopImage = ""
+			elementsScrolling.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			elementsScrolling.BackgroundTransparency = 1
+			elementsScrolling.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			elementsScrolling.BorderSizePixel = 0
+			elementsScrolling.Size = UDim2.fromScale(1, 1)
+			elementsScrolling.ClipsDescendants = false
+
+			-- FIX Bug3: mobile scroll guard — suppress element clicks during vertical swipe
+			if isMobile then
+				local _touchStart = nil
+				local _isScrolling = false
+				local _SCROLL_THRESH = 8  -- px vertical before we decide it's a scroll
+				local _TAP_THRESH = 4     -- px total move before we decide it's a drag not tap
+				local UserInputService2 = game:GetService("UserInputService")
+				elementsScrolling.InputBegan:Connect(function(inp)
+					if inp.UserInputType == Enum.UserInputType.Touch then
+						_touchStart = inp.Position
+						_isScrolling = false
+						inp.Changed:Connect(function()
+							if inp.UserInputState == Enum.UserInputState.End then
+								task.delay(0.05, function() _isScrolling = false end)
+							end
+						end)
+					end
+				end)
+				elementsScrolling.InputChanged:Connect(function(inp)
+					if inp.UserInputType == Enum.UserInputType.Touch and _touchStart then
+						local dy = math.abs(inp.Position.Y - _touchStart.Y)
+						local dx = math.abs(inp.Position.X - _touchStart.X)
+						if dy > _SCROLL_THRESH and dy > dx then
+							_isScrolling = true
+						end
+					end
+				end)
+				-- Expose scroll state so child elements can check it
+				elementsScrolling:SetAttribute("_mobileScrolling", false)
+				task.spawn(function()
+					while elementsScrolling.Parent do
+						elementsScrolling:SetAttribute("_mobileScrolling", _isScrolling)
+						task.wait(0.03)
+					end
+				end)
+			end
+
+			local elementsScrollingUIPadding = Instance.new("UIPadding")
+			elementsScrollingUIPadding.Name = "ElementsScrollingUIPadding"
+			elementsScrollingUIPadding.PaddingBottom = UDim.new(0, 5)
+			elementsScrollingUIPadding.PaddingLeft = UDim.new(0, 11)
+			elementsScrollingUIPadding.PaddingRight = UDim.new(0, 3)
+			elementsScrollingUIPadding.PaddingTop = UDim.new(0, 5)
+			elementsScrollingUIPadding.Parent = elementsScrolling
+
+			local elementsScrollingUIListLayout = Instance.new("UIListLayout")
+			elementsScrollingUIListLayout.Name = "ElementsScrollingUIListLayout"
+			elementsScrollingUIListLayout.Padding = UDim.new(0, 15)
+			elementsScrollingUIListLayout.FillDirection = Enum.FillDirection.Horizontal
+			elementsScrollingUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+			elementsScrollingUIListLayout.Parent = elementsScrolling
+
+			local left = Instance.new("Frame")
+			left.Name = "Left"
+			left.AutomaticSize = Enum.AutomaticSize.Y
+			left.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+			left.BackgroundTransparency = 1
+			left.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			left.BorderSizePixel = 0
+			left.Position = UDim2.fromScale(0.512, 0)
+			left.Size = UDim2.new(0.5, -10, 0, 0)
+
+			local leftUIListLayout = Instance.new("UIListLayout")
+			leftUIListLayout.Name = "LeftUIListLayout"
+			leftUIListLayout.Padding = UDim.new(0, 15)
+			leftUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+			leftUIListLayout.Parent = left
+
+			left.Parent = elementsScrolling
+
+			local right = Instance.new("Frame")
+			right.Name = "Right"
+			right.AutomaticSize = Enum.AutomaticSize.Y
+			right.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+			right.BackgroundTransparency = 1
+			right.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			right.BorderSizePixel = 0
+			right.LayoutOrder = 1
+			right.Position = UDim2.fromScale(0.512, 0)
+			right.Size = UDim2.new(0.5, -10, 0, 0)
+
+			local rightUIListLayout = Instance.new("UIListLayout")
+			rightUIListLayout.Name = "RightUIListLayout"
+			rightUIListLayout.Padding = UDim.new(0, 15)
+			rightUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+			rightUIListLayout.Parent = right
+
+			right.Parent = elementsScrolling
+
+			elementsScrolling.Parent = elements1
+
+			function TabFunctions:Section(Settings)
+				local SectionFunctions = {}
+				local section = Instance.new("Frame")
+				section.Name = "Section"
+				section.AutomaticSize = Enum.AutomaticSize.Y
+				section.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				section.BackgroundTransparency = 0.98
+				section.BorderColor3 = Color3.fromRGB(0, 0, 0)
+				section.BorderSizePixel = 0
+				section.Position = UDim2.fromScale(0, 6.78e-08)
+				section.Size = UDim2.fromScale(1, 0)
+				section.ClipsDescendants = false
+				section.Parent = Settings.Side == "Left" and left or right
+				SectionFunctions._frame = section
+
+				local sectionUICorner = Instance.new("UICorner")
+				sectionUICorner.Name = "SectionUICorner"
+				sectionUICorner.Parent = section
+
+				local sectionUIStroke = Instance.new("UIStroke")
+				sectionUIStroke.Name = "SectionUIStroke"
+				sectionUIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+				sectionUIStroke.Color = Color3.fromRGB(255, 255, 255)
+				sectionUIStroke.Transparency = 0.95
+				sectionUIStroke.Parent = section
+
+				local sectionUIListLayout = Instance.new("UIListLayout")
+				sectionUIListLayout.Name = "SectionUIListLayout"
+				sectionUIListLayout.Padding = UDim.new(0, 10)
+				sectionUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+				sectionUIListLayout.Parent = section
+
+				-- Element order counter: каждый новый элемент получает следующий LayoutOrder
+				-- Это гарантирует, что элементы появляются в порядке вызова, даже если они создаются через task.defer
+				local _nextLayoutOrder = 1
+				local function _nextOrder()
+					local n = _nextLayoutOrder
+					_nextLayoutOrder = _nextLayoutOrder + 1
+					return n
+				end
+				-- Expose _nextOrder on SectionFunctions for CreateCustomElement
+				SectionFunctions._nextOrder = _nextOrder
+
+				--[[
+					SectionFunctions:ReserveSlot(count)
+
+					Заранее резервирует N мест в секции (создаёт невидимые placeholder-контейнеры).
+					Возвращает массив { frame1, frame2, ... }.
+					Deferred-элементы потом перемещают свои фреймы в эти контейнеры через:
+					  frame.Parent = slot   -- слот уже имеет правильный LayoutOrder
+
+					Пример:
+					  local slots = sec:ReserveSlot(3)  -- до task.defer
+					  task.defer(function()
+					    local bar = sec:Slider(...)
+					    bar._frame.Parent = slots[1]    -- помещаем в зарезервированный слот
+					  end)
+				]]
+				function SectionFunctions:ReserveSlot(count)
+					count = count or 1
+					local slots = {}
+					for i = 1, count do
+						local slot = Instance.new("Frame")
+						slot.Name = "ReservedSlot_" .. i
+						slot.BackgroundTransparency = 1
+						slot.AutomaticSize = Enum.AutomaticSize.Y
+						slot.Size = UDim2.new(1, 0, 0, 0)
+						slot.BorderSizePixel = 0
+						slot.LayoutOrder = _nextOrder()
+						slot.Parent = section
+						table.insert(slots, slot)
+					end
+					return slots
+				end
+
+				local sectionUIPadding = Instance.new("UIPadding")
+				sectionUIPadding.Name = "SectionUIPadding"
+				sectionUIPadding.PaddingBottom = UDim.new(0, 20)
+				sectionUIPadding.PaddingLeft = UDim.new(0, 20)
+				sectionUIPadding.PaddingRight = UDim.new(0, 18)
+				sectionUIPadding.PaddingTop = UDim.new(0, 22)
+				sectionUIPadding.Parent = section
+
+				function SectionFunctions:Button(Settings, Flag)
+					local ButtonFunctions = {Settings = Settings}
+					local button = Instance.new("Frame")
+					button.Name = "Button"
+					button.AutomaticSize = Enum.AutomaticSize.Y
+					button.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					button.BackgroundTransparency = 1
+					button.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					button.BorderSizePixel = 0
+					button.Size = UDim2.new(1, 0, 0, 38)
+					button.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					button.Parent = section
+
+					local buttonInteract = Instance.new("TextButton")
+					buttonInteract.Name = "ButtonInteract"
+					buttonInteract.FontFace = Font.new(assets.interFont)
+					buttonInteract.RichText = true
+					buttonInteract.TextColor3 = Color3.fromRGB(255, 255, 255)
+					buttonInteract.TextSize = 13
+					buttonInteract.TextTransparency = 0.5
+					buttonInteract.TextTruncate = Enum.TextTruncate.AtEnd
+					buttonInteract.TextXAlignment = Enum.TextXAlignment.Left
+					buttonInteract.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					buttonInteract.BackgroundTransparency = 1
+					buttonInteract.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					buttonInteract.BorderSizePixel = 0
+					buttonInteract.Size = UDim2.fromScale(1, 1)
+					buttonInteract.Parent = button
+					buttonInteract.Text = ButtonFunctions.Settings.Name
+
+					local buttonImage = Instance.new("ImageLabel")
+					buttonImage.Name = "ButtonImage"
+					buttonImage.Image = assets.buttonImage
+					buttonImage.ImageTransparency = 0.5
+					buttonImage.AnchorPoint = Vector2.new(1, 0.5)
+					buttonImage.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					buttonImage.BackgroundTransparency = 1
+					buttonImage.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					buttonImage.BorderSizePixel = 0
+					buttonImage.Position = UDim2.fromScale(1, 0.5)
+					buttonImage.Size = UDim2.fromOffset(15, 15)
+					buttonImage.Parent = button
+
+					local TweenSettings = {
+						DefaultTransparency = 0.5,
+						HoverTransparency = 0.3,
+
+						EasingStyle = Enum.EasingStyle.Sine
+					}
+
+					local function ChangeState(State)
+						if State == "Idle" then
+							Tween(buttonInteract, TweenInfo.new(0.2, TweenSettings.EasingStyle), {
+								TextTransparency = TweenSettings.DefaultTransparency
+							}):Play()
+							Tween(buttonImage, TweenInfo.new(0.2, TweenSettings.EasingStyle), {
+								ImageTransparency = TweenSettings.DefaultTransparency
+							}):Play()
+						elseif State == "Hover" then
+							Tween(buttonInteract, TweenInfo.new(0.2, TweenSettings.EasingStyle), {
+								TextTransparency = TweenSettings.HoverTransparency
+							}):Play()
+							Tween(buttonImage, TweenInfo.new(0.2, TweenSettings.EasingStyle), {
+								ImageTransparency = TweenSettings.HoverTransparency
+							}):Play()
+						end
+					end
+
+					local function Callback()
+						if _isMobileScrolling(button) then return end  -- FIX Bug3
+						if ButtonFunctions.Settings.Callback then
+							ButtonFunctions.Settings.Callback()
+						end
+					end
+
+					buttonInteract.MouseEnter:Connect(function()
+						ChangeState("Hover")
+					end)
+					buttonInteract.MouseLeave:Connect(function()
+						ChangeState("Idle")
+					end)
+
+					if ButtonFunctions.Settings.DoubleClick then
+						local _lastClick = 0
+						buttonInteract.MouseButton1Click:Connect(function()
+							local now = tick()
+							if now - _lastClick < 0.4 then
+								Callback()
+								_lastClick = 0
+							else
+								_lastClick = now
+							end
+						end)
+					else
+						buttonInteract.MouseButton1Click:Connect(Callback)
+					end
+					function ButtonFunctions:UpdateName(Name)
+						ButtonFunctions.Settings.Name = Name
+						buttonInteract.Text = Name
+					end
+					function ButtonFunctions:UpdateDescription(Desc)
+						ButtonFunctions.Settings.Description = Desc
+					end
+					function ButtonFunctions:SetCallback(fn)
+						ButtonFunctions.Settings.Callback = fn
+					end
+					function ButtonFunctions:SetVisibility(State)
+						button.Visible = State
+					end
+
+					if Flag then
+						MacLib.Options[Flag] = ButtonFunctions
+					end
+					return ButtonFunctions
+				end
+
+				function SectionFunctions:Toggle(Settings, Flag)
+					local ToggleFunctions = { Settings = Settings, IgnoreConfig = false, Class = "Toggle" }
+					local toggle = Instance.new("Frame")
+					toggle.Name = "Toggle"
+					toggle.AutomaticSize = Enum.AutomaticSize.Y
+					toggle.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					toggle.BackgroundTransparency = 1
+					toggle.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					toggle.BorderSizePixel = 0
+					toggle.Size = UDim2.new(1, 0, 0, 38)
+					toggle.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					toggle.Parent = section
+
+					local toggleName = Instance.new("TextLabel")
+					toggleName.Name = "ToggleName"
+					toggleName.FontFace = Font.new(assets.interFont)
+					toggleName.Text = ToggleFunctions.Settings.Name
+					toggleName.RichText = true
+					toggleName.TextColor3 = Color3.fromRGB(255, 255, 255)
+					toggleName.TextSize = 13
+					toggleName.TextTransparency = 0.5
+					toggleName.TextTruncate = Enum.TextTruncate.AtEnd
+					toggleName.TextXAlignment = Enum.TextXAlignment.Left
+					toggleName.TextYAlignment = Enum.TextYAlignment.Top
+					toggleName.AnchorPoint = Vector2.new(0, 0.5)
+					toggleName.AutomaticSize = Enum.AutomaticSize.Y
+					toggleName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					toggleName.BackgroundTransparency = 1
+					toggleName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					toggleName.BorderSizePixel = 0
+					toggleName.Position = UDim2.fromScale(0, 0.5)
+					toggleName.Size = UDim2.new(1, -50, 0, 0)
+					toggleName.Parent = toggle
+
+					local toggle1 = Instance.new("ImageButton")
+					toggle1.Name = "Toggle"
+					toggle1.Image = assets.toggleBackground
+					toggle1.ImageColor3 = Color3.fromRGB(87, 86, 86)
+					toggle1.AutoButtonColor = false
+					toggle1.AnchorPoint = Vector2.new(1, 0.5)
+					toggle1.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					toggle1.BackgroundTransparency = 1
+					toggle1.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					toggle1.BorderSizePixel = 0
+					toggle1.Position = UDim2.fromScale(1, 0.5)
+					toggle1.Size = UDim2.fromOffset(41, 21)
+					toggle1.ImageTransparency = 0.5
+
+					local toggleUIPadding = Instance.new("UIPadding")
+					toggleUIPadding.Name = "ToggleUIPadding"
+					toggleUIPadding.PaddingBottom = UDim.new(0, 1)
+					toggleUIPadding.PaddingLeft = UDim.new(0, -2)
+					toggleUIPadding.PaddingRight = UDim.new(0, 3)
+					toggleUIPadding.PaddingTop = UDim.new(0, 1)
+					toggleUIPadding.Parent = toggle1
+
+					local togglerHead = Instance.new("ImageLabel")
+					togglerHead.Name = "TogglerHead"
+					togglerHead.Image = assets.togglerHead
+					togglerHead.ImageColor3 = Color3.fromRGB(255, 255, 255)
+					togglerHead.AnchorPoint = Vector2.new(1, 0.5)
+					togglerHead.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					togglerHead.BackgroundTransparency = 1
+					togglerHead.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					togglerHead.BorderSizePixel = 0
+					togglerHead.Position = UDim2.fromScale(0.5, 0.5)
+					togglerHead.Size = UDim2.fromOffset(15, 15)
+					togglerHead.ZIndex = 2
+					togglerHead.Parent = toggle1
+					togglerHead.ImageTransparency = 0.8
+
+					toggle1.Parent = toggle
+
+					local toggle1Transparency = {Enabled = 0, Disabled = 0.5}
+					local togglerHeadTransparency = {Enabled = 0, Disabled = 0.85}
+
+					-- FIX5: сохраняем пользовательские цвета отдельно, чтобы они не сбрасывались при смене состояния
+					local _toggle1EnabledColor  = ToggleFunctions.Settings.EnabledColor  or Color3.fromRGB(87, 86, 86)
+					local _toggle1DisabledColor = ToggleFunctions.Settings.DisabledColor or Color3.fromRGB(87, 86, 86)
+
+					local TweenSettings = {
+						Info = TweenInfo.new(0.15, Enum.EasingStyle.Quad),
+
+						EnabledPosition = UDim2.new(1, 0, 0.5, 0),
+						DisabledPosition = UDim2.new(0.5, 0, 0.5, 0),
+					}
+
+					local togglebool = ToggleFunctions.Settings.Default
+
+					local function NewState(State, callback)
+						local transparencyValues = State and {toggle1Transparency.Enabled, togglerHeadTransparency.Enabled}
+							or {toggle1Transparency.Disabled, togglerHeadTransparency.Disabled}
+						local position = State and TweenSettings.EnabledPosition or TweenSettings.DisabledPosition
+						-- FIX5: применяем сохранённый цвет для каждого состояния
+						local targetColor = State and _toggle1EnabledColor or _toggle1DisabledColor
+
+						Tween(toggle1, TweenSettings.Info, {
+							ImageTransparency = transparencyValues[1],
+							ImageColor3 = targetColor,
+						}):Play()
+
+						Tween(togglerHead, TweenSettings.Info, {
+							ImageTransparency = transparencyValues[2]
+						}):Play()
+
+						Tween(togglerHead, TweenSettings.Info, {
+							Position = position
+						}):Play()
+
+						ToggleFunctions.State = State
+						if callback then
+							callback(togglebool)
+						end
+					end
+
+					NewState(togglebool)
+
+					local function Toggle()
+						if _isMobileScrolling(toggle) then return end  -- FIX Bug3
+						togglebool = not togglebool
+						NewState(togglebool, ToggleFunctions.Settings.Callback)
+					end
+
+					toggle1.MouseButton1Click:Connect(Toggle)
+
+					function ToggleFunctions:Toggle()
+						Toggle()
+					end
+					function ToggleFunctions:UpdateState(State)
+						togglebool = State
+						NewState(togglebool, ToggleFunctions.Settings.Callback)
+					end
+					function ToggleFunctions:GetState()
+						return togglebool
+					end
+					function ToggleFunctions:UpdateName(Name)
+						ToggleFunctions.Settings.Name = Name
+						toggleName.Text = Name
+					end
+					function ToggleFunctions:SetCallback(fn)
+						ToggleFunctions.Settings.Callback = fn
+					end
+					function ToggleFunctions:SetVisibility(State)
+						toggle.Visible = State
+					end
+
+					-- FIX5: методы для изменения цвета toggle без сброса при смене состояния
+					function ToggleFunctions:SetEnabledColor(color)
+						_toggle1EnabledColor = color
+						NewState(togglebool)
+					end
+					function ToggleFunctions:SetDisabledColor(color)
+						_toggle1DisabledColor = color
+						NewState(togglebool)
+					end
+					-- SetColor устанавливает цвет для обоих состояний сразу
+					function ToggleFunctions:SetColor(color)
+						_toggle1EnabledColor = color
+						_toggle1DisabledColor = color
+						NewState(togglebool)
+					end
+
+					if Flag then
+						MacLib.Options[Flag] = ToggleFunctions
+					end
+					-- ForceAutoLoad
+					if Flag and Settings.ForceAutoLoad then
+						local _origCB = ToggleFunctions.Settings.Callback
+						ToggleFunctions.Settings.Callback = function(v)
+							MacLib:FALSave(Flag, ToggleFunctions)
+							if _origCB then _origCB(v) end
+						end
+						task.defer(function()
+							MacLib:FALLoad(Flag, ToggleFunctions, Settings.FALoadDelay)
+						end)
+					end
+					return ToggleFunctions
+				end
+
+				function SectionFunctions:Slider(Settings, Flag)
+					local SliderFunctions = { Settings = Settings, IgnoreConfig = false, Class = "Slider" }
+					local slider = Instance.new("Frame")
+					slider.Name = "Slider"
+					slider.AutomaticSize = Enum.AutomaticSize.Y
+					slider.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					slider.BackgroundTransparency = 1
+					slider.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					slider.BorderSizePixel = 0
+					slider.Size = UDim2.new(1, 0, 0, 0) -- FIX-V13: высота автоматическая
+				slider.AutomaticSize = Enum.AutomaticSize.Y
+					slider.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					slider.Parent = section
+
+					-- FIX-V13: вертикальный layout — имя сверху, ползунок снизу
+					local sliderVerticalLayout = Instance.new("UIListLayout")
+					sliderVerticalLayout.Name = "SliderVerticalLayout"
+					sliderVerticalLayout.FillDirection = Enum.FillDirection.Vertical
+					sliderVerticalLayout.SortOrder = Enum.SortOrder.LayoutOrder
+					sliderVerticalLayout.Padding = UDim.new(0, 4)
+					sliderVerticalLayout.Parent = slider
+					local sliderVerticalPad = Instance.new("UIPadding")
+					sliderVerticalPad.Name = "SliderVerticalPad"
+					sliderVerticalPad.PaddingTop = UDim.new(0, 6)
+					sliderVerticalPad.PaddingBottom = UDim.new(0, 8)
+					sliderVerticalPad.Parent = slider
+
+					local sliderName = Instance.new("TextLabel")
+					sliderName.Name = "SliderName"
+					sliderName.FontFace = Font.new(assets.interFont)
+					sliderName.Text = SliderFunctions.Settings.Name
+					sliderName.RichText = true
+					sliderName.TextColor3 = Color3.fromRGB(255, 255, 255)
+					sliderName.TextSize = 13
+					sliderName.TextTransparency = 0.5
+					sliderName.TextTruncate = Enum.TextTruncate.AtEnd
+					sliderName.TextXAlignment = Enum.TextXAlignment.Left
+					sliderName.TextYAlignment = Enum.TextYAlignment.Top
+					sliderName.AnchorPoint = Vector2.new(0, 0)
+					sliderName.AutomaticSize = Enum.AutomaticSize.Y
+					sliderName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					sliderName.BackgroundTransparency = 1
+					sliderName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					sliderName.BorderSizePixel = 0
+					sliderName.Position = UDim2.fromOffset(0, 0) -- FIX-V13: layout управляет позицией
+					sliderName.Size = UDim2.new(1, 0, 0, 0) -- FIX-V13: полная ширина
+					sliderName.LayoutOrder = 1
+					sliderName.Parent = slider
+
+					local sliderElements = Instance.new("Frame")
+					sliderElements.Name = "SliderElements"
+					sliderElements.AnchorPoint = Vector2.new(0, 0) -- FIX-V13
+					sliderElements.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					sliderElements.BackgroundTransparency = 1
+					sliderElements.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					sliderElements.BorderSizePixel = 0
+					sliderElements.Position = UDim2.fromOffset(0, 0) -- FIX-V13
+					sliderElements.Size = isMobile and UDim2.new(1, 0, 0, 26) or UDim2.new(1, 0, 0, 22) -- FIX-V16: высота под размер head
+					sliderElements.LayoutOrder = 2
+
+					local sliderValue = Instance.new("TextBox")
+					sliderValue.Name = "SliderValue"
+					sliderValue.FontFace = Font.new(assets.interFont)
+					sliderValue.TextColor3 = Color3.fromRGB(255, 255, 255)
+					sliderValue.TextSize = 12
+					sliderValue.TextTransparency = 0.1
+					--sliderValue.TextTruncate = Enum.TextTruncate.AtEnd
+					sliderValue.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					sliderValue.BackgroundTransparency = 0.95
+					sliderValue.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					sliderValue.BorderSizePixel = 0
+					-- FIX-V17: нет UIListLayout — позиционируем справа абсолютно
+					sliderValue.AnchorPoint = Vector2.new(1, 0.5)
+					sliderValue.Position = UDim2.new(1, 0, 0.5, 0)
+					sliderValue.Size = UDim2.fromOffset(41, 21)
+					sliderValue.ClipsDescendants = true
+
+					local sliderValueUICorner = Instance.new("UICorner")
+					sliderValueUICorner.Name = "SliderValueUICorner"
+					sliderValueUICorner.CornerRadius = UDim.new(0, 4)
+					sliderValueUICorner.Parent = sliderValue
+
+					local sliderValueUIStroke = Instance.new("UIStroke")
+					sliderValueUIStroke.Name = "SliderValueUIStroke"
+					sliderValueUIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					sliderValueUIStroke.Color = Color3.fromRGB(255, 255, 255)
+					sliderValueUIStroke.Transparency = 0.9
+					sliderValueUIStroke.Parent = sliderValue
+
+					local sliderValueUIPadding = Instance.new("UIPadding")
+					sliderValueUIPadding.Name = "SliderValueUIPadding"
+					sliderValueUIPadding.PaddingLeft = UDim.new(0, 2)
+					sliderValueUIPadding.PaddingRight = UDim.new(0, 2)
+					sliderValueUIPadding.Parent = sliderValue
+
+					sliderValue.Parent = sliderElements
+
+					-- FIX-V17: UIListLayout удалён — sliderBar использует Scale-based Size
+
+					local sliderBar = Instance.new("ImageLabel")
+					sliderBar.Name = "SliderBar"
+					sliderBar.Image = assets.sliderbar
+					sliderBar.ImageColor3 = Color3.fromRGB(87, 86, 86)
+					sliderBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					sliderBar.BackgroundTransparency = 1
+					sliderBar.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					sliderBar.BorderSizePixel = 0
+					sliderBar.AnchorPoint = Vector2.new(0, 0.5)
+					sliderBar.Position = UDim2.new(0, 0, 0.5, 0)
+					sliderBar.Size = UDim2.new(1, -63, 0, 3) -- FIX-V17: 100% - 63px(valueW+padding)
+
+					local sliderHead = Instance.new("ImageButton")
+					sliderHead.Name = "SliderHead"
+					sliderHead.Image = assets.sliderhead
+					sliderHead.AnchorPoint = Vector2.new(0.5, 0.5)
+					sliderHead.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					sliderHead.BackgroundTransparency = 1
+					sliderHead.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					sliderHead.BorderSizePixel = 0
+					sliderHead.Position = UDim2.fromScale(1, 0.5)
+					-- FIX3: уменьшен ползунок на мобиле до 16px
+				sliderHead.Size = isMobile and UDim2.fromOffset(15, 15) or UDim2.fromOffset(12, 12) -- FIX-V19: чуть меньше на мобиле -- FIX-V16: крупнее на мобиле для точного касания
+					sliderHead.Parent = sliderBar
+
+					sliderBar.Parent = sliderElements
+
+					local sliderElementsUIPadding = Instance.new("UIPadding")
+					sliderElementsUIPadding.Name = "SliderElementsUIPadding"
+					sliderElementsUIPadding.PaddingTop = UDim.new(0, 3)
+					sliderElementsUIPadding.Parent = sliderElements
+
+					sliderElements.Parent = slider
+
+					local dragging = false
+
+					local DisplayMethods = {
+						Hundredths = function(sliderValue) -- Deprecated use Settings.Precision
+							return string.format("%.2f", sliderValue)
+						end,
+						Tenths = function(sliderValue) -- Deprecated use Settings.Precision
+							return string.format("%.1f", sliderValue)
+						end,
+						Round = function(sliderValue, precision)
+							if precision then
+								return string.format("%." .. precision .. "f", sliderValue)
+							else
+								return tostring(math.round(sliderValue))
+							end
+						end,
+						Degrees = function(sliderValue, precision)
+							local formattedValue = precision and string.format("%." .. precision .. "f", sliderValue) or tostring(sliderValue)
+							return formattedValue .. "°"
+						end,
+						Percent = function(sliderValue, precision)
+							local percentage = (sliderValue - SliderFunctions.Settings.Minimum) / (SliderFunctions.Settings.Maximum - SliderFunctions.Settings.Minimum) * 100
+							return precision and string.format("%." .. precision .. "f", percentage) .. "%" or tostring(math.round(percentage)) .. "%"
+						end,
+						Value = function(sliderValue, precision)
+							return precision and string.format("%." .. precision .. "f", sliderValue) or tostring(sliderValue)
+						end
+					}
+
+					local ValueDisplayMethod = DisplayMethods[SliderFunctions.Settings.DisplayMethod] or DisplayMethods.Value
+					local finalValue
+
+					local function SetValue(val, ignorecallback)
+						local posXScale
+
+						if typeof(val) == "Instance" then
+							local input = val
+							posXScale = math.clamp((input.Position.X - sliderBar.AbsolutePosition.X) / sliderBar.AbsoluteSize.X, 0, 1)
+						else
+							local value = val
+							posXScale = (value - SliderFunctions.Settings.Minimum) / (SliderFunctions.Settings.Maximum - Settings.Minimum)
+						end
+
+						local pos = UDim2.new(posXScale, 0, 0.5, 0)
+						sliderHead.Position = pos
+
+						finalValue = posXScale * (SliderFunctions.Settings.Maximum - SliderFunctions.Settings.Minimum) + Settings.Minimum
+
+						sliderValue.Text = (Settings.Prefix or "") .. ValueDisplayMethod(finalValue, SliderFunctions.Settings.Precision) .. (Settings.Suffix or "")
+
+						if not ignorecallback then
+							task.spawn(function()
+								if SliderFunctions.Settings.Callback then
+									SliderFunctions.Settings.Callback(finalValue)
+								end
+							end)
+						end
+
+						SliderFunctions.Value = finalValue
+					end
+
+					SetValue(SliderFunctions.Settings.Default, true)
+
+					-- FIX6: расширенная зона нажатия для слайдера на мобиле
+					local sliderTouchBar = Instance.new("TextButton")
+					sliderTouchBar.Name = "SliderTouchBar"
+					sliderTouchBar.Text = ""
+					sliderTouchBar.BackgroundTransparency = 1
+					sliderTouchBar.BorderSizePixel = 0
+					sliderTouchBar.AnchorPoint = Vector2.new(0, 0.5)
+					sliderTouchBar.Position = UDim2.new(0, 0, 0.5, 0)
+					-- FIX3: зона тача чуть уже
+					sliderTouchBar.Size = UDim2.new(1, 10, 0, 32) -- FIX-V12: moderate touch area
+					sliderTouchBar.ZIndex = sliderHead.ZIndex + 1
+					sliderTouchBar.Parent = sliderBar
+
+					local function startDrag(input)
+						dragging = true
+						SetValue(input)
+					end
+					local function endDrag(input)
+						dragging = false
+						if SliderFunctions.Settings.onInputComplete then
+							SliderFunctions.Settings.onInputComplete(finalValue)
+						end
+					end
+
+					sliderHead.InputBegan:Connect(function(input)
+						if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+							startDrag(input)
+						end
+					end)
+					sliderHead.InputEnded:Connect(function(input)
+						if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+							endDrag(input)
+						end
+					end)
+
+					-- FIX6: широкая невидимая кнопка ловит тач по всей высоте строки
+					sliderTouchBar.InputBegan:Connect(function(input)
+						if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+							startDrag(input)
+						end
+					end)
+					sliderTouchBar.InputEnded:Connect(function(input)
+						if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+							endDrag(input)
+						end
+					end)
+
+					sliderValue.FocusLost:Connect(function(enterPressed)
+						local inputText = sliderValue.Text
+						local value, isPercent = inputText:match("^(%-?%d+%.?%d*)(%%?)$")
+
+						if value then
+							value = tonumber(value)
+							isPercent = isPercent == "%"
+
+							if isPercent then
+								value = SliderFunctions.Settings.Minimum + (value / 100) * (SliderFunctions.Settings.Maximum - SliderFunctions.Settings.Minimum)
+							end
+
+							local newValue = math.clamp(value, SliderFunctions.Settings.Minimum, SliderFunctions.Settings.Maximum)
+							SetValue(newValue)
+						else
+							sliderValue.Text = ValueDisplayMethod(sliderValue)
+						end
+
+						if SliderFunctions.Settings.onInputComplete then
+							SliderFunctions.Settings.onInputComplete(finalValue)
+						end
+					end)
+
+					UserInputService.InputChanged:Connect(function(input)
+						if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+							SetValue(input)
+						end
+					end)
+
+					-- FIX-V17: updateSliderBarSize удалена — Size теперь UDim2.new(1,-63,0,3)
+
+					function SliderFunctions:UpdateName(Name)
+						SliderFunctions.Settings.Name = Name
+						sliderName.Text = Name  -- исправлено: было sliderName = Name (перезаписывало объект)
+					end
+					function SliderFunctions:SetCallback(fn)
+						SliderFunctions.Settings.Callback = fn
+					end
+					function SliderFunctions:SetVisibility(State)
+						slider.Visible = State
+					end
+					function SliderFunctions:UpdateValue(Value, _fromConfig)
+						SetValue(tonumber(Value), not _fromConfig)
+					end
+					function SliderFunctions:GetValue()
+						return finalValue
+					end
+
+					if Flag then
+						MacLib.Options[Flag] = SliderFunctions
+					end
+					-- ForceAutoLoad: сохраняем при каждом изменении, загружаем при старте
+					if Flag and Settings.ForceAutoLoad then
+						local _origCallback = SliderFunctions.Settings.Callback
+						SliderFunctions.Settings.Callback = function(v)
+							MacLib:FALSave(Flag, SliderFunctions)
+							if _origCallback then _origCallback(v) end
+						end
+						task.defer(function()
+							MacLib:FALLoad(Flag, SliderFunctions, Settings.FALoadDelay)
+						end)
+					end
+					return SliderFunctions
+				end
+
+				function SectionFunctions:Input(Settings, Flag)
+					local InputFunctions = { Settings = Settings, IgnoreConfig = false, Class = "Input" }
+					local input = Instance.new("Frame")
+					input.Name = "Input"
+					input.AutomaticSize = Enum.AutomaticSize.Y
+					input.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					input.BackgroundTransparency = 1
+					input.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					input.BorderSizePixel = 0
+					input.Size = UDim2.new(1, 0, 0, 38)
+					input.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					input.Parent = section
+
+					local inputName = Instance.new("TextLabel")
+					inputName.Name = "InputName"
+					inputName.FontFace = Font.new(assets.interFont)
+					inputName.Text = InputFunctions.Settings.Name
+					inputName.RichText = true
+					inputName.TextColor3 = Color3.fromRGB(255, 255, 255)
+					inputName.TextSize = 13
+					inputName.TextTransparency = 0.5
+					inputName.TextTruncate = Enum.TextTruncate.AtEnd
+					inputName.TextXAlignment = Enum.TextXAlignment.Left
+					inputName.TextYAlignment = Enum.TextYAlignment.Top
+					inputName.AnchorPoint = Vector2.new(0, 0.5)
+					inputName.AutomaticSize = Enum.AutomaticSize.XY
+					inputName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputName.BackgroundTransparency = 1
+					inputName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputName.BorderSizePixel = 0
+					inputName.Position = UDim2.fromScale(0, 0.5)
+					inputName.Parent = input
+
+					local inputBox = Instance.new("TextBox")
+					inputBox.Name = "InputBox"
+					inputBox.FontFace = Font.new(assets.interFont)
+					inputBox.Text = "Hello world!"
+					inputBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+					inputBox.TextSize = 12
+					inputBox.TextTransparency = 0.1
+					inputBox.AnchorPoint = Vector2.new(1, 0.5)
+					inputBox.AutomaticSize = Enum.AutomaticSize.X
+					inputBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputBox.BackgroundTransparency = 0.95
+					inputBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputBox.BorderSizePixel = 0
+					inputBox.ClipsDescendants = true
+					inputBox.LayoutOrder = 1
+					inputBox.Position = UDim2.fromScale(1, 0.5)
+					inputBox.Size = UDim2.fromOffset(21, 21)
+					inputBox.TextXAlignment = Enum.TextXAlignment.Right
+
+					local inputBoxUICorner = Instance.new("UICorner")
+					inputBoxUICorner.Name = "InputBoxUICorner"
+					inputBoxUICorner.CornerRadius = UDim.new(0, 4)
+					inputBoxUICorner.Parent = inputBox
+
+					local inputBoxUIStroke = Instance.new("UIStroke")
+					inputBoxUIStroke.Name = "InputBoxUIStroke"
+					inputBoxUIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					inputBoxUIStroke.Color = Color3.fromRGB(255, 255, 255)
+					inputBoxUIStroke.Transparency = 0.9
+					inputBoxUIStroke.Parent = inputBox
+
+					local inputBoxUIPadding = Instance.new("UIPadding")
+					inputBoxUIPadding.Name = "InputBoxUIPadding"
+					inputBoxUIPadding.PaddingLeft = UDim.new(0, 5)
+					inputBoxUIPadding.PaddingRight = UDim.new(0, 5)
+					inputBoxUIPadding.Parent = inputBox
+
+					local inputBoxUISizeConstraint = Instance.new("UISizeConstraint")
+					inputBoxUISizeConstraint.Name = "InputBoxUISizeConstraint"
+					inputBoxUISizeConstraint.Parent = inputBox
+
+					inputBox.Parent = input
+
+					local Input = input
+					local InputBox = inputBox
+					local InputName = inputName
+					local Constraint = inputBoxUISizeConstraint
+
+					local function applyCharacterLimit(value)
+						if InputFunctions.Settings.CharacterLimit then
+							return value:sub(1, InputFunctions.Settings.CharacterLimit)
+						end
+						return value
+					end
+
+					local CharacterSubs = {
+						All = function(value)
+							return applyCharacterLimit(value)
+						end,
+						Numeric = function(value)
+							local result = value:match("^%-?%d*$") and value or value:gsub("[^%d-]", ""):gsub("(%-)", function(match, pos)
+								return pos == 1 and match or ""
+							end)
+							return applyCharacterLimit(result)
+						end,
+						Alphabetic = function(value)
+							return applyCharacterLimit(value:gsub("[^a-zA-Z ]", ""))
+						end,
+						AlphaNumeric = function(value)
+							return applyCharacterLimit(value:gsub("[^a-zA-Z0-9]", ""))
+						end,
+					}
+
+					local AcceptedCharacters
+
+					if type(InputFunctions.Settings.AcceptedCharacters) == "function" then
+						AcceptedCharacters = InputFunctions.Settings.AcceptedCharacters
+					else
+						AcceptedCharacters = CharacterSubs[InputFunctions.Settings.AcceptedCharacters] or CharacterSubs.All
+					end
+
+					InputBox.AutomaticSize = Enum.AutomaticSize.X
+
+					local function checkSize()
+						local nameWidth = InputName.AbsoluteSize.X
+						local totalWidth = Input.AbsoluteSize.X
+
+						local maxWidth = (totalWidth - nameWidth - 20) / baseUIScale.Scale
+						Constraint.MaxSize = Vector2.new(maxWidth, 9e9)
+					end
+
+					checkSize()
+					InputName:GetPropertyChangedSignal("AbsoluteSize"):Connect(checkSize)
+
+					InputBox.FocusLost:Connect(function()
+						local inputText = InputBox.Text
+						local filteredText = AcceptedCharacters(inputText)
+						InputBox.Text = filteredText
+						task.spawn(function()
+							if InputFunctions.Settings.Callback then
+								InputFunctions.Settings.Callback(filteredText)
+							end
+						end)
+					end)
+					InputBox.Text = InputFunctions.Settings.Default or ""
+					InputBox.PlaceholderText = InputFunctions.Settings.Placeholder or ""
+
+					InputBox:GetPropertyChangedSignal("Text"):Connect(function()
+						InputBox.Text = AcceptedCharacters(InputBox.Text)
+						if InputFunctions.Settings.onChanged then
+							InputFunctions.Settings.onChanged(InputBox.Text)
+						end
+						InputFunctions.Text = InputBox.Text
+					end)
+
+					function InputFunctions:UpdateName(Name)
+						InputFunctions.Settings.Name = Name
+						inputName.Text = Name
+					end
+					function InputFunctions:SetVisibility(State)
+						input.Visible = State
+					end
+					function InputFunctions:GetInput()  -- alias kept for back-compat
+						return InputBox.Text
+					end
+					function InputFunctions:GetText()
+						return InputBox.Text
+					end
+					function InputFunctions:SetCallback(fn)
+						InputFunctions.Settings.Callback = fn
+					end
+					function InputFunctions:SetOnChanged(fn)
+						InputFunctions.Settings.onChanged = fn
+					end
+					function InputFunctions:UpdatePlaceholder(Placeholder)
+						InputBox.PlaceholderText = Placeholder
+					end
+					function InputFunctions:Clear()
+						InputBox.Text = ""
+						InputFunctions.Text = ""
+					end
+					function InputFunctions:UpdateText(Text)
+						local filteredText = AcceptedCharacters(Text)
+						InputBox.Text = filteredText
+						InputFunctions.Text = filteredText
+						task.spawn(function()
+							if InputFunctions.Settings.Callback then
+								InputFunctions.Settings.Callback(filteredText)
+							end
+						end)
+					end
+
+					if Flag then
+						MacLib.Options[Flag] = InputFunctions
+					end
+					-- ForceAutoLoad
+					if Flag and Settings.ForceAutoLoad then
+						local _origCB = InputFunctions.Settings.Callback
+						InputFunctions.Settings.Callback = function(v)
+							MacLib:FALSave(Flag, InputFunctions)
+							if _origCB then _origCB(v) end
+						end
+						task.defer(function()
+							MacLib:FALLoad(Flag, InputFunctions, Settings.FALoadDelay)
+						end)
+					end
+					return InputFunctions
+				end
+
+				function SectionFunctions:Keybind(Settings, Flag)
+					local KeybindFunctions = { Settings = Settings, IgnoreConfig = false, Class = "Keybind" }
+					local keybind = Instance.new("Frame")
+					keybind.Name = "Keybind"
+					keybind.AutomaticSize = Enum.AutomaticSize.Y
+					keybind.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					keybind.BackgroundTransparency = 1
+					keybind.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					keybind.BorderSizePixel = 0
+					keybind.Size = UDim2.new(1, 0, 0, 38)
+					keybind.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					keybind.Parent = section
+
+					local keybindName = Instance.new("TextLabel")
+					keybindName.Name = "KeybindName"
+					keybindName.FontFace = Font.new(assets.interFont)
+					keybindName.Text = KeybindFunctions.Settings.Name
+					keybindName.RichText = true
+					keybindName.TextColor3 = Color3.fromRGB(255, 255, 255)
+					keybindName.TextSize = 13
+					keybindName.TextTransparency = 0.5
+					keybindName.TextTruncate = Enum.TextTruncate.AtEnd
+					keybindName.TextXAlignment = Enum.TextXAlignment.Left
+					keybindName.TextYAlignment = Enum.TextYAlignment.Top
+					keybindName.AnchorPoint = Vector2.new(0, 0.5)
+					keybindName.AutomaticSize = Enum.AutomaticSize.XY
+					keybindName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					keybindName.BackgroundTransparency = 1
+					keybindName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					keybindName.BorderSizePixel = 0
+					keybindName.Position = UDim2.fromScale(0, 0.5)
+					keybindName.Parent = keybind
+
+					local binderBox = Instance.new("TextBox")
+					binderBox.Name = "BinderBox"
+					binderBox.CursorPosition = -1
+					binderBox.FontFace = Font.new(assets.interFont)
+					binderBox.PlaceholderText = "..."
+					binderBox.Text = ""
+					binderBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+					binderBox.TextSize = 12
+					binderBox.TextTransparency = 0.1
+					binderBox.AnchorPoint = Vector2.new(1, 0.5)
+					binderBox.AutomaticSize = Enum.AutomaticSize.X
+					binderBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					binderBox.BackgroundTransparency = 0.95
+					binderBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					binderBox.BorderSizePixel = 0
+					binderBox.ClipsDescendants = true
+					binderBox.LayoutOrder = 1
+					binderBox.Position = UDim2.fromScale(1, 0.5)
+					binderBox.Size = UDim2.fromOffset(21, 21)
+
+					local binderBoxUICorner = Instance.new("UICorner")
+					binderBoxUICorner.Name = "BinderBoxUICorner"
+					binderBoxUICorner.CornerRadius = UDim.new(0, 4)
+					binderBoxUICorner.Parent = binderBox
+
+					local binderBoxUIStroke = Instance.new("UIStroke")
+					binderBoxUIStroke.Name = "BinderBoxUIStroke"
+					binderBoxUIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					binderBoxUIStroke.Color = Color3.fromRGB(255, 255, 255)
+					binderBoxUIStroke.Transparency = 0.9
+					binderBoxUIStroke.Parent = binderBox
+
+					local binderBoxUIPadding = Instance.new("UIPadding")
+					binderBoxUIPadding.Name = "BinderBoxUIPadding"
+					binderBoxUIPadding.PaddingLeft = UDim.new(0, 5)
+					binderBoxUIPadding.PaddingRight = UDim.new(0, 5)
+					binderBoxUIPadding.Parent = binderBox
+
+					local binderBoxUISizeConstraint = Instance.new("UISizeConstraint")
+					binderBoxUISizeConstraint.Name = "BinderBoxUISizeConstraint"
+					binderBoxUISizeConstraint.Parent = binderBox
+
+					binderBox.Parent = keybind
+
+					local focused
+					local isBinding = false
+					local reset = false
+					local binded = KeybindFunctions.Settings.Default
+
+					local function resetFocusState()
+						focused = false
+						isBinding = false
+						binderBox:ReleaseFocus()
+					end
+
+					if binded and not _isMobileKB then
+						binderBox.Text = (typeof(binded) == "EnumItem" and binded.Name) or tostring(binded) or ""
+					end
+
+					binderBox.Focused:Connect(function()
+						focused = true
+					end)
+
+					binderBox.FocusLost:Connect(function()
+						focused = false
+					end)
+
+					UserInputService.InputBegan:Connect(function(inp)
+						if focused and not isBinding then
+							isBinding = true
+
+							local Event
+							Event = UserInputService.InputBegan:Connect(function(input)
+								if KeybindFunctions.Settings.Blacklist and (table.find(KeybindFunctions.Settings.Blacklist, input.KeyCode) or table.find(KeybindFunctions.Settings.Blacklist, input.UserInputType)) then
+									binderBox:ReleaseFocus()
+									resetFocusState()
+									Event:Disconnect()
+									return
+								end
+
+								if input.UserInputType == Enum.UserInputType.Keyboard then
+									binded = input.KeyCode
+									binderBox.Text = input.KeyCode.Name
+								elseif input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.MouseButton2 then
+									binded = input.UserInputType
+									binderBox.Text = input.UserInputType.Name
+								end
+
+								if KeybindFunctions.Settings.onBinded then
+									KeybindFunctions.Settings.onBinded(binded)
+								end
+								reset = true
+								resetFocusState()
+								Event:Disconnect()
+							end)
+						else
+							local _uk=(typeof(binded)=="EnumItem" and binded==Enum.KeyCode.Unknown)
+							if not reset and not _uk and (inp.KeyCode==binded or inp.UserInputType==binded) then
+								if KeybindFunctions.Settings.Callback then
+									KeybindFunctions.Settings.Callback(binded)
+								end
+								if KeybindFunctions.Settings.onBindHeld then
+									KeybindFunctions.Settings.onBindHeld(true, binded)
+								end
+							else
+								reset = false
+							end
+						end
+					end)
+
+					UserInputService.InputEnded:Connect(function(inp)
+						if not focused and not isBinding then
+							if inp.KeyCode == binded or inp.UserInputType == binded then
+								if Settings.onBindHeld then
+									Settings.onBindHeld(false, binded)
+								end
+							end
+						end
+					end)
+
+					function KeybindFunctions:Bind(Key)
+						binded = Key
+						reset = false
+						binderBox.Text = Key.Name
+					end
+
+					function KeybindFunctions:Unbind()
+						binded = nil
+						binderBox.Text = ""
+					end
+
+					function KeybindFunctions:GetBind()
+						return binded
+					end
+
+					function KeybindFunctions:UpdateName(Name)
+						keybindName = Name
+					end
+
+					function KeybindFunctions:SetVisibility(State)
+						keybind.Visible = State
+					end
+
+					function KeybindFunctions:UpdateName(Name)
+						KeybindFunctions.Settings.Name = Name
+						keybindName.Text = Name
+					end
+					function KeybindFunctions:SetCallback(fn)
+						KeybindFunctions.Settings.Callback = fn
+					end
+					function KeybindFunctions:SetVisibility(State)
+						keybind.Visible = State
+					end
+
+					if Flag then
+						MacLib.Options[Flag] = KeybindFunctions
+					end
+
+										-- === MOBILE KEYBIND BUTTON ===
+					-- На мобильных: '+' в строке keybind открывает/скрывает плавающую кнопку.
+					-- На ПК: кнопка создаётся, скрыта по умолчанию; SetMobileButtonVisibility(true) покажет.
+					local _isMobileKB = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+					-- Floating action button GUI
+					local mobileKeybindGui = GetGui()
+					mobileKeybindGui.Name = "MacLibKeybind_" .. tostring(Flag or HttpService:GenerateGUID(false))
+					mobileKeybindGui.Enabled = false  -- скрыта до явного показа
+					_registerGui(mobileKeybindGui)
+
+					local mobileKeybindBtn = Instance.new("ImageButton")
+					mobileKeybindBtn.Name = "MobileKeybindBtn"
+					mobileKeybindBtn.AnchorPoint = Vector2.new(1, 1)
+					mobileKeybindBtn.Position = UDim2.new(1, -20, 1, -20)
+					mobileKeybindBtn.Size = UDim2.fromOffset(0, 0)  -- анимируем появление
+					mobileKeybindBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+					mobileKeybindBtn.BackgroundTransparency = 0.2
+					mobileKeybindBtn.BorderSizePixel = 0
+					mobileKeybindBtn.Image = (KeybindFunctions.Settings.MobileImage) or "rbxassetid://10709791437"
+					mobileKeybindBtn.ImageTransparency = 1
+					mobileKeybindBtn.AutoButtonColor = false
+					mobileKeybindBtn.ZIndex = 10
+
+					local mobileKeybindBtnCorner = Instance.new("UICorner")
+					mobileKeybindBtnCorner.CornerRadius = UDim.new(1, 0)
+					mobileKeybindBtnCorner.Parent = mobileKeybindBtn
+
+					local mobileKeybindBtnStroke = Instance.new("UIStroke")
+					mobileKeybindBtnStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					mobileKeybindBtnStroke.Color = Color3.fromRGB(255, 255, 255)
+					mobileKeybindBtnStroke.Transparency = 0.7
+					mobileKeybindBtnStroke.Parent = mobileKeybindBtn
+
+					-- Восстанавливаем сохранённую позицию из конфига
+					if Flag and MacLib._keybindPositions and MacLib._keybindPositions[Flag] then
+						local pos = MacLib._keybindPositions[Flag]
+						local vs = workspace.CurrentCamera.ViewportSize
+						local px = math.clamp(pos.sx * vs.X, 0, vs.X - 56) - vs.X
+						local py = math.clamp(pos.sy * vs.Y, 0, vs.Y - 56) - vs.Y
+						mobileKeybindBtn.Position = UDim2.new(1, px, 1, py)
+					end
+
+					mobileKeybindBtn.Parent = mobileKeybindGui
+
+					-- Регистрируем в глобальных хранилищах
+					if Flag then
+						MacLib._keybindBtns = MacLib._keybindBtns or {}
+						MacLib._keybindBtns[Flag] = mobileKeybindBtn
+					end
+
+					local _mbVisible = false
+					local function showMobileBtn(state)
+						if state == _mbVisible then return end
+						_mbVisible = state
+						-- Сохраняем состояние видимости в конфиге
+						if Flag then
+							MacLib._keybindBtnVisible = MacLib._keybindBtnVisible or {}
+							MacLib._keybindBtnVisible[Flag] = state
+						end
+						if state then
+							mobileKeybindGui.Enabled = true
+							-- Восстанавливаем сохранённые стили при показе
+							local styles = MacLib:GetData("__keybindBtnStyles")
+							local s = styles and Flag and styles[Flag]
+							local targetSize
+							if s and s.sizeX and s.sizeY then
+								targetSize = UDim2.fromOffset(s.sizeX, s.sizeY)
+							else
+								targetSize = UDim2.fromOffset(56, 56)
+							end
+							if s and s.bgT   ~= nil then mobileKeybindBtn.BackgroundTransparency = s.bgT end
+							if s and s.iconT ~= nil then mobileKeybindBtn.ImageTransparency = 1 end  -- начинаем с 1, твин покажет
+							if s and s.image       then mobileKeybindBtn.Image = s.image end
+							local targetIconT = (s and s.iconT ~= nil) and s.iconT or 0.3
+							Tween(mobileKeybindBtn, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+								Size = targetSize,
+								ImageTransparency = targetIconT
+							}):Play()
+						else
+							local t = Tween(mobileKeybindBtn, TweenInfo.new(0.16, Enum.EasingStyle.Sine, Enum.EasingDirection.In), {
+								Size = UDim2.fromOffset(0, 0),
+								ImageTransparency = 1
+							})
+							t:Play()
+							t.Completed:Connect(function()
+								mobileKeybindGui.Enabled = false
+							end)
+						end
+					end
+
+					-- Кнопка '+' для показа/скрытия плавающей кнопки — только на мобильных.
+					-- На ПК используй MacLib:ShowKeybindButton(flag, state) для управления видимостью.
+					if _isMobileKB then
+						binderBox.Visible = false
+
+						-- Применяем сохранённую видимость '+' кнопки
+						local _plusHidden = MacLib._mobileKeybindsHidden and Flag and MacLib._mobileKeybindsHidden[Flag]
+
+						local plusBtn = Instance.new("TextButton")
+						plusBtn.Name = "MobileKeybindPlusBtn"
+						plusBtn.Text = "+"
+						plusBtn.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Bold)
+						plusBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+						plusBtn.TextSize = 18
+						plusBtn.TextTransparency = 0.15
+						plusBtn.AutoButtonColor = false
+						plusBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+						plusBtn.BackgroundTransparency = 0.88
+						plusBtn.BorderSizePixel = 0
+						plusBtn.Size = UDim2.fromOffset(34, 26)
+						plusBtn.AnchorPoint = Vector2.new(1, 0.5)
+						plusBtn.Position = UDim2.new(1, 0, 0.5, 0)
+						plusBtn.ZIndex = 5
+						plusBtn.Parent = keybind
+
+						local _plusCorner = Instance.new("UICorner")
+						_plusCorner.CornerRadius = UDim.new(0, 6)
+						_plusCorner.Parent = plusBtn
+
+						local _plusStroke = Instance.new("UIStroke")
+						_plusStroke.Color = Color3.fromRGB(255, 255, 255)
+						_plusStroke.Transparency = 0.75
+						_plusStroke.Thickness = 1
+						_plusStroke.Parent = plusBtn
+
+						if Flag then
+							MacLib._keybindPlusBtns = MacLib._keybindPlusBtns or {}
+							MacLib._keybindPlusBtns[Flag] = plusBtn
+							if _plusHidden then plusBtn.Visible = false end
+						end
+
+						local function updatePlusText()
+							plusBtn.Text = _mbVisible and "−" or "+"
+						end
+						updatePlusText()
+
+						plusBtn.Activated:Connect(function()
+							showMobileBtn(not _mbVisible)
+							updatePlusText()
+							-- FIX Bug1: save visible state via FAL hook
+							if KeybindFunctions._falSaveHook then
+								task.defer(KeybindFunctions._falSaveHook)
+							end
+							Tween(plusBtn, TweenInfo.new(0.06, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.6}):Play()
+							task.delay(0.12, function()
+								Tween(plusBtn, TweenInfo.new(0.1, Enum.EasingStyle.Sine), {BackgroundTransparency = 0.88}):Play()
+							end)
+						end)
+					end
+
+					-- Draggable floating button
+					local mbDragging = false
+					local mbDragStart, mbBtnStartPos
+					mobileKeybindBtn.InputBegan:Connect(function(inp)
+						if inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+							mbDragging = false
+							mbDragStart = inp.Position
+							mbBtnStartPos = mobileKeybindBtn.Position
+							inp.Changed:Connect(function()
+								if inp.UserInputState == Enum.UserInputState.End then
+									-- FIX5: задержка сброса — Activated срабатывает после End
+									task.delay(0.05, function() mbDragging = false end)
+								end
+							end)
+						end
+					end)
+					mobileKeybindBtn.InputChanged:Connect(function(inp)
+						if (inp.UserInputType == Enum.UserInputType.Touch or inp.UserInputType == Enum.UserInputType.MouseMovement) and mbDragStart then
+							local delta = inp.Position - mbDragStart
+							if delta.Magnitude > 8 then mbDragging = true end
+							if mbDragging then
+								local vs = workspace.CurrentCamera.ViewportSize
+								local newX = math.clamp(mbBtnStartPos.X.Offset + delta.X, -(vs.X - 56), 0)
+								local newY = math.clamp(mbBtnStartPos.Y.Offset + delta.Y, -(vs.Y - 56), 0)
+								mobileKeybindBtn.Position = UDim2.new(1, newX, 1, newY)
+								-- Сохраняем как Scale относительно viewport
+								if Flag then
+									MacLib._keybindPositions = MacLib._keybindPositions or {}
+									MacLib._keybindPositions[Flag] = {
+										sx = (vs.X + newX) / vs.X,
+										sy = (vs.Y + newY) / vs.Y,
+									}
+								end
+							end
+						end
+					end)
+					-- FIX2: UIScale для анимации нажатия — Size не трогаем
+					local _mbScale = Instance.new("UIScale")
+					_mbScale.Scale = 1
+					_mbScale.Parent = mobileKeybindBtn
+					local function _mbPressAnim()
+						Tween(_mbScale, TweenInfo.new(0.09, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 0.78}):Play()
+						task.delay(0.09, function()
+							Tween(_mbScale, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+						end)
+					end
+					mobileKeybindBtn.Activated:Connect(function()
+						if not mbDragging then
+							-- FIX2: callback вызывается всегда независимо от binded
+							if KeybindFunctions.Settings.Callback then
+								task.spawn(KeybindFunctions.Settings.Callback, binded or Enum.KeyCode.Unknown)
+							end
+							_mbPressAnim()
+						end
+					end)
+
+					function KeybindFunctions:SetMobileImage(assetId)
+						mobileKeybindBtn.Image = assetId
+					end
+
+					function KeybindFunctions:SetMobileButtonVisibility(state)
+						showMobileBtn(state)
+						updatePlusText()  -- FIX: sync +/- button after FALLoad restore
+					end
+					-- === END MOBILE KEYBIND BUTTON ===
+
+					if Flag then
+						MacLib.Options[Flag] = KeybindFunctions
+					end
+
+					-- ForceAutoLoad: saves binded key + mobile button visible state
+					if Flag and Settings.ForceAutoLoad then
+						KeybindFunctions._falFlag = Flag  -- needed by FALSave to look up keybindBtnVisible
+						local _origBinded = KeybindFunctions.Settings.onBinded
+						KeybindFunctions.Settings.onBinded = function(bind)
+							MacLib:FALSave(Flag, KeybindFunctions)
+							if _origBinded then _origBinded(bind) end
+						end
+						-- Register a save hook that plusBtn.Activated and showMobileBtn can call
+						KeybindFunctions._falSaveHook = function()
+							MacLib:FALSave(Flag, KeybindFunctions)
+						end
+						task.defer(function()
+							MacLib:FALLoad(Flag, KeybindFunctions, Settings.FALoadDelay)
+						end)
+					end
+
+					return KeybindFunctions
+				end
+
+				function SectionFunctions:Dropdown(Settings, Flag)
+					local DropdownFunctions = { Settings = Settings, IgnoreConfig = false, Class = "Dropdown" }
+					local Selected = {}
+					local OptionObjs = {}
+
+					local dropdown = Instance.new("Frame")
+					dropdown.Name = "Dropdown"
+					dropdown.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					dropdown.BackgroundTransparency = 0.985
+					dropdown.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					dropdown.BorderSizePixel = 0
+					dropdown.Size = UDim2.new(1, 0, 0, 38)
+					dropdown.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					dropdown.Parent = section
+					dropdown.ClipsDescendants = false
+
+					local dropdownUIPadding = Instance.new("UIPadding")
+					dropdownUIPadding.Name = "DropdownUIPadding"
+					dropdownUIPadding.PaddingLeft = UDim.new(0, 15)
+					dropdownUIPadding.PaddingRight = UDim.new(0, 15)
+					dropdownUIPadding.Parent = dropdown
+
+					local interact = Instance.new("TextButton")
+					interact.Name = "Interact"
+					interact.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json")
+					interact.Text = ""
+					interact.TextColor3 = Color3.fromRGB(0, 0, 0)
+					interact.TextSize = 14
+					interact.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					interact.BackgroundTransparency = 1
+					interact.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					interact.BorderSizePixel = 0
+					interact.Size = UDim2.new(1, 0, 0, 38)
+					interact.Parent = dropdown
+
+					local dropdownName = Instance.new("TextLabel")
+					dropdownName.Name = "DropdownName"
+					dropdownName.FontFace = Font.new(assets.interFont)
+					dropdownName.Text = Settings.Default and (DropdownFunctions.Settings.Name .. " • " .. table.concat(Selected, ", ")) or (DropdownFunctions.Settings.Name .. "...")
+					dropdownName.RichText = true
+					dropdownName.TextColor3 = Color3.fromRGB(255, 255, 255)
+					dropdownName.TextSize = 13
+					dropdownName.TextTransparency = 0.5
+					dropdownName.TextTruncate = Enum.TextTruncate.SplitWord
+					dropdownName.TextXAlignment = Enum.TextXAlignment.Left
+					dropdownName.AutomaticSize = Enum.AutomaticSize.Y
+					dropdownName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					dropdownName.BackgroundTransparency = 1
+					dropdownName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					dropdownName.BorderSizePixel = 0
+					dropdownName.Size = UDim2.new(1, -20, 0, 38)
+					dropdownName.Parent = dropdown
+
+					local dropdownUIStroke = Instance.new("UIStroke")
+					dropdownUIStroke.Name = "DropdownUIStroke"
+					dropdownUIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					dropdownUIStroke.Color = Color3.fromRGB(255, 255, 255)
+					dropdownUIStroke.Transparency = 0.95
+					dropdownUIStroke.Parent = dropdown
+
+					local dropdownUICorner = Instance.new("UICorner")
+					dropdownUICorner.Name = "DropdownUICorner"
+					dropdownUICorner.CornerRadius = UDim.new(0, 6)
+					dropdownUICorner.Parent = dropdown
+
+					local dropdownImage = Instance.new("ImageLabel")
+					dropdownImage.Name = "DropdownImage"
+					dropdownImage.Image = assets.dropdown
+					dropdownImage.ImageTransparency = 0.5
+					dropdownImage.AnchorPoint = Vector2.new(1, 0)
+					dropdownImage.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					dropdownImage.BackgroundTransparency = 1
+					dropdownImage.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					dropdownImage.BorderSizePixel = 0
+					dropdownImage.Position = UDim2.new(1, 0, 0, 12)
+					dropdownImage.Size = UDim2.fromOffset(14, 14)
+					dropdownImage.Parent = dropdown
+
+					local dropdownFrame = Instance.new("ScrollingFrame")
+					dropdownFrame.Name = "DropdownFrame"
+					dropdownFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+					dropdownFrame.BackgroundTransparency = 0.1
+					dropdownFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					dropdownFrame.BorderSizePixel = 0
+					dropdownFrame.ClipsDescendants = true
+					dropdownFrame.ZIndex = 20
+					-- dropdownFrame: симметричный зазор 8px с обеих сторон от dropdown
+					-- dropdown content = W-68 (W=section, -38 section padding, -30 dropdown padding)
+					-- для зазора G=8: Size.X.Offset = 30-2*8 = 14, Position.X = 8-15 = -7
+					dropdownFrame.Size = UDim2.new(1, 14, 0, 0)
+					dropdownFrame.Position = UDim2.new(0, -7, 0, 38)
+					dropdownFrame.Visible = false
+					dropdownFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+					dropdownFrame.CanvasSize = UDim2.new()
+					dropdownFrame.ScrollBarThickness = 3
+					dropdownFrame.ScrollBarImageColor3 = Color3.fromRGB(200, 200, 200)
+					dropdownFrame.ScrollBarImageTransparency = 0.4
+					dropdownFrame.BottomImage = ""
+					dropdownFrame.TopImage = ""
+					dropdownFrame.ScrollingDirection = Enum.ScrollingDirection.Y
+
+					-- FIX8: UIStroke чтобы рамка дропдауна совпадала с фоном
+					local _ddStroke = Instance.new("UIStroke")
+					_ddStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					_ddStroke.Color = Color3.fromRGB(255, 255, 255)
+					_ddStroke.Transparency = 0.9
+					_ddStroke.Thickness = 1
+					_ddStroke.Parent = dropdownFrame
+
+					local _ddFC = Instance.new("UICorner")
+					_ddFC.CornerRadius = UDim.new(0, 6)
+					_ddFC.Parent = dropdownFrame
+
+					local dropdownFrameUIPadding = Instance.new("UIPadding")
+					dropdownFrameUIPadding.Name = "DropdownFrameUIPadding"
+					dropdownFrameUIPadding.PaddingTop = UDim.new(0, 6)
+					dropdownFrameUIPadding.PaddingBottom = UDim.new(0, 6)  -- FIX: was 14, reduced bottom gap
+					dropdownFrameUIPadding.PaddingLeft = UDim.new(0, 10)
+					dropdownFrameUIPadding.PaddingRight = UDim.new(0, 10)
+					dropdownFrameUIPadding.Parent = dropdownFrame
+
+					local dropdownFrameUIListLayout = Instance.new("UIListLayout")
+					dropdownFrameUIListLayout.Name = "DropdownFrameUIListLayout"
+					dropdownFrameUIListLayout.Padding = UDim.new(0, 5)
+					dropdownFrameUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+					dropdownFrameUIListLayout.Parent = dropdownFrame
+
+					local search = Instance.new("Frame")
+					search.Name = "Search"
+					search.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					search.BackgroundTransparency = 0.95
+					search.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					search.BorderSizePixel = 0
+					search.LayoutOrder = -1
+					-- search: fills dropdownFrame content (PaddingLeft/Right=10 on dropdownFrame handles centering)
+					search.Size = UDim2.new(1, 0, 0, 30)
+					search.AnchorPoint = Vector2.new(0, 0)
+					search.Parent = dropdownFrame
+					search.Visible = DropdownFunctions.Settings.Search
+
+					local sectionUICorner = Instance.new("UICorner")
+					sectionUICorner.Name = "SectionUICorner"
+					sectionUICorner.Parent = search
+
+					local searchIcon = Instance.new("ImageLabel")
+					searchIcon.Name = "SearchIcon"
+					searchIcon.Image = assets.searchIcon
+					searchIcon.ImageColor3 = Color3.fromRGB(180, 180, 180)
+					searchIcon.AnchorPoint = Vector2.new(0, 0.5)
+					searchIcon.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					searchIcon.BackgroundTransparency = 1
+					searchIcon.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					searchIcon.BorderSizePixel = 0
+					searchIcon.Position = UDim2.fromScale(0, 0.5)
+					searchIcon.Size = UDim2.fromOffset(12, 12)
+					searchIcon.Parent = search
+
+					local uIPadding = Instance.new("UIPadding")
+					uIPadding.Name = "UIPadding"
+					uIPadding.PaddingLeft = UDim.new(0, 15)
+					uIPadding.Parent = search
+
+					local searchBox = Instance.new("TextBox")
+					searchBox.Name = "SearchBox"
+					searchBox.CursorPosition = -1
+					searchBox.FontFace = Font.new(
+						assets.interFont,
+						Enum.FontWeight.Medium,
+						Enum.FontStyle.Normal
+					)
+					searchBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
+					searchBox.PlaceholderText = "Search..."
+					searchBox.Text = ""
+					searchBox.TextColor3 = Color3.fromRGB(200, 200, 200)
+					searchBox.TextSize = 14
+					searchBox.TextXAlignment = Enum.TextXAlignment.Left
+					searchBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					searchBox.BackgroundTransparency = 1
+					searchBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					searchBox.BorderSizePixel = 0
+					searchBox.Size = UDim2.fromScale(1, 1)
+
+					local function CalculateDropdownSize()
+						-- FIX: count-based height — works before frame renders (AbsoluteSize=0 issue)
+						local optH = 30  -- option height px (matches option.Size)
+						local spacing = dropdownFrameUIListLayout.Padding.Offset  -- 5px
+						local padT = dropdownFrameUIPadding.PaddingTop.Offset    -- 6px
+						local padB = dropdownFrameUIPadding.PaddingBottom.Offset  -- 6px
+						local count = 0
+						for _, v in pairs(dropdownFrame:GetChildren()) do
+							-- only count actual visible GUI options (GuiObject check prevents UIStroke/UICorner/etc errors)
+							if v:IsA("GuiObject") and v.Visible then
+								count += 1
+							end
+						end
+						if count == 0 then return 0 end
+						return count * optH + math.max(count - 1, 0) * spacing + padT + padB
+					end
+
+					local function findOption()
+						local searchTerm = searchBox.Text:lower()
+
+						for _, v in pairs(OptionObjs) do
+							local optionText = v.NameLabel.Text:lower()
+							local isVisible = string.find(optionText, searchTerm) ~= nil
+
+							if v.Button.Visible ~= isVisible then
+								v.Button.Visible = isVisible
+							end
+						end
+
+						-- defer so Roblox layout pass updates AbsoluteSize before we read it
+						if dropped then
+							task.defer(function()
+								local _uiScale = (MacLib._uiScale or 1)
+					-- FIX: removed maxDropHeight cap, all options visible without scroll
+								local rawH = CalculateDropdownSize()
+								local frameH = rawH
+								local openHeight = 38 + math.max(frameH, 1)
+								dropdown.Size = UDim2.new(1, 0, 0, openHeight)
+								dropdownFrame.Size = UDim2.new(1, 14, 0, math.max(frameH, 1))
+							end)
+						end
+					end
+
+					searchBox:GetPropertyChangedSignal("Text"):Connect(findOption)
+
+					local uIPadding1 = Instance.new("UIPadding")
+					uIPadding1.Name = "UIPadding"
+					uIPadding1.PaddingLeft = UDim.new(0, 23)
+					uIPadding1.Parent = searchBox
+
+					searchBox.Parent = search
+
+					local tweensettings = {
+						duration = 0.2,
+						easingStyle = Enum.EasingStyle.Quint,
+						transparencyIn = 0.2,
+						transparencyOut = 0.5,
+						checkSizeIncrease = 12,
+						checkSizeDecrease = -13,
+						waitTime = 1
+					}
+
+					local function Toggle(optionName, State)
+						local option = OptionObjs[optionName]
+
+						if not option then return end
+
+						local checkmark = option.Checkmark
+						local optionNameLabel = option.NameLabel
+
+						if State then
+							if DropdownFunctions.Settings.Multi then
+								if not table.find(Selected, optionName) then
+									table.insert(Selected, optionName)
+									DropdownFunctions.Value = Selected
+								end
+							else
+								for name, opt in pairs(OptionObjs) do
+									if name ~= optionName then
+										Tween(opt.Checkmark, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle), {
+											Size = UDim2.new(opt.Checkmark.Size.X.Scale, tweensettings.checkSizeDecrease, opt.Checkmark.Size.Y.Scale, opt.Checkmark.Size.Y.Offset)
+										}):Play()
+										Tween(opt.NameLabel, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle), {
+											TextTransparency = tweensettings.transparencyOut
+										}):Play()
+										opt.Checkmark.TextTransparency = 1
+									end
+								end
+								Selected = {optionName}
+								DropdownFunctions.Value = Selected[1]
+							end
+							Tween(checkmark, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle), {
+								Size = UDim2.new(checkmark.Size.X.Scale, tweensettings.checkSizeIncrease, checkmark.Size.Y.Scale, checkmark.Size.Y.Offset)
+							}):Play()
+							Tween(optionNameLabel, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle), {
+								TextTransparency = tweensettings.transparencyIn
+							}):Play()
+							checkmark.TextTransparency = 0
+						else
+							if DropdownFunctions.Settings.Multi then
+								local idx = table.find(Selected, optionName)
+								if idx then
+									table.remove(Selected, idx)
+								end
+							else
+								Selected = {}
+							end
+							Tween(checkmark, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle), {
+								Size = UDim2.new(checkmark.Size.X.Scale, tweensettings.checkSizeDecrease, checkmark.Size.Y.Scale, checkmark.Size.Y.Offset)
+							}):Play()
+							Tween(optionNameLabel, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle), {
+								TextTransparency = tweensettings.transparencyOut
+							}):Play()
+							checkmark.TextTransparency = 1
+						end
+
+						if Settings.Required and #Selected == 0 and not State then
+							return
+						end
+
+						if #Selected > 0 then
+							dropdownName.Text = DropdownFunctions.Settings.Name .. " • " .. table.concat(Selected, ", ")
+						else
+							dropdownName.Text = DropdownFunctions.Settings.Name .. "..."
+						end
+					end
+
+					local dropped = false
+					local db = false
+
+					local function ToggleDropdown()
+						if _isMobileScrolling(dropdown) then return end  -- FIX Bug3
+						if db then return end
+						db = true
+						local defaultDropdownSize = 38
+						local isDropdownOpen = not dropped
+						local _uiScale = (MacLib._uiScale or 1)
+						-- FIX: height = all options (no cap for <=8), viewport cap for large lists
+						local rawHeight = CalculateDropdownSize()
+						local vpH = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.Y or 600
+						local safeMax = math.floor(vpH * 0.45)  -- max 45% of viewport for huge lists
+						local frameH = math.min(rawHeight, safeMax)
+						local openHeight = defaultDropdownSize + math.max(frameH, 1)
+						local targetSize = isDropdownOpen and UDim2.new(1, 0, 0, openHeight) or UDim2.new(1, 0, 0, defaultDropdownSize)
+
+						local dropTween = Tween(dropdown, TweenInfo.new(0.2, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
+							Size = targetSize
+						})
+						local iconTween = Tween(dropdownImage, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+							Rotation = isDropdownOpen and -90 or 0
+						})
+
+						dropTween:Play()
+						iconTween:Play()
+
+						if isDropdownOpen then
+							dropdownFrame.Visible = true
+							-- FIX8: размер фрейма точно совпадает с открытой областью
+							dropdownFrame.Size = UDim2.new(1, 14, 0, math.max(frameH, 1))
+							dropTween.Completed:Connect(function()
+								db = false
+							end)
+						else
+							dropdownFrame.Visible = false
+							dropdownFrame.CanvasPosition = Vector2.new(0, 0)
+							dropTween.Completed:Connect(function() db = false end)
+						end
+
+						dropped = isDropdownOpen
+					end
+
+					interact.MouseButton1Click:Connect(ToggleDropdown)
+
+					local function addOption(i, v)
+						local option = Instance.new("TextButton")
+						option.Name = "Option"
+						option.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json")
+						option.Text = ""
+						option.TextColor3 = Color3.fromRGB(0, 0, 0)
+						option.TextSize = 14
+						option.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+						option.BackgroundTransparency = 1
+						option.BorderColor3 = Color3.fromRGB(0, 0, 0)
+						option.BorderSizePixel = 0
+						option.Size = UDim2.new(1, 0, 0, 30)
+
+						local optionUIPadding = Instance.new("UIPadding")
+						optionUIPadding.Name = "OptionUIPadding"
+						optionUIPadding.PaddingLeft = UDim.new(0, 15)
+						optionUIPadding.Parent = option
+
+						local optionName = Instance.new("TextLabel")
+						optionName.Name = "OptionName"
+						optionName.FontFace = Font.new(assets.interFont)
+						optionName.Text = v
+						optionName.RichText = true
+						optionName.TextColor3 = Color3.fromRGB(255, 255, 255)
+						optionName.TextSize = 13
+						optionName.TextTransparency = 0.5
+						optionName.TextTruncate = Enum.TextTruncate.AtEnd
+						optionName.TextXAlignment = Enum.TextXAlignment.Left
+						optionName.TextYAlignment = Enum.TextYAlignment.Top
+						optionName.AnchorPoint = Vector2.new(0, 0.5)
+						optionName.AutomaticSize = Enum.AutomaticSize.XY
+						optionName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+						optionName.BackgroundTransparency = 1
+						optionName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+						optionName.BorderSizePixel = 0
+						optionName.Position = UDim2.fromScale(1.3e-07, 0.5)
+						optionName.Parent = option
+
+						local optionUIListLayout = Instance.new("UIListLayout")
+						optionUIListLayout.Name = "OptionUIListLayout"
+						optionUIListLayout.Padding = UDim.new(0, 10)
+						optionUIListLayout.FillDirection = Enum.FillDirection.Horizontal
+						optionUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+						optionUIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+						optionUIListLayout.Parent = option
+
+						local checkmark = Instance.new("TextLabel")
+						checkmark.Name = "Checkmark"
+						checkmark.FontFace = Font.new(assets.interFont)
+						checkmark.Text = "✓"
+						checkmark.TextColor3 = Color3.fromRGB(255, 255, 255)
+						checkmark.TextSize = 13
+						checkmark.TextTransparency = 1
+						checkmark.TextXAlignment = Enum.TextXAlignment.Left
+						checkmark.TextYAlignment = Enum.TextYAlignment.Top
+						checkmark.AnchorPoint = Vector2.new(0, 0.5)
+						checkmark.AutomaticSize = Enum.AutomaticSize.Y
+						checkmark.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+						checkmark.BackgroundTransparency = 1
+						checkmark.BorderColor3 = Color3.fromRGB(0, 0, 0)
+						checkmark.BorderSizePixel = 0
+						checkmark.LayoutOrder = -1
+						checkmark.Position = UDim2.fromScale(1.3e-07, 0.5)
+						checkmark.Size = UDim2.fromOffset(-10, 0)
+						checkmark.Parent = option
+
+						option.Parent = dropdownFrame
+
+						dropdownFrame.Parent = dropdown
+						OptionObjs[v] = {
+							Index = i,
+							Button = option,
+							NameLabel = optionName,
+							Checkmark = checkmark
+						}
+
+						local tweensettings = {
+							duration = 0.2,
+							easingStyle = Enum.EasingStyle.Quint,
+							transparencyIn = 0.2,
+							transparencyOut = 0.5,
+							checkSizeIncrease = 12,
+							checkSizeDecrease = -optionUIListLayout.Padding.Offset,
+							waitTime = 1
+						}
+						local tweens = {
+							checkIn = Tween(checkmark, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle), {
+								Size = UDim2.new(checkmark.Size.X.Scale, tweensettings.checkSizeIncrease, checkmark.Size.Y.Scale, checkmark.Size.Y.Offset)
+							}),
+							checkOut = Tween(checkmark, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle),{
+								Size = UDim2.new(checkmark.Size.X.Scale, tweensettings.checkSizeDecrease, checkmark.Size.Y.Scale, checkmark.Size.Y.Offset)
+							}),
+							nameIn = Tween(optionName, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle),{
+								TextTransparency = tweensettings.transparencyIn
+							}),
+							nameOut = Tween(optionName, TweenInfo.new(tweensettings.duration, tweensettings.easingStyle),{
+								TextTransparency = tweensettings.transparencyOut
+							})
+						}
+
+						local isSelected = false
+						if DropdownFunctions.Settings.Default then
+							if DropdownFunctions.Settings.Multi then
+								isSelected = table.find(DropdownFunctions.Settings.Default, v) and true or false
+							else
+								isSelected = (DropdownFunctions.Settings.Default == i) and true or false
+							end
+						end
+						Toggle(v, isSelected)
+
+						local option = OptionObjs[v].Button
+
+						option.MouseButton1Click:Connect(function()
+							local isSelected = table.find(Selected, v) and true or false
+							local newSelected = not isSelected
+
+							if DropdownFunctions.Settings.Required and not newSelected and #Selected <= 1 then
+								return
+							end
+
+							Toggle(v, newSelected)
+
+							task.spawn(function()
+								if DropdownFunctions.Settings.Multi then
+									local Return = {}
+									for _, opt in ipairs(Selected) do
+										Return[opt] = true
+									end
+									if DropdownFunctions.Settings.Callback then
+										DropdownFunctions.Settings.Callback(Return)
+									end
+
+								else
+									if newSelected and DropdownFunctions.Settings.Callback then
+										DropdownFunctions.Settings.Callback(Selected[1] or nil)
+									end
+								end
+							end)
+						end)
+
+						if dropped then
+							task.defer(function()
+								local _uiScale = (MacLib._uiScale or 1)
+					-- FIX: removed maxDropHeight cap, all options visible without scroll
+								local rawH = CalculateDropdownSize()
+								local frameH2 = rawH
+								local openHeight = 38 + math.max(frameH2, 1)
+								dropdown.Size = UDim2.new(1, 0, 0, openHeight)
+								dropdownFrame.Size = UDim2.new(1, 14, 0, math.max(frameH2, 1))
+							end)
+						end
+					end
+
+					if DropdownFunctions.Settings.Options then
+						for i, v in pairs(DropdownFunctions.Settings.Options) do
+							addOption(i, v)
+						end
+					end
+
+					function DropdownFunctions:UpdateName(New)
+						dropdownName.Text = New
+					end
+					function DropdownFunctions:SetVisibility(State)
+						dropdown.Visible = State
+					end
+					function DropdownFunctions:UpdateSelection(newSelection)
+						if not newSelection then return end
+
+						for option, _ in pairs(OptionObjs) do
+							Toggle(option, false)
+						end
+
+						local selectedOptions = {}
+						if type(newSelection) == "number" then
+							for option, data in pairs(OptionObjs) do
+								local isSelected = data.Index == newSelection
+								Toggle(option, isSelected)
+								if isSelected then
+									table.insert(selectedOptions, option)
+								end
+							end
+						elseif type(newSelection) == "string" then
+							for option, data in pairs(OptionObjs) do
+								local isSelected = option == newSelection
+								Toggle(option, isSelected)
+								if isSelected then
+									table.insert(selectedOptions, option)
+								end
+							end
+						elseif type(newSelection) == "table" then
+							for option, _ in pairs(OptionObjs) do
+								local isSelected = table.find(newSelection, option) ~= nil
+								Toggle(option, isSelected)
+								if isSelected then
+									table.insert(selectedOptions, option)
+								end
+							end
+						end
+
+						if DropdownFunctions.Settings.Callback then
+							if DropdownFunctions.Settings.Multi then
+								local Return = {}
+								for _, opt in ipairs(selectedOptions) do
+									Return[opt] = true
+								end
+								DropdownFunctions.Settings.Callback(Return)
+							else
+								DropdownFunctions.Settings.Callback(selectedOptions[1] or nil)
+							end
+						end
+					end
+					function DropdownFunctions:InsertOptions(newOptions)
+						if not newOptions then return end
+						DropdownFunctions.Settings.Options = newOptions
+						for i, v in pairs(newOptions) do
+							addOption(i, v)
+						end
+					end
+					function DropdownFunctions:ClearOptions()
+						for _, optionData in pairs(OptionObjs) do
+							optionData.Button:Destroy()
+						end
+						OptionObjs = {}
+						Selected = {}
+
+						if dropped then
+							dropdown.Size = UDim2.new(1, 0, 0, CalculateDropdownSize())
+						end
+					end
+					function DropdownFunctions:GetOptions()
+						local optionsStatus = {}
+
+						for option, data in pairs(OptionObjs) do
+							local isSelected = table.find(Selected, option) and true or false
+							optionsStatus[option] = isSelected
+						end
+
+						return optionsStatus
+					end
+
+					function DropdownFunctions:RemoveOptions(remove)
+						if not remove then return end
+						for _, optionName in ipairs(remove) do
+							local optionData = OptionObjs[optionName]
+
+							if optionData then
+								for i = #Selected, 1, -1 do
+									if Selected[i] == optionName then
+										table.remove(Selected, i)
+									end
+								end
+
+								optionData.Button:Destroy()
+
+								OptionObjs[optionName] = nil
+							end
+						end
+
+						if dropped then
+							dropdown.Size = UDim2.new(1, 0, 0, CalculateDropdownSize())
+						end
+					end
+					function DropdownFunctions:IsOption(optionName)
+						if not optionName then return end
+						return OptionObjs[optionName] ~= nil
+					end
+
+					function DropdownFunctions:UpdateName(Name)
+						DropdownFunctions.Settings.Name = Name
+						dropdownName.Text = #Selected > 0
+							and (Name .. " • " .. table.concat(Selected, ", "))
+							or (Name .. "...")
+					end
+					function DropdownFunctions:SetCallback(fn)
+						DropdownFunctions.Settings.Callback = fn
+					end
+					function DropdownFunctions:SetVisibility(State)
+						dropdown.Visible = State
+					end
+					function DropdownFunctions:GetValue()
+						return Selected
+					end
+
+					if Flag then
+						MacLib.Options[Flag] = DropdownFunctions
+					end
+					-- ForceAutoLoad
+					if Flag and Settings.ForceAutoLoad then
+						local _origCB = DropdownFunctions.Settings.Callback
+						DropdownFunctions.Settings.Callback = function(v)
+							MacLib:FALSave(Flag, DropdownFunctions)
+							if _origCB then _origCB(v) end
+						end
+						task.defer(function()
+							MacLib:FALLoad(Flag, DropdownFunctions, Settings.FALoadDelay)
+						end)
+					end
+
+					return DropdownFunctions
+				end
+
+				function SectionFunctions:Colorpicker(Settings, Flag)
+					local ColorpickerFunctions = { Settings = Settings, IgnoreConfig = false, Class = "Colorpicker" }
+
+					local isAlpha = ColorpickerFunctions.Settings.Alpha and true or false
+					ColorpickerFunctions.Color = ColorpickerFunctions.Settings.Default
+					ColorpickerFunctions.Alpha = isAlpha and ColorpickerFunctions.Settings.Alpha
+
+					local colorpicker = Instance.new("Frame")
+					colorpicker.Name = "Colorpicker"
+					colorpicker.AutomaticSize = Enum.AutomaticSize.Y
+					colorpicker.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					colorpicker.BackgroundTransparency = 1
+					colorpicker.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					colorpicker.BorderSizePixel = 0
+					colorpicker.Size = UDim2.new(1, 0, 0, 38)
+					colorpicker.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					colorpicker.Parent = section
+
+					local colorpickerName = Instance.new("TextLabel")
+					colorpickerName.Name = "KeybindName"
+					colorpickerName.FontFace = Font.new(assets.interFont)
+					colorpickerName.Text = Settings.Name
+					colorpickerName.TextColor3 = Color3.fromRGB(255, 255, 255)
+					colorpickerName.TextSize = 13
+					colorpickerName.TextTransparency = 0.5
+					colorpickerName.RichText = true
+					colorpickerName.TextTruncate = Enum.TextTruncate.AtEnd
+					colorpickerName.TextXAlignment = Enum.TextXAlignment.Left
+					colorpickerName.TextYAlignment = Enum.TextYAlignment.Top
+					colorpickerName.AnchorPoint = Vector2.new(0, 0.5)
+					colorpickerName.AutomaticSize = Enum.AutomaticSize.XY
+					colorpickerName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					colorpickerName.BackgroundTransparency = 1
+					colorpickerName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					colorpickerName.BorderSizePixel = 0
+					colorpickerName.Position = UDim2.fromScale(0, 0.5)
+					colorpickerName.Parent = colorpicker
+
+					local colorCbg = Instance.new("ImageLabel")
+					colorCbg.Name = "NewColor"
+					colorCbg.Image = assets.grid
+					colorCbg.ScaleType = Enum.ScaleType.Tile
+					colorCbg.TileSize = UDim2.fromOffset(500, 500)
+					colorCbg.AnchorPoint = Vector2.new(1, 0.5)
+					colorCbg.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					colorCbg.BackgroundTransparency = 1
+					colorCbg.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					colorCbg.BorderSizePixel = 0
+					colorCbg.Position = UDim2.fromScale(1, 0.5)
+					colorCbg.Size = UDim2.fromOffset(21, 21)
+
+					local colorC = Instance.new("Frame")
+					colorC.Name = "Color"
+					colorC.AnchorPoint = Vector2.new(0.5, 0.5)
+					colorC.BackgroundColor3 = ColorpickerFunctions.Color
+					colorC.BorderSizePixel = 0
+					colorC.Position = UDim2.fromScale(0.5, 0.5)
+					colorC.Size = UDim2.fromScale(1, 1)
+					colorC.BackgroundTransparency = ColorpickerFunctions.Alpha or 0
+
+					local uICorner = Instance.new("UICorner")
+					uICorner.Name = "UICorner"
+					uICorner.CornerRadius = UDim.new(0, 6)
+					uICorner.Parent = colorC
+
+					local interact = Instance.new("TextButton")
+					interact.Name = "Interact"
+					interact.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json")
+					interact.Text = ""
+					interact.TextColor3 = Color3.fromRGB(0, 0, 0)
+					interact.TextSize = 14
+					interact.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					interact.BackgroundTransparency = 1
+					interact.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					interact.BorderSizePixel = 0
+					interact.Size = UDim2.fromScale(1, 1)
+					interact.Parent = colorC
+
+					colorC.Parent = colorCbg
+
+					local uICorner1 = Instance.new("UICorner")
+					uICorner1.Name = "UICorner"
+					uICorner1.CornerRadius = UDim.new(0, 8)
+					uICorner1.Parent = colorCbg
+
+					colorCbg.Parent = colorpicker
+
+					local colorPicker = Instance.new("Frame")
+					colorPicker.Name = "ColorPicker"
+					colorPicker.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					colorPicker.BackgroundTransparency = 0.5
+					colorPicker.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					colorPicker.BorderSizePixel = 0
+					colorPicker.Size = UDim2.fromScale(1, 1)
+					colorPicker.Visible = false
+
+					local baseUICorner = Instance.new("UICorner")
+					baseUICorner.Name = "BaseUICorner"
+					baseUICorner.CornerRadius = UDim.new(0, 10)
+					baseUICorner.Parent = colorPicker
+
+					local prompt = Instance.new("Frame")
+					prompt.Name = "Prompt"
+					prompt.AnchorPoint = Vector2.new(0.5, 0.5)
+					prompt.AutomaticSize = Enum.AutomaticSize.Y
+					prompt.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+					prompt.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					prompt.BorderSizePixel = 0
+					prompt.Position = UDim2.fromScale(0.5, 0.5)
+					prompt.Size = UDim2.fromOffset(420, 0)
+
+					local promptUIScale = Instance.new("UIScale")
+					promptUIScale.Name = "BaseUIScale"
+					promptUIScale.Parent = prompt
+					promptUIScale.Scale = 0.95
+
+					local globalSettingsUIStroke = Instance.new("UIStroke")
+					globalSettingsUIStroke.Name = "GlobalSettingsUIStroke"
+					globalSettingsUIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					globalSettingsUIStroke.Color = Color3.fromRGB(255, 255, 255)
+					globalSettingsUIStroke.Transparency = 0.9
+					globalSettingsUIStroke.Parent = prompt
+
+					local globalSettingsUICorner = Instance.new("UICorner")
+					globalSettingsUICorner.Name = "GlobalSettingsUICorner"
+					globalSettingsUICorner.CornerRadius = UDim.new(0, 10)
+					globalSettingsUICorner.Parent = prompt
+
+					local uIListLayout = Instance.new("UIListLayout")
+					uIListLayout.Name = "UIListLayout"
+					uIListLayout.Padding = UDim.new(0, 10)
+					uIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+					uIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+					uIListLayout.Parent = prompt
+
+					local colorOptions = Instance.new("Frame")
+					colorOptions.Name = "ColorOptions"
+					colorOptions.AutomaticSize = Enum.AutomaticSize.XY
+					colorOptions.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					colorOptions.BackgroundTransparency = 1
+					colorOptions.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					colorOptions.BorderSizePixel = 0
+					colorOptions.LayoutOrder = 1
+					colorOptions.Size = UDim2.fromScale(1, 0)
+
+					local value = Instance.new("TextButton")
+					value.Name = "Value"
+					value.FontFace = Font.new("rbxasset://fonts/families/SourceSansPro.json")
+					value.Text = ""
+					value.TextColor3 = Color3.fromRGB(0, 0, 0)
+					value.TextSize = 14
+					value.AutoButtonColor = false
+					value.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					value.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					value.BorderSizePixel = 0
+					value.LayoutOrder = 1
+					value.Position = UDim2.fromScale(0.092, 0.886)
+					value.Size = UDim2.new(1, 0, 0, 15)
+
+					local uIGradient = Instance.new("UIGradient")
+					uIGradient.Name = "UIGradient"
+					uIGradient.Color = ColorSequence.new({
+						ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+						ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 0)),
+					})
+					uIGradient.Parent = value
+
+					local slide = Instance.new("Frame")
+					slide.Name = "Slide"
+					slide.AnchorPoint = Vector2.new(0, 0.5)
+					slide.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					slide.BorderColor3 = Color3.fromRGB(27, 42, 53)
+					slide.BorderSizePixel = 0
+					slide.Position = UDim2.fromScale(0, 0.5)
+					slide.Size = UDim2.new(0, 13, 1, 8)
+
+					local uICorner = Instance.new("UICorner")
+					uICorner.Name = "UICorner"
+					uICorner.CornerRadius = UDim.new(1, 0)
+					uICorner.Parent = slide
+
+					local uIStroke = Instance.new("UIStroke")
+					uIStroke.Name = "UIStroke"
+					uIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					uIStroke.Transparency = 0.5
+					uIStroke.Parent = slide
+
+					slide.Parent = value
+
+					local uICorner1 = Instance.new("UICorner")
+					uICorner1.Name = "UICorner"
+					uICorner1.CornerRadius = UDim.new(0, 6)
+					uICorner1.Parent = value
+
+					local uIStroke1 = Instance.new("UIStroke")
+					uIStroke1.Name = "UIStroke"
+					uIStroke1.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					uIStroke1.Color = Color3.fromRGB(255, 255, 255)
+					uIStroke1.Transparency = 0.9
+
+					local uIGradient1 = Instance.new("UIGradient")
+					uIGradient1.Name = "UIGradient"
+					uIGradient1.Color = ColorSequence.new({
+						ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+						ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 0)),
+					})
+					uIGradient1.Rotation = 180
+					uIGradient1.Parent = uIStroke1
+
+					uIStroke1.Parent = value
+
+					value.Parent = colorOptions
+
+					local uIListLayout1 = Instance.new("UIListLayout")
+					uIListLayout1.Name = "UIListLayout"
+					uIListLayout1.Padding = UDim.new(0, 25)
+					uIListLayout1.SortOrder = Enum.SortOrder.LayoutOrder
+					uIListLayout1.Parent = colorOptions
+
+					local wheel = Instance.new("Frame")
+					wheel.Name = "Wheel"
+					wheel.AutomaticSize = Enum.AutomaticSize.Y
+					wheel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					wheel.BackgroundTransparency = 1
+					wheel.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					wheel.BorderSizePixel = 0
+					wheel.Size = isMobile and UDim2.new(1, 0, 0, 150) or UDim2.new(1, 0, 0, 100)
+
+					local wheel1 = Instance.new("ImageButton")
+					wheel1.Name = "Wheel"
+					wheel1.Image = assets.colorWheel
+					wheel1.AutoButtonColor = false
+					wheel1.Active = false
+					wheel1.BackgroundColor3 = Color3.fromRGB(248, 248, 248)
+					wheel1.BackgroundTransparency = 1
+					wheel1.BorderColor3 = Color3.fromRGB(27, 42, 53)
+					wheel1.Selectable = false
+					wheel1.Size = UDim2.fromOffset(220, 220)
+					wheel1.SizeConstraint = Enum.SizeConstraint.RelativeYY
+
+					local target = Instance.new("ImageLabel")
+					target.Name = "Target"
+					target.Image = assets.colorTarget
+					target.ImageColor3 = Color3.fromRGB(0, 0, 0)
+					target.AnchorPoint = Vector2.new(0.5, 0.5)
+					target.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					target.BackgroundTransparency = 1
+					target.BorderColor3 = Color3.fromRGB(27, 42, 53)
+					target.Position = UDim2.fromScale(0.5, 0.5)
+					target.Size = UDim2.fromOffset(22, 22)
+					target.SizeConstraint = Enum.SizeConstraint.RelativeYY
+					target.Parent = wheel1
+
+					wheel1.Parent = wheel
+
+					local inputs = Instance.new("Frame")
+					inputs.Name = "Inputs"
+					inputs.AnchorPoint = Vector2.new(1, 0.5)
+					inputs.AutomaticSize = Enum.AutomaticSize.XY
+					inputs.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputs.BackgroundTransparency = 1
+					inputs.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputs.BorderSizePixel = 0
+					inputs.LayoutOrder = 1
+					inputs.Position = UDim2.fromScale(1, 0.5)
+
+					local uIListLayout2 = Instance.new("UIListLayout")
+					uIListLayout2.Name = "UIListLayout"
+					uIListLayout2.Padding = UDim.new(0, 5)
+					uIListLayout2.SortOrder = Enum.SortOrder.LayoutOrder
+					uIListLayout2.Parent = inputs
+
+					local red = Instance.new("Frame")
+					red.Name = "Red"
+					red.AutomaticSize = Enum.AutomaticSize.XY
+					red.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					red.BackgroundTransparency = 1
+					red.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					red.BorderSizePixel = 0
+					red.LayoutOrder = 1
+					red.Size = UDim2.fromOffset(0, 38)
+
+					local inputName = Instance.new("TextLabel")
+					inputName.Name = "InputName"
+					inputName.FontFace = Font.new(assets.interFont)
+					inputName.Text = "Red"
+					inputName.TextColor3 = Color3.fromRGB(255, 255, 255)
+					inputName.TextSize = 13
+					inputName.TextTransparency = 0.5
+					inputName.TextTruncate = Enum.TextTruncate.AtEnd
+					inputName.TextXAlignment = Enum.TextXAlignment.Left
+					inputName.TextYAlignment = Enum.TextYAlignment.Top
+					inputName.AnchorPoint = Vector2.new(0, 0.5)
+					inputName.AutomaticSize = Enum.AutomaticSize.XY
+					inputName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputName.BackgroundTransparency = 1
+					inputName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputName.BorderSizePixel = 0
+					inputName.LayoutOrder = 2
+					inputName.Position = UDim2.fromScale(0, 0.5)
+					inputName.Parent = red
+
+					local uIListLayout3 = Instance.new("UIListLayout")
+					uIListLayout3.Name = "UIListLayout"
+					uIListLayout3.Padding = UDim.new(0, 15)
+					uIListLayout3.FillDirection = Enum.FillDirection.Horizontal
+					uIListLayout3.SortOrder = Enum.SortOrder.LayoutOrder
+					uIListLayout3.VerticalAlignment = Enum.VerticalAlignment.Center
+					uIListLayout3.Parent = red
+
+					local inputBox = Instance.new("TextBox")
+					inputBox.Name = "InputBox"
+					inputBox.ClearTextOnFocus = false
+					inputBox.CursorPosition = -1
+					inputBox.FontFace = Font.new(assets.interFont)
+					inputBox.Text = "255"
+					inputBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+					inputBox.TextSize = 12
+					inputBox.TextTransparency = 0.1
+					inputBox.TextXAlignment = Enum.TextXAlignment.Left
+					inputBox.AnchorPoint = Vector2.new(1, 0.5)
+					inputBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputBox.BackgroundTransparency = 0.95
+					inputBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputBox.BorderSizePixel = 0
+					inputBox.ClipsDescendants = true
+					inputBox.LayoutOrder = 1
+					inputBox.Position = UDim2.fromScale(1, 0.5)
+					inputBox.Size = UDim2.fromOffset(75, 25)
+
+					local inputBoxUICorner = Instance.new("UICorner")
+					inputBoxUICorner.Name = "InputBoxUICorner"
+					inputBoxUICorner.CornerRadius = UDim.new(0, 4)
+					inputBoxUICorner.Parent = inputBox
+
+					local inputBoxUIStroke = Instance.new("UIStroke")
+					inputBoxUIStroke.Name = "InputBoxUIStroke"
+					inputBoxUIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					inputBoxUIStroke.Color = Color3.fromRGB(255, 255, 255)
+					inputBoxUIStroke.Transparency = 0.9
+					inputBoxUIStroke.Parent = inputBox
+
+					local inputBoxUISizeConstraint = Instance.new("UISizeConstraint")
+					inputBoxUISizeConstraint.Name = "InputBoxUISizeConstraint"
+					inputBoxUISizeConstraint.Parent = inputBox
+
+					local inputBoxUIPadding = Instance.new("UIPadding")
+					inputBoxUIPadding.Name = "InputBoxUIPadding"
+					inputBoxUIPadding.PaddingLeft = UDim.new(0, 8)
+					inputBoxUIPadding.PaddingRight = UDim.new(0, 10)
+					inputBoxUIPadding.Parent = inputBox
+
+					inputBox.Parent = red
+
+					red.Parent = inputs
+
+					local green = Instance.new("Frame")
+					green.Name = "Green"
+					green.AutomaticSize = Enum.AutomaticSize.XY
+					green.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					green.BackgroundTransparency = 1
+					green.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					green.BorderSizePixel = 0
+					green.LayoutOrder = 2
+					green.Size = UDim2.fromOffset(0, 38)
+
+					local inputName1 = Instance.new("TextLabel")
+					inputName1.Name = "InputName"
+					inputName1.FontFace = Font.new(assets.interFont)
+					inputName1.Text = "Green"
+					inputName1.TextColor3 = Color3.fromRGB(255, 255, 255)
+					inputName1.TextSize = 13
+					inputName1.TextTransparency = 0.5
+					inputName1.TextTruncate = Enum.TextTruncate.AtEnd
+					inputName1.TextXAlignment = Enum.TextXAlignment.Left
+					inputName1.TextYAlignment = Enum.TextYAlignment.Top
+					inputName1.AnchorPoint = Vector2.new(0, 0.5)
+					inputName1.AutomaticSize = Enum.AutomaticSize.XY
+					inputName1.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputName1.BackgroundTransparency = 1
+					inputName1.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputName1.BorderSizePixel = 0
+					inputName1.LayoutOrder = 2
+					inputName1.Position = UDim2.fromScale(0, 0.5)
+					inputName1.Parent = green
+
+					local uIListLayout4 = Instance.new("UIListLayout")
+					uIListLayout4.Name = "UIListLayout"
+					uIListLayout4.Padding = UDim.new(0, 15)
+					uIListLayout4.FillDirection = Enum.FillDirection.Horizontal
+					uIListLayout4.SortOrder = Enum.SortOrder.LayoutOrder
+					uIListLayout4.VerticalAlignment = Enum.VerticalAlignment.Center
+					uIListLayout4.Parent = green
+
+					local inputBox1 = Instance.new("TextBox")
+					inputBox1.Name = "InputBox"
+					inputBox1.ClearTextOnFocus = false
+					inputBox1.FontFace = Font.new(assets.interFont)
+					inputBox1.Text = "255"
+					inputBox1.TextColor3 = Color3.fromRGB(255, 255, 255)
+					inputBox1.TextSize = 12
+					inputBox1.TextTransparency = 0.1
+					inputBox1.TextXAlignment = Enum.TextXAlignment.Left
+					inputBox1.AnchorPoint = Vector2.new(1, 0.5)
+					inputBox1.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputBox1.BackgroundTransparency = 0.95
+					inputBox1.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputBox1.BorderSizePixel = 0
+					inputBox1.ClipsDescendants = true
+					inputBox1.LayoutOrder = 1
+					inputBox1.Position = UDim2.fromScale(1, 0.5)
+					inputBox1.Size = UDim2.fromOffset(75, 25)
+
+					local inputBoxUICorner1 = Instance.new("UICorner")
+					inputBoxUICorner1.Name = "InputBoxUICorner"
+					inputBoxUICorner1.CornerRadius = UDim.new(0, 4)
+					inputBoxUICorner1.Parent = inputBox1
+
+					local inputBoxUIStroke1 = Instance.new("UIStroke")
+					inputBoxUIStroke1.Name = "InputBoxUIStroke"
+					inputBoxUIStroke1.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					inputBoxUIStroke1.Color = Color3.fromRGB(255, 255, 255)
+					inputBoxUIStroke1.Transparency = 0.9
+					inputBoxUIStroke1.Parent = inputBox1
+
+					local inputBoxUISizeConstraint1 = Instance.new("UISizeConstraint")
+					inputBoxUISizeConstraint1.Name = "InputBoxUISizeConstraint"
+					inputBoxUISizeConstraint1.Parent = inputBox1
+
+					local inputBoxUIPadding1 = Instance.new("UIPadding")
+					inputBoxUIPadding1.Name = "InputBoxUIPadding"
+					inputBoxUIPadding1.PaddingLeft = UDim.new(0, 8)
+					inputBoxUIPadding1.PaddingRight = UDim.new(0, 10)
+					inputBoxUIPadding1.Parent = inputBox1
+
+					inputBox1.Parent = green
+
+					green.Parent = inputs
+
+					local blue = Instance.new("Frame")
+					blue.Name = "Blue"
+					blue.AutomaticSize = Enum.AutomaticSize.XY
+					blue.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					blue.BackgroundTransparency = 1
+					blue.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					blue.BorderSizePixel = 0
+					blue.LayoutOrder = 3
+					blue.Size = UDim2.fromOffset(0, 38)
+
+					local inputName2 = Instance.new("TextLabel")
+					inputName2.Name = "InputName"
+					inputName2.FontFace = Font.new(assets.interFont)
+					inputName2.Text = "Blue"
+					inputName2.TextColor3 = Color3.fromRGB(255, 255, 255)
+					inputName2.TextSize = 13
+					inputName2.TextTransparency = 0.5
+					inputName2.TextTruncate = Enum.TextTruncate.AtEnd
+					inputName2.TextXAlignment = Enum.TextXAlignment.Left
+					inputName2.TextYAlignment = Enum.TextYAlignment.Top
+					inputName2.AnchorPoint = Vector2.new(0, 0.5)
+					inputName2.AutomaticSize = Enum.AutomaticSize.XY
+					inputName2.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputName2.BackgroundTransparency = 1
+					inputName2.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputName2.BorderSizePixel = 0
+					inputName2.LayoutOrder = 2
+					inputName2.Position = UDim2.fromScale(0, 0.5)
+					inputName2.Parent = blue
+
+					local uIListLayout5 = Instance.new("UIListLayout")
+					uIListLayout5.Name = "UIListLayout"
+					uIListLayout5.Padding = UDim.new(0, 15)
+					uIListLayout5.FillDirection = Enum.FillDirection.Horizontal
+					uIListLayout5.SortOrder = Enum.SortOrder.LayoutOrder
+					uIListLayout5.VerticalAlignment = Enum.VerticalAlignment.Center
+					uIListLayout5.Parent = blue
+
+					local inputBox2 = Instance.new("TextBox")
+					inputBox2.Name = "InputBox"
+					inputBox2.ClearTextOnFocus = false
+					inputBox2.FontFace = Font.new(assets.interFont)
+					inputBox2.Text = "255"
+					inputBox2.TextColor3 = Color3.fromRGB(255, 255, 255)
+					inputBox2.TextSize = 12
+					inputBox2.TextTransparency = 0.1
+					inputBox2.TextXAlignment = Enum.TextXAlignment.Left
+					inputBox2.AnchorPoint = Vector2.new(1, 0.5)
+					inputBox2.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputBox2.BackgroundTransparency = 0.95
+					inputBox2.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputBox2.BorderSizePixel = 0
+					inputBox2.ClipsDescendants = true
+					inputBox2.LayoutOrder = 1
+					inputBox2.Position = UDim2.fromScale(1, 0.5)
+					inputBox2.Size = UDim2.fromOffset(75, 25)
+
+					local inputBoxUICorner2 = Instance.new("UICorner")
+					inputBoxUICorner2.Name = "InputBoxUICorner"
+					inputBoxUICorner2.CornerRadius = UDim.new(0, 4)
+					inputBoxUICorner2.Parent = inputBox2
+
+					local inputBoxUIStroke2 = Instance.new("UIStroke")
+					inputBoxUIStroke2.Name = "InputBoxUIStroke"
+					inputBoxUIStroke2.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					inputBoxUIStroke2.Color = Color3.fromRGB(255, 255, 255)
+					inputBoxUIStroke2.Transparency = 0.9
+					inputBoxUIStroke2.Parent = inputBox2
+
+					local inputBoxUISizeConstraint2 = Instance.new("UISizeConstraint")
+					inputBoxUISizeConstraint2.Name = "InputBoxUISizeConstraint"
+					inputBoxUISizeConstraint2.Parent = inputBox2
+
+					local inputBoxUIPadding2 = Instance.new("UIPadding")
+					inputBoxUIPadding2.Name = "InputBoxUIPadding"
+					inputBoxUIPadding2.PaddingLeft = UDim.new(0, 8)
+					inputBoxUIPadding2.PaddingRight = UDim.new(0, 10)
+					inputBoxUIPadding2.Parent = inputBox2
+
+					inputBox2.Parent = blue
+
+					blue.Parent = inputs
+
+					local alpha = Instance.new("Frame")
+					alpha.Name = "Alpha"
+					alpha.AutomaticSize = Enum.AutomaticSize.XY
+					alpha.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					alpha.BackgroundTransparency = 1
+					alpha.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					alpha.BorderSizePixel = 0
+					alpha.LayoutOrder = 4
+					alpha.Size = UDim2.fromOffset(0, 38)
+					alpha.Visible = isAlpha
+
+					local inputName3 = Instance.new("TextLabel")
+					inputName3.Name = "InputName"
+					inputName3.FontFace = Font.new(assets.interFont)
+					inputName3.Text = "Alpha"
+					inputName3.TextColor3 = Color3.fromRGB(255, 255, 255)
+					inputName3.TextSize = 13
+					inputName3.TextTransparency = 0.5
+					inputName3.TextTruncate = Enum.TextTruncate.AtEnd
+					inputName3.TextXAlignment = Enum.TextXAlignment.Left
+					inputName3.TextYAlignment = Enum.TextYAlignment.Top
+					inputName3.AnchorPoint = Vector2.new(0, 0.5)
+					inputName3.AutomaticSize = Enum.AutomaticSize.XY
+					inputName3.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputName3.BackgroundTransparency = 1
+					inputName3.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputName3.BorderSizePixel = 0
+					inputName3.LayoutOrder = 2
+					inputName3.Position = UDim2.fromScale(0, 0.5)
+					inputName3.Parent = alpha
+
+					local uIListLayout6 = Instance.new("UIListLayout")
+					uIListLayout6.Name = "UIListLayout"
+					uIListLayout6.Padding = UDim.new(0, 15)
+					uIListLayout6.FillDirection = Enum.FillDirection.Horizontal
+					uIListLayout6.SortOrder = Enum.SortOrder.LayoutOrder
+					uIListLayout6.VerticalAlignment = Enum.VerticalAlignment.Center
+					uIListLayout6.Parent = alpha
+
+					local inputBox3 = Instance.new("TextBox")
+					inputBox3.Name = "InputBox"
+					inputBox3.ClearTextOnFocus = false
+					inputBox3.FontFace = Font.new(assets.interFont)
+					inputBox3.Text = "0"
+					inputBox3.TextColor3 = Color3.fromRGB(255, 255, 255)
+					inputBox3.TextSize = 12
+					inputBox3.TextTransparency = 0.1
+					inputBox3.TextXAlignment = Enum.TextXAlignment.Left
+					inputBox3.AnchorPoint = Vector2.new(1, 0.5)
+					inputBox3.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputBox3.BackgroundTransparency = 0.95
+					inputBox3.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputBox3.BorderSizePixel = 0
+					inputBox3.ClipsDescendants = true
+					inputBox3.LayoutOrder = 1
+					inputBox3.Position = UDim2.fromScale(1, 0.5)
+					inputBox3.Size = UDim2.fromOffset(75, 25)
+
+					local inputBoxUICorner3 = Instance.new("UICorner")
+					inputBoxUICorner3.Name = "InputBoxUICorner"
+					inputBoxUICorner3.CornerRadius = UDim.new(0, 4)
+					inputBoxUICorner3.Parent = inputBox3
+
+					local inputBoxUIStroke3 = Instance.new("UIStroke")
+					inputBoxUIStroke3.Name = "InputBoxUIStroke"
+					inputBoxUIStroke3.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					inputBoxUIStroke3.Color = Color3.fromRGB(255, 255, 255)
+					inputBoxUIStroke3.Transparency = 0.9
+					inputBoxUIStroke3.Parent = inputBox3
+
+					local inputBoxUISizeConstraint3 = Instance.new("UISizeConstraint")
+					inputBoxUISizeConstraint3.Name = "InputBoxUISizeConstraint"
+					inputBoxUISizeConstraint3.Parent = inputBox3
+
+					local inputBoxUIPadding3 = Instance.new("UIPadding")
+					inputBoxUIPadding3.Name = "InputBoxUIPadding"
+					inputBoxUIPadding3.PaddingLeft = UDim.new(0, 8)
+					inputBoxUIPadding3.PaddingRight = UDim.new(0, 10)
+					inputBoxUIPadding3.Parent = inputBox3
+
+					inputBox3.Parent = alpha
+
+					alpha.Parent = inputs
+
+					local hex = Instance.new("Frame")
+					hex.Name = "Hex"
+					hex.AutomaticSize = Enum.AutomaticSize.XY
+					hex.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					hex.BackgroundTransparency = 1
+					hex.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					hex.BorderSizePixel = 0
+					hex.Size = UDim2.fromOffset(0, 38)
+
+					local inputName4 = Instance.new("TextLabel")
+					inputName4.Name = "InputName"
+					inputName4.FontFace = Font.new(assets.interFont)
+					inputName4.Text = "Hex"
+					inputName4.TextColor3 = Color3.fromRGB(255, 255, 255)
+					inputName4.TextSize = 13
+					inputName4.TextTransparency = 0.5
+					inputName4.TextTruncate = Enum.TextTruncate.AtEnd
+					inputName4.TextXAlignment = Enum.TextXAlignment.Left
+					inputName4.TextYAlignment = Enum.TextYAlignment.Top
+					inputName4.AnchorPoint = Vector2.new(0, 0.5)
+					inputName4.AutomaticSize = Enum.AutomaticSize.XY
+					inputName4.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputName4.BackgroundTransparency = 1
+					inputName4.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputName4.BorderSizePixel = 0
+					inputName4.LayoutOrder = 2
+					inputName4.Position = UDim2.fromScale(0, 0.5)
+					inputName4.Parent = hex
+
+					local uIListLayout7 = Instance.new("UIListLayout")
+					uIListLayout7.Name = "UIListLayout"
+					uIListLayout7.Padding = UDim.new(0, 15)
+					uIListLayout7.FillDirection = Enum.FillDirection.Horizontal
+					uIListLayout7.SortOrder = Enum.SortOrder.LayoutOrder
+					uIListLayout7.VerticalAlignment = Enum.VerticalAlignment.Center
+					uIListLayout7.Parent = hex
+
+					local inputBox4 = Instance.new("TextBox")
+					inputBox4.Name = "InputBox"
+					inputBox4.ClearTextOnFocus = false
+					inputBox4.CursorPosition = -1
+					inputBox4.FontFace = Font.new(assets.interFont)
+					inputBox4.Text = "255"
+					inputBox4.TextColor3 = Color3.fromRGB(255, 255, 255)
+					inputBox4.TextSize = 12
+					inputBox4.TextTransparency = 0.1
+					inputBox4.TextXAlignment = Enum.TextXAlignment.Left
+					inputBox4.AnchorPoint = Vector2.new(1, 0.5)
+					inputBox4.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					inputBox4.BackgroundTransparency = 0.95
+					inputBox4.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					inputBox4.BorderSizePixel = 0
+					inputBox4.ClipsDescendants = true
+					inputBox4.LayoutOrder = 1
+					inputBox4.Position = UDim2.fromScale(1, 0.5)
+					inputBox4.Size = UDim2.fromOffset(75, 25)
+
+					local inputBoxUICorner4 = Instance.new("UICorner")
+					inputBoxUICorner4.Name = "InputBoxUICorner"
+					inputBoxUICorner4.CornerRadius = UDim.new(0, 4)
+					inputBoxUICorner4.Parent = inputBox4
+
+					local inputBoxUIStroke4 = Instance.new("UIStroke")
+					inputBoxUIStroke4.Name = "InputBoxUIStroke"
+					inputBoxUIStroke4.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					inputBoxUIStroke4.Color = Color3.fromRGB(255, 255, 255)
+					inputBoxUIStroke4.Transparency = 0.9
+					inputBoxUIStroke4.Parent = inputBox4
+
+					local inputBoxUISizeConstraint4 = Instance.new("UISizeConstraint")
+					inputBoxUISizeConstraint4.Name = "InputBoxUISizeConstraint"
+					inputBoxUISizeConstraint4.Parent = inputBox4
+
+					local inputBoxUIPadding4 = Instance.new("UIPadding")
+					inputBoxUIPadding4.Name = "InputBoxUIPadding"
+					inputBoxUIPadding4.PaddingLeft = UDim.new(0, 8)
+					inputBoxUIPadding4.PaddingRight = UDim.new(0, 10)
+					inputBoxUIPadding4.Parent = inputBox4
+
+					inputBox4.Parent = hex
+
+					hex.Parent = inputs
+
+					inputs.Parent = wheel
+
+					local uIPadding = Instance.new("UIPadding")
+					uIPadding.Name = "UIPadding"
+					uIPadding.PaddingRight = UDim.new(0, 5)
+					uIPadding.Parent = wheel
+
+					wheel.Parent = colorOptions
+
+					local colorWells = Instance.new("Frame")
+					colorWells.Name = "ColorWells"
+					colorWells.AutomaticSize = Enum.AutomaticSize.Y
+					colorWells.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					colorWells.BackgroundTransparency = 1
+					colorWells.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					colorWells.BorderSizePixel = 0
+					colorWells.LayoutOrder = 2
+					colorWells.Size = UDim2.fromScale(1, 0)
+
+					local uIGridLayout = Instance.new("UIGridLayout")
+					uIGridLayout.Name = "UIGridLayout"
+					uIGridLayout.CellPadding = UDim2.fromOffset(10, 0)
+					uIGridLayout.CellSize = UDim2.new(0.5, -5, 0, 30)
+					uIGridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+					uIGridLayout.Parent = colorWells
+
+					local newColor = Instance.new("ImageLabel")
+					newColor.Name = "NewColor"
+					newColor.Image = assets.grid
+					newColor.ScaleType = Enum.ScaleType.Tile
+					newColor.TileSize = UDim2.fromOffset(500, 500)
+					newColor.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					newColor.BackgroundTransparency = 1
+					newColor.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					newColor.BorderSizePixel = 0
+					newColor.Size = UDim2.fromOffset(100, 100)
+
+					local uICorner2 = Instance.new("UICorner")
+					uICorner2.Name = "UICorner"
+					uICorner2.Parent = newColor
+
+					local color = Instance.new("Frame")
+					color.Name = "Color"
+					color.AnchorPoint = Vector2.new(0.5, 0.5)
+					color.BorderColor3 = Color3.fromRGB(27, 42, 53)
+					color.BorderSizePixel = 0
+					color.Position = UDim2.fromScale(0.5, 0.5)
+					color.Size = UDim2.new(1, 1, 1, 1)
+
+					local uICorner3 = Instance.new("UICorner")
+					uICorner3.Name = "UICorner"
+					uICorner3.Parent = color
+
+					color.Parent = newColor
+
+					newColor.Parent = colorWells
+
+					local oldColor = Instance.new("ImageLabel")
+					oldColor.Name = "OldColor"
+					oldColor.Image = assets.grid
+					oldColor.ScaleType = Enum.ScaleType.Tile
+					oldColor.TileSize = UDim2.fromOffset(500, 500)
+					oldColor.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					oldColor.BackgroundTransparency = 1
+					oldColor.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					oldColor.BorderSizePixel = 0
+					oldColor.LayoutOrder = 1
+					oldColor.Size = UDim2.fromOffset(100, 100)
+
+					local uICorner4 = Instance.new("UICorner")
+					uICorner4.Name = "UICorner"
+					uICorner4.Parent = oldColor
+
+					local color1 = Instance.new("Frame")
+					color1.Name = "Color"
+					color1.AnchorPoint = Vector2.new(0.5, 0.5)
+					color1.BorderColor3 = Color3.fromRGB(27, 42, 53)
+					color1.BorderSizePixel = 0
+					color1.Position = UDim2.fromScale(0.5, 0.5)
+					color1.Size = UDim2.new(1, 1, 1, 1)
+
+					local uICorner5 = Instance.new("UICorner")
+					uICorner5.Name = "UICorner"
+					uICorner5.Parent = color1
+
+					color1.Parent = oldColor
+
+					oldColor.Parent = colorWells
+
+					colorWells.Parent = colorOptions
+
+					colorOptions.Parent = prompt
+
+					local interactions = Instance.new("Frame")
+					interactions.Name = "Interactions"
+					interactions.AutomaticSize = Enum.AutomaticSize.Y
+					interactions.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					interactions.BackgroundTransparency = 1
+					interactions.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					interactions.BorderSizePixel = 0
+					interactions.LayoutOrder = 2
+					interactions.Size = UDim2.fromScale(1, 0)
+
+					local uIListLayout8 = Instance.new("UIListLayout")
+					uIListLayout8.Name = "UIListLayout"
+					uIListLayout8.Padding = UDim.new(0, 10)
+					uIListLayout8.SortOrder = Enum.SortOrder.LayoutOrder
+					uIListLayout8.Parent = interactions
+
+					local confirm = Instance.new("TextButton")
+					confirm.Name = "Confirm"
+					confirm.FontFace = Font.new(
+						"rbxassetid://12187365364",
+						Enum.FontWeight.Medium,
+						Enum.FontStyle.Normal
+					)
+					confirm.Text = "Confirm"
+					confirm.TextColor3 = Color3.fromRGB(255, 255, 255)
+					confirm.TextSize = 15
+					confirm.TextTransparency = 0.5
+					confirm.TextTruncate = Enum.TextTruncate.AtEnd
+					confirm.AutoButtonColor = false
+					confirm.AutomaticSize = Enum.AutomaticSize.Y
+					confirm.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+					confirm.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					confirm.BorderSizePixel = 0
+					confirm.Size = UDim2.fromScale(1, 0)
+
+					local uIPadding1 = Instance.new("UIPadding")
+					uIPadding1.Name = "UIPadding"
+					uIPadding1.PaddingBottom = UDim.new(0, 9)
+					uIPadding1.PaddingLeft = UDim.new(0, 10)
+					uIPadding1.PaddingRight = UDim.new(0, 10)
+					uIPadding1.PaddingTop = UDim.new(0, 9)
+					uIPadding1.Parent = confirm
+
+					local baseUICorner = Instance.new("UICorner")
+					baseUICorner.Name = "BaseUICorner"
+					baseUICorner.CornerRadius = UDim.new(0, 10)
+					baseUICorner.Parent = confirm
+
+					confirm.Parent = interactions
+
+					local cancel = Instance.new("TextButton")
+					cancel.Name = "Cancel"
+					cancel.FontFace = Font.new(
+						"rbxassetid://12187365364",
+						Enum.FontWeight.Medium,
+						Enum.FontStyle.Normal
+					)
+					cancel.Text = "Cancel"
+					cancel.TextColor3 = Color3.fromRGB(255, 255, 255)
+					cancel.TextSize = 15
+					cancel.TextTransparency = 0.5
+					cancel.TextTruncate = Enum.TextTruncate.AtEnd
+					cancel.AutoButtonColor = false
+					cancel.AutomaticSize = Enum.AutomaticSize.Y
+					cancel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+					cancel.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					cancel.BorderSizePixel = 0
+					cancel.Size = UDim2.fromScale(1, 0)
+
+					local baseUICorner1 = Instance.new("UICorner")
+					baseUICorner1.Name = "BaseUICorner"
+					baseUICorner1.CornerRadius = UDim.new(0, 10)
+					baseUICorner1.Parent = cancel
+
+					local uIPadding2 = Instance.new("UIPadding")
+					uIPadding2.Name = "UIPadding"
+					uIPadding2.PaddingBottom = UDim.new(0, 9)
+					uIPadding2.PaddingLeft = UDim.new(0, 10)
+					uIPadding2.PaddingRight = UDim.new(0, 10)
+					uIPadding2.PaddingTop = UDim.new(0, 9)
+					uIPadding2.Parent = cancel
+
+					cancel.Parent = interactions
+
+					local uIPadding3 = Instance.new("UIPadding")
+					uIPadding3.Name = "UIPadding"
+					uIPadding3.PaddingTop = UDim.new(0, 10)
+					uIPadding3.Parent = interactions
+
+					interactions.Parent = prompt
+
+					local globalSettingsUIPadding = Instance.new("UIPadding")
+					globalSettingsUIPadding.Name = "GlobalSettingsUIPadding"
+					globalSettingsUIPadding.PaddingBottom = UDim.new(0, 20)
+					globalSettingsUIPadding.PaddingLeft = UDim.new(0, 20)
+					globalSettingsUIPadding.PaddingRight = UDim.new(0, 20)
+					globalSettingsUIPadding.PaddingTop = UDim.new(0, 20)
+					globalSettingsUIPadding.Parent = prompt
+
+					local paragraph = Instance.new("Frame")
+					paragraph.Name = "Paragraph"
+					paragraph.AutomaticSize = Enum.AutomaticSize.Y
+					paragraph.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					paragraph.BackgroundTransparency = 1
+					paragraph.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					paragraph.BorderSizePixel = 0
+					paragraph.Size = UDim2.fromScale(1, 0)
+
+					local paragraphHeader = Instance.new("TextLabel")
+					paragraphHeader.Name = "ParagraphHeader"
+					paragraphHeader.FontFace = Font.new(
+						"rbxassetid://12187365364",
+						Enum.FontWeight.SemiBold,
+						Enum.FontStyle.Normal
+					)
+					paragraphHeader.RichText = true
+					paragraphHeader.Text = ColorpickerFunctions.Settings.Name
+					paragraphHeader.TextColor3 = Color3.fromRGB(255, 255, 255)
+					paragraphHeader.TextSize = 18
+					paragraphHeader.TextTransparency = 0.4
+					paragraphHeader.TextWrapped = true
+					paragraphHeader.TextYAlignment = Enum.TextYAlignment.Top
+					paragraphHeader.AutomaticSize = Enum.AutomaticSize.XY
+					paragraphHeader.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					paragraphHeader.BackgroundTransparency = 1
+					paragraphHeader.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					paragraphHeader.BorderSizePixel = 0
+					paragraphHeader.Size = UDim2.fromScale(1, 0)
+					paragraphHeader.Parent = paragraph
+
+					local uIListLayout9 = Instance.new("UIListLayout")
+					uIListLayout9.Name = "UIListLayout"
+					uIListLayout9.Padding = UDim.new(0, 15)
+					uIListLayout9.HorizontalAlignment = Enum.HorizontalAlignment.Center
+					uIListLayout9.SortOrder = Enum.SortOrder.LayoutOrder
+					uIListLayout9.Parent = paragraph
+
+					local uIPadding4 = Instance.new("UIPadding")
+					uIPadding4.Name = "UIPadding"
+					uIPadding4.PaddingBottom = UDim.new(0, 15)
+					uIPadding4.Parent = paragraph
+
+					local line = Instance.new("Frame")
+					line.Name = "Line"
+					line.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					line.BackgroundTransparency = 0.9
+					line.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					line.BorderSizePixel = 0
+					line.LayoutOrder = 1
+					line.Size = UDim2.new(1, 0, 0, 1)
+					line.Parent = paragraph
+
+					paragraph.Parent = prompt
+
+					prompt.Parent = colorPicker
+
+					colorPicker.Parent = base
+
+					local fromHSV, fromRGB, v2, udim2 = Color3.fromHSV, Color3.fromRGB, Vector2.new, UDim2.new
+
+					local wheel = wheel1
+					local ring = target
+					local slider = value
+					local colour = color
+
+					local modifierInputs = {
+						Hex = hex.InputBox,
+						Red = red.InputBox,
+						Green = green.InputBox,
+						Blue = blue.InputBox,
+						Alpha = alpha.InputBox
+					}
+
+					local Mouse = LocalPlayer:GetMouse()
+
+					local WheelDown, SlideDown = false, false
+					local hue, saturation, value = 0, 0, 1
+
+					local function toPolar(v)
+						return math.atan2(v.y, v.x), v.magnitude
+					end
+
+					local function radToDeg(x)
+						return ((x + math.pi) / (2 * math.pi)) * 360
+					end
+
+					local function degToRad(degrees)
+						return degrees * (math.pi / 180)
+					end
+
+					local function hexToRGB(hex)
+						hex = hex:gsub("#","")
+						if #hex ~= 6 then return 0, 0, 0 end
+						local r = tonumber(hex:sub(1, 2), 16) or 0
+						local g = tonumber(hex:sub(3, 4), 16) or 0
+						local b = tonumber(hex:sub(5, 6), 16) or 0
+						return r, g, b
+					end
+
+					local function clampInput(value, min, max)
+						local num = tonumber(value)
+						if num then
+							return math.clamp(num, min, max)
+						end
+						return min
+					end
+
+					local function update()
+						local c = fromHSV(hue, saturation, value)
+						colour.BackgroundColor3 = c
+						colour.BackgroundTransparency = clampInput(modifierInputs.Alpha.Text, 0, 1)
+
+						modifierInputs.Red.Text = tostring(math.floor(c.r * 255 + 0.5))
+						modifierInputs.Green.Text = tostring(math.floor(c.g * 255 + 0.5))
+						modifierInputs.Blue.Text = tostring(math.floor(c.b * 255 + 0.5))
+						modifierInputs.Alpha.Text = clampInput(modifierInputs.Alpha.Text, 0, 1)
+
+						local hexColor = string.format("#%02X%02X%02X", 
+							math.floor(c.r * 255 + 0.5),
+							math.floor(c.g * 255 + 0.5),
+							math.floor(c.b * 255 + 0.5))
+						modifierInputs.Hex.Text = hexColor
+					end
+
+					local function UpdateSlide(iX)
+						local rY = iX - slider.AbsolutePosition.X
+						local cY = math.clamp(rY, 0, slider.AbsoluteSize.X - slide.AbsoluteSize.X)
+						slide.Position = udim2(0, cY, 0.5, 0)
+						value = 1 - (cY / (slider.AbsoluteSize.X - slide.AbsoluteSize.X))
+						update()
+					end
+
+					local function UpdateRing(iX, iY)
+						local r = wheel.AbsoluteSize.x / 2
+						local d = v2(iX, iY) - wheel.AbsolutePosition - wheel.AbsoluteSize / 2
+
+						if d:Dot(d) > r * r then
+							d = d.unit * r
+						end
+
+						ring.Position = udim2(0.5, d.x, 0.5, d.y)
+						local phi, len = toPolar(d * v2(1, -1))
+						hue, saturation = radToDeg(phi) / 360, math.clamp(len / r, 0, 1)
+						slider.BackgroundColor3 = fromHSV(hue, saturation, 1)
+						update()
+					end
+
+					local function UpdateSlideFromValue(value)
+						local cY = (1 - value) * (slider.AbsoluteSize.X - slide.AbsoluteSize.X)
+						slide.Position = UDim2.new(0, cY, 0.5, 0)
+					end
+
+					local function UpdateRingFromHSV(hue, saturation)
+						local r = wheel.AbsoluteSize.X / 2
+						local phi = degToRad(hue * 360)
+						local len = saturation * r
+						local x = len * math.cos(phi)
+						local y = len * math.sin(phi)
+
+						ring.Position = UDim2.new(0.5, -x, 0.5, y)
+						slider.BackgroundColor3 = fromHSV(hue, saturation, 1)
+					end
+
+					local function updateFromRGB()
+						local r = clampInput(modifierInputs.Red.Text, 0, 255)
+						local g = clampInput(modifierInputs.Green.Text, 0, 255)
+						local b = clampInput(modifierInputs.Blue.Text, 0, 255)
+						modifierInputs.Red.Text = r
+						modifierInputs.Green.Text = g
+						modifierInputs.Blue.Text = b
+
+						hue, saturation, value = Color3.fromRGB(r, g, b):ToHSV()
+
+						UpdateSlideFromValue(value)
+						UpdateRingFromHSV(hue, saturation)
+						update()
+					end
+
+					local function updateFromHex()
+						local hex = modifierInputs.Hex.Text
+						local r, g, b = hexToRGB(hex)
+
+						r = clampInput(r, 0, 255)
+						g = clampInput(g, 0, 255)
+						b = clampInput(b, 0, 255)
+
+						modifierInputs.Red.Text = r
+						modifierInputs.Green.Text = g
+						modifierInputs.Blue.Text = b
+
+						hue, saturation, value = Color3.fromRGB(r, g, b):ToHSV()
+						UpdateSlideFromValue(value)
+						UpdateRingFromHSV(hue, saturation)
+						update()
+					end
+
+					local function updateFromSettings()
+						local r = math.floor(ColorpickerFunctions.Color.R * 255 + 0.5)
+						local g = math.floor(ColorpickerFunctions.Color.G * 255 + 0.5)
+						local b = math.floor(ColorpickerFunctions.Color.B * 255 + 0.5)
+						modifierInputs.Red.Text = r
+						modifierInputs.Green.Text = g
+						modifierInputs.Blue.Text = b
+						modifierInputs.Alpha.Text = isAlpha and ColorpickerFunctions.Alpha or 0
+
+						local hexColor = string.format("#%02X%02X%02X", r,g,b)
+						modifierInputs.Hex.Text = hexColor
+
+						hue, saturation, value = Color3.fromRGB(r, g, b):ToHSV()
+
+						color1.BackgroundColor3 = ColorpickerFunctions.Color
+						color1.BackgroundTransparency = isAlpha and ColorpickerFunctions.Alpha or 0
+
+						colour.BackgroundColor3 = Color3.fromRGB(r,g,b)
+						colour.BackgroundTransparency = isAlpha and ColorpickerFunctions.Alpha or 0
+
+						UpdateSlideFromValue(value)
+						UpdateRingFromHSV(hue, saturation)
+					end
+
+					wheel.InputBegan:Connect(function(input)
+						if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+							WheelDown = true
+							UpdateRing(Mouse.X, Mouse.Y)
+						end
+					end)
+
+					slider.InputBegan:Connect(function(input)
+						if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+							SlideDown = true
+							UpdateSlide(Mouse.X)
+						end
+					end)
+
+					slider.InputEnded:Connect(function(input)
+						if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+							SlideDown = false
+						end
+					end)
+
+					wheel.InputEnded:Connect(function(input)
+						if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+							WheelDown = false
+						end
+					end)
+
+					UserInputService.InputChanged:Connect(function(input)
+						if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+							if SlideDown then
+								UpdateSlide(Mouse.X)
+							elseif WheelDown then
+								UpdateRing(Mouse.X, Mouse.Y)
+							end
+						end
+					end)
+
+					local function onFocusEnter(instance)
+						local placeholder = instance.Text
+						instance.Text = ""
+						instance.PlaceholderText = placeholder
+					end
+
+					modifierInputs.Hex.FocusLost:Connect(updateFromHex)
+					modifierInputs.Red.FocusLost:Connect(updateFromRGB)
+					modifierInputs.Green.FocusLost:Connect(updateFromRGB)
+					modifierInputs.Blue.FocusLost:Connect(updateFromRGB)
+					modifierInputs.Alpha.FocusLost:Connect(update)
+
+					modifierInputs.Hex.Focused:Connect(function()
+						onFocusEnter(modifierInputs.Hex)
+					end)
+					modifierInputs.Red.Focused:Connect(function()
+						onFocusEnter(modifierInputs.Red)
+					end)
+					modifierInputs.Green.Focused:Connect(function()
+						onFocusEnter(modifierInputs.Green)
+					end)
+					modifierInputs.Blue.Focused:Connect(function()
+						onFocusEnter(modifierInputs.Blue)
+					end)
+					modifierInputs.Alpha.Focused:Connect(function()
+						onFocusEnter(modifierInputs.Alpha)
+					end)
+
+					local function makeCanvas()
+						local ColorPickerCanvas = Instance.new("CanvasGroup")
+						ColorPickerCanvas.Name = "ColorPickerCanvas"
+						ColorPickerCanvas.BackgroundTransparency = 1
+						ColorPickerCanvas.BorderSizePixel = 0
+						ColorPickerCanvas.Size = UDim2.fromScale(1, 1)
+						ColorPickerCanvas.ZIndex = 5
+						ColorPickerCanvas.GroupTransparency = 1
+						ColorPickerCanvas.Parent = base
+						ColorPickerCanvas.Visible = false
+						return ColorPickerCanvas
+					end
+
+					local function transition(isIn)
+						local canvas = makeCanvas()
+						local tweenTransparency = isIn and 0 or 1
+						local tweenScale = isIn and 1 or 0.95
+						local stateTransparency = isIn and 1 or 0
+						local tweenInfo = TweenInfo.new(0.1, Enum.EasingStyle.Sine)
+						local canvasTween = Tween(canvas, tweenInfo, { GroupTransparency = tweenTransparency })
+						local scaleTween = Tween(promptUIScale, tweenInfo, { Scale = tweenScale })
+
+						colorPicker.Visible = true
+						colorPicker.Parent = canvas
+						canvas.Visible = true
+						canvas.GroupTransparency = stateTransparency
+						canvasTween:Play()
+						scaleTween:Play()
+						canvasTween.Completed:Wait()
+
+						if not isIn then
+							colorPicker.Visible = false
+							canvas.Visible = false
+						end
+
+						colorPicker.Parent = base
+						canvas:Destroy()
+					end
+
+					local function colorpickerIn()
+						transition(true)
+					end
+
+					local function colorpickerOut()
+						transition(false)
+					end
+
+					interact.MouseButton1Click:Connect(colorpickerIn)
+
+					cancel.MouseButton1Click:Connect(colorpickerOut)
+					confirm.MouseButton1Click:Connect(function()
+						colorpickerOut()
+						local c = fromHSV(hue, saturation, value)
+						ColorpickerFunctions.Color = Color3.fromRGB(c.r * 255, c.g * 255, c.b * 255)
+						ColorpickerFunctions.Alpha = isAlpha and clampInput(modifierInputs.Alpha.Text, 0, 1)
+
+						color1.BackgroundColor3 = ColorpickerFunctions.Color
+						color1.BackgroundTransparency = isAlpha and ColorpickerFunctions.Alpha or 0
+
+						colorC.BackgroundColor3 = ColorpickerFunctions.Color
+						colorC.BackgroundTransparency = isAlpha and ColorpickerFunctions.Alpha or 0
+
+						if ColorpickerFunctions.Settings.Callback then
+							task.spawn(function()
+								ColorpickerFunctions.Settings.Callback(ColorpickerFunctions.Color, isAlpha and ColorpickerFunctions.Alpha)
+							end)
+						end
+					end)
+
+					updateFromSettings()
+
+					function ColorpickerFunctions:UpdateName(New)
+						colorpickerName.Text = New
+					end
+					function ColorpickerFunctions:SetVisibility(State)
+						colorpicker.Visible = State
+					end
+
+					function ColorpickerFunctions:SetColor(color3)
+						ColorpickerFunctions.Color = color3
+						colorC.BackgroundColor3 = color3
+
+						local r = math.floor(ColorpickerFunctions.Color.R * 255 + 0.5)
+						local g = math.floor(ColorpickerFunctions.Color.G * 255 + 0.5)
+						local b = math.floor(ColorpickerFunctions.Color.B * 255 + 0.5)
+						modifierInputs.Red.Text = r
+						modifierInputs.Green.Text = g
+						modifierInputs.Blue.Text = b
+
+						local hexColor = string.format("#%02X%02X%02X", r,g,b)
+						modifierInputs.Hex.Text = hexColor
+
+						hue, saturation, value = Color3.fromRGB(r, g, b):ToHSV()
+
+						color1.BackgroundColor3 = ColorpickerFunctions.Color
+						colour.BackgroundColor3 = Color3.fromRGB(r,g,b)
+
+						UpdateSlideFromValue(value)
+						UpdateRingFromHSV(hue, saturation)
+
+						if ColorpickerFunctions.Settings.Callback then
+							task.spawn(function()
+								ColorpickerFunctions.Settings.Callback(ColorpickerFunctions.Color, isAlpha and ColorpickerFunctions.Alpha)
+							end)
+						end
+					end
+
+					function ColorpickerFunctions:SetAlpha(alpha)
+						ColorpickerFunctions.Alpha = alpha
+						colorC.Transparency = alpha
+						updateFromSettings()
+					end
+					function ColorpickerFunctions:GetColor()
+						return ColorpickerFunctions.Color
+					end
+					function ColorpickerFunctions:GetAlpha()
+						return ColorpickerFunctions.Alpha
+					end
+					function ColorpickerFunctions:SetCallback(fn)
+						ColorpickerFunctions.Settings.Callback = fn
+					end
+
+					if Flag then
+						MacLib.Options[Flag] = ColorpickerFunctions
+					end
+					-- ForceAutoLoad
+					if Flag and Settings.ForceAutoLoad then
+						local _origCB = ColorpickerFunctions.Settings.Callback
+						ColorpickerFunctions.Settings.Callback = function(color, alpha)
+							MacLib:FALSave(Flag, ColorpickerFunctions)
+							if _origCB then _origCB(color, alpha) end
+						end
+						task.defer(function()
+							MacLib:FALLoad(Flag, ColorpickerFunctions, Settings.FALoadDelay)
+						end)
+					end
+					return ColorpickerFunctions
+				end
+
+				function SectionFunctions:Header(Settings, Flag)
+					local HeaderFunctions = {Settings = Settings}
+
+					local header = Instance.new("Frame")
+					header.Name = "Header"
+					header.AutomaticSize = Enum.AutomaticSize.Y
+					header.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					header.BackgroundTransparency = 1
+					header.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					header.BorderSizePixel = 0
+					header.LayoutOrder = 0
+					header.Size = UDim2.fromScale(1, 0)
+					header.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					header.Parent = section
+
+					local uIPadding = Instance.new("UIPadding")
+					uIPadding.Name = "UIPadding"
+					uIPadding.PaddingBottom = UDim.new(0, 5)
+					uIPadding.Parent = header
+
+					local headerText = Instance.new("TextLabel")
+					headerText.Name = "HeaderText"
+					headerText.FontFace = Font.new(
+						assets.interFont,
+						Enum.FontWeight.Medium,
+						Enum.FontStyle.Normal
+					)
+					headerText.RichText = true
+					headerText.Text = HeaderFunctions.Settings.Text or HeaderFunctions.Settings.Name
+					headerText.TextColor3 = Color3.fromRGB(255, 255, 255)
+					headerText.TextSize = 16
+					headerText.TextTransparency = 0.3
+					headerText.TextWrapped = true
+					headerText.TextXAlignment = Enum.TextXAlignment.Left
+					headerText.AutomaticSize = Enum.AutomaticSize.Y
+					headerText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					headerText.BackgroundTransparency = 1
+					headerText.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					headerText.BorderSizePixel = 0
+					headerText.Size = UDim2.fromScale(1, 0)
+					headerText.Parent = header
+
+					function HeaderFunctions:UpdateName(New)
+						headerText.Text = New
+					end
+					function HeaderFunctions:SetVisibility(State)
+						header.Visible = State
+					end
+
+					if Flag then
+						MacLib.Options[Flag] = HeaderFunctions
+					end
+					return HeaderFunctions
+				end
+
+				function SectionFunctions:Label(Settings, Flag)
+					local LabelFunctions = {Settings = Settings}
+
+					local label = Instance.new("Frame")
+					label.Name = "Label"
+					label.AutomaticSize = Enum.AutomaticSize.Y
+					label.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					label.BackgroundTransparency = 1
+					label.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					label.BorderSizePixel = 0
+					label.Size = UDim2.new(1, 0, 0, 38)
+					label.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					label.Parent = section
+
+					local labelText = Instance.new("TextLabel")
+					labelText.Name = "LabelText"
+					labelText.FontFace = Font.new(assets.interFont)
+					labelText.RichText = true
+					labelText.Text = LabelFunctions.Settings.Text or LabelFunctions.Settings.Name -- Settings.Name Deprecated use Settings.Text
+					labelText.TextColor3 = Color3.fromRGB(255, 255, 255)
+					labelText.TextSize = 13
+					labelText.TextTransparency = 0.5
+					labelText.TextWrapped = true
+					labelText.TextXAlignment = Enum.TextXAlignment.Left
+					labelText.AutomaticSize = Enum.AutomaticSize.Y
+					labelText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					labelText.BackgroundTransparency = 1
+					labelText.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					labelText.BorderSizePixel = 0
+					labelText.Size = UDim2.fromScale(1, 1)
+					labelText.Parent = label
+
+					function LabelFunctions:UpdateName(New)
+						labelText.Text = New
+					end
+					function LabelFunctions:SetVisibility(State)
+						label.Visible = State
+					end
+
+					if Flag then
+						MacLib.Options[Flag] = LabelFunctions
+					end
+					return LabelFunctions
+				end
+
+				function SectionFunctions:SubLabel(Settings, Flag)
+					local SubLabelFunctions = {Settings = Settings}
+
+					local subLabel = Instance.new("Frame")
+					subLabel.Name = "SubLabel"
+					subLabel.AutomaticSize = Enum.AutomaticSize.Y
+					subLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					subLabel.BackgroundTransparency = 1
+					subLabel.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					subLabel.BorderSizePixel = 0
+					subLabel.Size = UDim2.new(1, 0, 0, 0)
+					subLabel.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					subLabel.Parent = section
+
+					local subLabelText = Instance.new("TextLabel")
+					subLabelText.Name = "SubLabelText"
+					subLabelText.FontFace = Font.new(assets.interFont)
+					subLabelText.RichText = true
+					subLabelText.Text = SubLabelFunctions.Settings.Text or SubLabelFunctions.Settings.Name -- Settings.Name Deprecated use Settings.Text
+					subLabelText.TextColor3 = Color3.fromRGB(255, 255, 255)
+					subLabelText.TextSize = 12
+					subLabelText.TextTransparency = 0.7
+					subLabelText.TextWrapped = true
+					subLabelText.TextXAlignment = Enum.TextXAlignment.Left
+					subLabelText.AutomaticSize = Enum.AutomaticSize.Y
+					subLabelText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					subLabelText.BackgroundTransparency = 1
+					subLabelText.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					subLabelText.BorderSizePixel = 0
+					subLabelText.Size = UDim2.fromScale(1, 1)
+					subLabelText.Parent = subLabel
+
+					function SubLabelFunctions:UpdateName(New)
+						subLabelText.Text = New
+					end
+					function SubLabelFunctions:SetVisibility(State)
+						subLabel.Visible = State
+					end
+
+					if Flag then
+						MacLib.Options[Flag] = SubLabelFunctions
+					end
+					return SubLabelFunctions
+				end
+
+				function SectionFunctions:Paragraph(Settings, Flag)
+					local ParagraphFunctions = {Settings = Settings}
+
+					local paragraph = Instance.new("Frame")
+					paragraph.Name = "Paragraph"
+					paragraph.AutomaticSize = Enum.AutomaticSize.Y
+					paragraph.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+					paragraph.BackgroundTransparency = 1
+					paragraph.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					paragraph.BorderSizePixel = 0
+					paragraph.Size = UDim2.new(1, 0, 0, 38)
+					paragraph.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					paragraph.Parent = section
+
+					local paragraphHeader = Instance.new("TextLabel")
+					paragraphHeader.Name = "ParagraphHeader"
+					paragraphHeader.FontFace = Font.new(
+						assets.interFont,
+						Enum.FontWeight.Medium,
+						Enum.FontStyle.Normal
+					)
+					paragraphHeader.RichText = true
+					paragraphHeader.Text = ParagraphFunctions.Settings.Header
+					paragraphHeader.TextColor3 = Color3.fromRGB(255, 255, 255)
+					paragraphHeader.TextSize = 15
+					paragraphHeader.TextTransparency = 0.4
+					paragraphHeader.TextWrapped = true
+					paragraphHeader.TextXAlignment = Enum.TextXAlignment.Left
+					paragraphHeader.AutomaticSize = Enum.AutomaticSize.Y
+					paragraphHeader.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					paragraphHeader.BackgroundTransparency = 1
+					paragraphHeader.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					paragraphHeader.BorderSizePixel = 0
+					paragraphHeader.Size = UDim2.fromScale(1, 0)
+					paragraphHeader.Parent = paragraph
+
+					local uIListLayout = Instance.new("UIListLayout")
+					uIListLayout.Name = "UIListLayout"
+					uIListLayout.Padding = UDim.new(0, 5)
+					uIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+					uIListLayout.Parent = paragraph
+
+					local paragraphBody = Instance.new("TextLabel")
+					paragraphBody.Name = "ParagraphBody"
+					paragraphBody.FontFace = Font.new(assets.interFont)
+					paragraphBody.RichText = true
+					paragraphBody.Text = ParagraphFunctions.Settings.Body
+					paragraphBody.TextColor3 = Color3.fromRGB(255, 255, 255)
+					paragraphBody.TextSize = 13
+					paragraphBody.TextTransparency = 0.5
+					paragraphBody.TextWrapped = true
+					paragraphBody.TextXAlignment = Enum.TextXAlignment.Left
+					paragraphBody.AutomaticSize = Enum.AutomaticSize.Y
+					paragraphBody.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					paragraphBody.BackgroundTransparency = 1
+					paragraphBody.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					paragraphBody.BorderSizePixel = 0
+					paragraphBody.LayoutOrder = 1
+					paragraphBody.Size = UDim2.fromScale(1, 0)
+					paragraphBody.Parent = paragraph
+
+					function ParagraphFunctions:UpdateHeader(New)
+						paragraphHeader.Text = New
+					end
+					function ParagraphFunctions:UpdateBody(New)
+						paragraphBody.Text = New
+					end
+					function ParagraphFunctions:SetVisibility(State)
+						paragraph.Visible = State
+					end
+
+					if Flag then
+						MacLib.Options[Flag] = ParagraphFunctions
+					end
+					return ParagraphFunctions
+				end
+
+				function SectionFunctions:Divider()
+					local DividerFunctions = {}
+
+					local divider = Instance.new("Frame")
+					divider.Name = "Divider"
+					divider.AnchorPoint = Vector2.new(0, 1)
+					divider.AutomaticSize = Enum.AutomaticSize.Y
+					divider.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					divider.BackgroundTransparency = 1
+					divider.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					divider.BorderSizePixel = 0
+					divider.Position = UDim2.fromScale(0, 1)
+					divider.Size = UDim2.new(1, 0, 0, 1)
+					divider.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					divider.Parent = section
+
+					local uIPadding = Instance.new("UIPadding")
+					uIPadding.Name = "UIPadding"
+					uIPadding.PaddingBottom = UDim.new(0, 8)
+					uIPadding.PaddingTop = UDim.new(0, 8)
+					uIPadding.Parent = divider
+
+					local uIListLayout = Instance.new("UIListLayout")
+					uIListLayout.Name = "UIListLayout"
+					uIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+					uIListLayout.Parent = divider
+
+					local line = Instance.new("Frame")
+					line.Name = "Line"
+					line.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					line.BackgroundTransparency = 0.9
+					line.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					line.BorderSizePixel = 0
+					line.Size = UDim2.new(1, 0, 0, 1)
+					line.Parent = divider
+
+					function DividerFunctions:Remove()
+						divider:Destroy()
+					end
+					function DividerFunctions:SetVisibility(State)
+						divider.Visible = State
+					end
+
+					return DividerFunctions
+				end
+
+				function SectionFunctions:Spacer()
+					local SpacerFunctions = {}
+
+					local spacer = Instance.new("Frame")
+					spacer.Name = "Spacer"
+					spacer.AnchorPoint = Vector2.new(0, 1)
+					spacer.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					spacer.BackgroundTransparency = 1
+					spacer.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					spacer.BorderSizePixel = 0
+					spacer.Position = UDim2.fromScale(0, 1)
+					spacer.LayoutOrder = (type(Settings) == 'table' and Settings._layoutOrder) or _nextOrder()
+					spacer.Parent = section
+
+					function SpacerFunctions:Remove()
+						spacer:Destroy()
+					end
+					function SpacerFunctions:SetVisibility(State)
+						spacer.Visible = State
+					end
+
+					return SpacerFunctions
+				end
+
+				-- Apply any patched custom element methods (from MacLib:PatchSection)
+				MacLib:_ApplySectionPatches(SectionFunctions)
+
+				return SectionFunctions
+			end
+
+			local function SelectCurrentTab()
+				local easetime = 0.15
+
+				if currentTabInstance then
+					currentTabInstance.Parent = nil
+				end
+
+				for i, tabInfo in pairs(tabs) do
+					Tween(i, TweenInfo.new(easetime, Enum.EasingStyle.Sine), {
+						BackgroundTransparency = (i == tabSwitcher and 0.98 or 1)
+					}):Play()
+
+					if tabInfo.tabStroke then
+						Tween(tabInfo.tabStroke, TweenInfo.new(easetime, Enum.EasingStyle.Sine), {
+							Transparency = (i == tabSwitcher and 0.95 or 1)
+						}):Play()
+					end
+					if tabInfo.switcherImage then
+						Tween(tabInfo.switcherImage, TweenInfo.new(easetime, Enum.EasingStyle.Sine), {
+							ImageTransparency = (i == tabSwitcher and 0.1 or 0.5)
+						}):Play()
+					end
+					if tabInfo.switcherName then
+						Tween(tabInfo.switcherName, TweenInfo.new(easetime, Enum.EasingStyle.Sine), {
+							TextTransparency = (i == tabSwitcher and 0.1 or 0.5)
+						}):Play()
+					end
+				end
+
+				tabs[tabSwitcher].tabContent.Parent = content
+				currentTabInstance = tabs[tabSwitcher].tabContent
+				currentTab.Text = Settings.Name
+			end
+
+			tabSwitcher.MouseButton1Click:Connect(function()
+				SelectCurrentTab()
+			end)
+
+			function TabFunctions:Select()
+				SelectCurrentTab()
+			end
+
+			function TabFunctions:InsertConfigSection(Side)
+				local configSection = TabFunctions:Section({ Side = "Left" })
+
+				if isStudio then
+					configSection:Label({Text = "Config system unavailable. (Environment isStudio)"})
+					return "Config system unavailable." 
+				end
+
+				local inputPath = nil
+				local selectedConfig = nil
+
+				configSection:Input({
+					Name = "Config Name",
+					Placeholder = "Name",
+					AcceptedCharacters = "All",
+					Callback = function(input)
+						inputPath = input
+					end,
+				})
+
+				local configSelection = configSection:Dropdown({
+					Name = "Select Config",
+					Multi = false,
+					Required = false,
+					Options = MacLib:RefreshConfigList(),
+					Callback = function(Value)
+						selectedConfig = Value
+					end,
+				})
+
+				configSection:Button({
+					Name = "Create Config",
+					Callback = function()
+						if not inputPath or string.gsub(inputPath, " ", "") == "" then
+							WindowFunctions:Notify({
+								Title = "Interface",
+								Description = "Config name cannot be empty."
+							})
+							return
+						end
+
+						local success, returned = MacLib:SaveConfig(inputPath)
+						if not success then
+							WindowFunctions:Notify({
+								Title = "Interface",
+								Description = "Unable to save config, return error: " .. returned
+							})
+						end
+
+						WindowFunctions:Notify({
+							Title = "Interface",
+							Description = string.format("Created config %q", inputPath),
+						})
+
+						configSelection:ClearOptions()
+						configSelection:InsertOptions(MacLib:RefreshConfigList())
+					end,
+				})
+
+				configSection:Button({
+					Name = "Load Config",
+					Callback = function()
+						local success, returned = MacLib:LoadConfig(configSelection.Value)
+						if not success then
+							WindowFunctions:Notify({
+								Title = "Interface",
+								Description = "Unable to load config, return error: " .. returned
+							})
+							return
+						end
+
+						WindowFunctions:Notify({
+							Title = "Interface",
+							Description = string.format("Loaded config %q", configSelection.Value),
+						})
+					end,
+				})
+
+				configSection:Button({
+					Name = "Overwrite Config",
+					Callback = function()
+						local success, returned = MacLib:SaveConfig(configSelection.Value)
+						if not success then
+							WindowFunctions:Notify({
+								Title = "Interface",
+								Description = "Unable to overwrite config, return error: " .. returned
+							})
+							return
+						end
+
+						WindowFunctions:Notify({
+							Title = "Interface",
+							Description = string.format("Overwrote config %q", configSelection.Value),
+						})
+					end,
+				})
+
+				configSection:Button({
+					Name = "Refresh Config List",
+					Callback = function()
+						configSelection:ClearOptions()
+						configSelection:InsertOptions(MacLib:RefreshConfigList())
+					end,
+				})
+
+				local autoloadLabel
+
+				configSection:Button({
+					Name = "Set as autoload",
+					Callback = function()
+						local name = configSelection.Value
+						writefile(MacLib.Folder .. "/settings/autoload.txt", name)
+						autoloadLabel:UpdateName("Autoload config: " .. name)
+						WindowFunctions:Notify({
+							Title = "Interface",
+							Description = string.format("Set %q as autoload", name),
+						})
+					end,
+				})
+
+				autoloadLabel = configSection:Label({Text = "Autoload config: None"})
+
+				if isfile(MacLib.Folder .. "/settings/autoload.txt") then
+					local name = readfile(MacLib.Folder .. "/settings/autoload.txt")
+					autoloadLabel:UpdateName("Autoload config: " .. name)
+				end
+			end
+
+			--[[
+				Tab:InsertCustomisationSection(Side)
+
+				Automatically builds the Customisation section in the given tab side.
+				Covers: Toggle Button appearance, Toggle Button position (AnchorPoint),
+				Keybind Button, Window toggles, Notify settings.
+
+				All settings use ForceAutoLoad for automatic persistence.
+				Call after MacLib:SetFolder().
+
+				Example:
+				  tabs.Custom:InsertCustomisationSection("Left")
+			]]
+			function TabFunctions:InsertCustomisationSection(Side)
+				local sec = TabFunctions:Section({ Side = Side or "Left" })
+				local secR = TabFunctions:Section({ Side = Side == "Right" and "Left" or "Right" })
+
+				-- ── Toggle Button ─────────────────────────────────────
+				sec:Header({ Name = "Toggle Button" })
+				sec:Toggle({ Name = "Visible", Default = true, ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:SetToggleButtonVisible(v) end }, "Cust_TBVis")
+				sec:Slider({ Name = "Size", Default = 44, Minimum = 28, Maximum = 80, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleToggleButton({ Size = UDim2.fromOffset(v, v) }) end }, "Cust_TBSize")
+				sec:Slider({ Name = "Background", Default = 8, Minimum = 0, Maximum = 95, Precision = 0, Suffix = "%",
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleToggleButton({ BackgroundTransparency = v / 100 }) end }, "Cust_TBBgT")
+				sec:Slider({ Name = "Corner", Default = 12, Minimum = 0, Maximum = 40, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleToggleButton({ CornerRadius = UDim.new(0, v) }) end }, "Cust_TBRadius")
+				sec:Slider({ Name = "Icon", Default = 5, Minimum = 0, Maximum = 90, Precision = 0, Suffix = "%",
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleToggleButton({ ImageTransparency = v / 100 }) end }, "Cust_TBIconT")
+				sec:Colorpicker({ Name = "Button Color", Default = Color3.fromRGB(12, 12, 14),
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(c) MacLib:StyleToggleButton({ BackgroundColor3 = c }) end }, "Cust_TBColor")
+				sec:Colorpicker({ Name = "Icon Color", Default = Color3.fromRGB(255, 255, 255),
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(c) MacLib:StyleToggleButton({ ImageColor3 = c }) end }, "Cust_TBIconColor")
+
+				-- ── Toggle Button Position (AnchorPoint sliders) ──────
+				sec:Divider()
+				sec:Header({ Name = "Toggle Button Position" })
+				sec:Slider({ Name = "X)", Default = 50, Minimum = 0, Maximum = 100, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.4,
+					Callback = function(v)
+						local ax = v / 100
+						local ay_o = MacLib:GetOption("Cust_TBAnchorY")
+						local ay = ay_o and (ay_o:GetValue() / 100) or 1
+						local ox_o = MacLib:GetOption("Cust_TBOffX")
+						local oy_o = MacLib:GetOption("Cust_TBOffY")
+						local ox = ox_o and ox_o:GetValue() or 0
+						local oy = oy_o and oy_o:GetValue() or 0
+						MacLib:StyleToggleButton({
+							AnchorPoint = Vector2.new(ax, ay),
+							Position    = UDim2.new(ax, ox, ay, oy),
+						})
+					end }, "Cust_TBAnchorX")
+				sec:Slider({ Name = "Y", Default = 0, Minimum = 0, Maximum = 100, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.4,
+					Callback = function(v)
+						local ay = v / 100
+						local ax_o = MacLib:GetOption("Cust_TBAnchorX")
+						local ax = ax_o and (ax_o:GetValue() / 100) or 1
+						local ox_o = MacLib:GetOption("Cust_TBOffX")
+						local oy_o = MacLib:GetOption("Cust_TBOffY")
+						local ox = ox_o and ox_o:GetValue() or 0
+						local oy = oy_o and oy_o:GetValue() or 0
+						MacLib:StyleToggleButton({
+							AnchorPoint = Vector2.new(ax, ay),
+							Position    = UDim2.new(ax, ox, ay, oy),
+						})
+					end }, "Cust_TBAnchorY")
+				sec:Slider({ Name = "Offset X", Default = 0, Minimum = -200, Maximum = 200, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.4,
+					Callback = function(v)
+						local ax_o = MacLib:GetOption("Cust_TBAnchorX")
+						local ay_o = MacLib:GetOption("Cust_TBAnchorY")
+						local ax = ax_o and (ax_o:GetValue() / 100) or 1
+						local ay = ay_o and (ay_o:GetValue() / 100) or 1
+						local oy_o = MacLib:GetOption("Cust_TBOffY")
+						local oy = oy_o and oy_o:GetValue() or 0
+						MacLib:StyleToggleButton({
+							Position = UDim2.new(ax, v, ay, oy),
+						})
+					end }, "Cust_TBOffX")
+				sec:Slider({ Name = "Offset Y", Default = 15, Minimum = -200, Maximum = 200, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.4,
+					Callback = function(v)
+						local ax_o = MacLib:GetOption("Cust_TBAnchorX")
+						local ay_o = MacLib:GetOption("Cust_TBAnchorY")
+						local ax = ax_o and (ax_o:GetValue() / 100) or 1
+						local ay = ay_o and (ay_o:GetValue() / 100) or 1
+						local ox_o = MacLib:GetOption("Cust_TBOffX")
+						local ox = ox_o and ox_o:GetValue() or 0
+						MacLib:StyleToggleButton({
+							Position = UDim2.new(ax, ox, ay, v),
+						})
+					end }, "Cust_TBOffY")
+				sec:Button({ Name = "Reset Position", Callback = function()
+					MacLib:StyleToggleButton({
+						AnchorPoint = Vector2.new(0.5, 0),
+						Position    = UDim2.new(0.5, 0, 0, 14),
+					})
+					local oax = MacLib:GetOption("Cust_TBAnchorX") if oax then oax:UpdateValue(50) end
+					local oay = MacLib:GetOption("Cust_TBAnchorY") if oay then oay:UpdateValue(0) end
+					local oox = MacLib:GetOption("Cust_TBOffX")   if oox then oox:UpdateValue(0) end
+					local ooy = MacLib:GetOption("Cust_TBOffY")   if ooy then ooy:UpdateValue(14) end
+					WindowFunctions:Notify({ Title = "Toggle Button", Description = "Position reset.", Lifetime = 3 })
+				end })
+
+				-- ── Window ────────────────────────────────────────────
+				sec:Divider()
+				sec:Header({ Name = "Window" })
+				sec:Toggle({ Name = "Acrylic Blur", Default = true, ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) WindowFunctions:SetAcrylicBlurState(v) end }, "Cust_WBlur")
+				sec:Toggle({ Name = "User Info", Default = true, ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) WindowFunctions:SetUserInfoState(v) end }, "Cust_WUInfo")
+				sec:Toggle({ Name = "Notifications", Default = true, ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) WindowFunctions:SetNotificationsState(v) end }, "Cust_WNotifs")
+				sec:Button({ Name = "Reset Window Position", Callback = function()
+					WindowFunctions:SetState(false)
+					task.delay(0.05, function() WindowFunctions:SetState(true) end)
+				end })
+
+				-- ── Keybind Button ────────────────────────────────────
+				secR:Header({ Name = "Keybind Button" })
+				secR:Toggle({ Name = "Visible", Default = false, ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v)
+						MacLib:ShowKeybindButton("Keybind", v)
+					end }, "Cust_KBVis")
+				secR:Slider({ Name = "Size (px)", Default = 56, Minimum = 36, Maximum = 80, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleKeybindButton("Keybind", { Size = UDim2.fromOffset(v, v) }) end }, "Cust_KBSize")
+				secR:Slider({ Name = "Background", Default = 20, Minimum = 0, Maximum = 90, Precision = 0, Suffix = "%",
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleKeybindButton("Keybind", { BackgroundTransparency = v / 100 }) end }, "Cust_KBBgT")
+				secR:Slider({ Name = "Icon", Default = 30, Minimum = 0, Maximum = 90, Precision = 0, Suffix = "%",
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) MacLib:StyleKeybindButton("Keybind", { ImageTransparency = v / 100 }) end }, "Cust_KBIconT")
+				secR:Button({ Name = "Simulate Press", Callback = function()
+					MacLib:SimulateKeybindPress("Keybind")
+					WindowFunctions:Notify({ Title = "Keybind", Description = "Callback fired.", Lifetime = 3 })
+				end })
+
+				-- ── Notify ────────────────────────────────────────────
+				secR:Divider()
+				secR:Header({ Name = "Notify" })
+				local _notifyW = 250
+				local _notifyLT = 5
+				-- FIX-V12: mobile default scale = 80% (matches actual mobile notify size)
+				local _notifyScaleDefault = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) and 80 or 100
+				secR:Slider({ Name = "Width (px)", Default = _notifyW, Minimum = 50, Maximum = 440, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) _notifyW = v end }, "Cust_NWidth")
+				secR:Slider({ Name = "Lifetime (sec)", Default = _notifyLT, Minimum = 1, Maximum = 30, Precision = 0,
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v) _notifyLT = v end }, "Cust_NLifetime")
+				-- FIX-V12: scale slider — mobile players can shrink/enlarge notifications
+				secR:Slider({ Name = "Scale %", Default = _notifyScaleDefault,
+					Minimum = 50, Maximum = 150, Precision = 0, Suffix = "%",
+					ForceAutoLoad = true, FALoadDelay = 0.3,
+					Callback = function(v)
+						WindowFunctions:SetNotifyScale(v / 100)
+					end }, "Cust_NScale")
+				secR:Button({ Name = "Test Notify", Callback = function()
+					WindowFunctions:Notify({ Title = "Customisation", Description = "Preview notification.",
+						Lifetime = _notifyLT, SizeX = _notifyW })
+				end })
+			end
+
+			tabs[tabSwitcher] = {
+				tabContent = elements1,
+				tabStroke = tabSwitcherUIStroke,
+				switcherImage = tabImage,
+				switcherName = tabSwitcherName,
+			}
+
+			return TabFunctions
+		end
+
+		-- Apply any patched custom element methods (from MacLib:PatchSection)
+		MacLib:_ApplySectionPatches(SectionFunctions)
+
+		return SectionFunctions
+	end
+
+	-- FIX-V15: _notifyScale должен быть виден внутри Notify
+	local _notifyScale = 1
+
+	function WindowFunctions:Notify(Settings)
+		local NotificationFunctions = {}
+
+		local notification = Instance.new("Frame")
+		notification.Name = "Notification"
+		notification.AnchorPoint = Vector2.new(0.5, 0.5)
+		notification.AutomaticSize = Enum.AutomaticSize.Y
+		notification.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+		notification.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		notification.BorderSizePixel = 0
+		notification.Position = UDim2.fromScale(0.5, 0.5)
+		-- FIX4: на мобиле используем относительный размер
+		do
+			local _vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+			local _isMobileNotif = UserInputService.TouchEnabled and _vp.X <= 900
+			if _isMobileNotif then
+				-- FIX4: ещё компактнее на мобиле
+				local _mobileW = math.min(160, math.floor(_vp.X * 0.42))
+				notification.Size = UDim2.fromOffset(_mobileW, 0)
+				notification.AnchorPoint = Vector2.new(1, 1)
+				notification.Position = UDim2.new(1, -8, 1, -8)
+			else
+				notification.Size = UDim2.fromOffset(Settings.SizeX or 250, 0)
+			end
+		end
+
+		notification.Parent = notifications
+
+		local notificationUIStroke = Instance.new("UIStroke")
+		notificationUIStroke.Name = "NotificationUIStroke"
+		notificationUIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		notificationUIStroke.Color = Color3.fromRGB(255, 255, 255)
+		notificationUIStroke.Transparency = 0.9
+		notificationUIStroke.Parent = notification
+
+		local notificationUICorner = Instance.new("UICorner")
+		notificationUICorner.Name = "NotificationUICorner"
+		notificationUICorner.CornerRadius = UDim.new(0, 10)
+		notificationUICorner.Parent = notification
+
+		local notificationUIScale = Instance.new("UIScale")
+		notificationUIScale.Name = "NotificationUIScale"
+		notificationUIScale.Parent = notification
+		notificationUIScale.Scale = 0
+
+		local notificationInformation = Instance.new("Frame")
+		notificationInformation.Name = "NotificationInformation"
+		notificationInformation.AutomaticSize = Enum.AutomaticSize.Y
+		notificationInformation.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		notificationInformation.BackgroundTransparency = 1
+		notificationInformation.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		notificationInformation.BorderSizePixel = 0
+		notificationInformation.Size = UDim2.fromScale(1, 1)
+
+		local notificationTitle = Instance.new("TextLabel")
+		notificationTitle.Name = "NotificationTitle"
+		notificationTitle.FontFace = Font.new(
+			assets.interFont,
+			Enum.FontWeight.SemiBold,
+			Enum.FontStyle.Normal
+		)
+		notificationTitle.RichText = true
+		notificationTitle.Text = Settings.Title
+		notificationTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+		do
+			local _vp2 = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
+			notificationTitle.TextSize = (UserInputService.TouchEnabled and _vp2.X <= 900) and 11 or 13
+		end
+		notificationTitle.TextTransparency = 0.2
+		notificationTitle.TextTruncate = Enum.TextTruncate.SplitWord
+		notificationTitle.TextXAlignment = Enum.TextXAlignment.Left
+		notificationTitle.TextYAlignment = Enum.TextYAlignment.Top
+		notificationTitle.AutomaticSize = Enum.AutomaticSize.XY
+		notificationTitle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		notificationTitle.BackgroundTransparency = 1
+		notificationTitle.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		notificationTitle.BorderSizePixel = 0
+		notificationTitle.Size = UDim2.new(1, -12, 0, 0)
+
+		local notificationTitleUIPadding = Instance.new("UIPadding")
+		notificationTitleUIPadding.Name = "NotificationTitleUIPadding"
+		notificationTitleUIPadding.PaddingRight = UDim.new(0, 25)
+		notificationTitleUIPadding.Parent = notificationTitle
+
+		notificationTitle.Parent = notificationInformation
+
+		local notificationDescription = Instance.new("TextLabel")
+		notificationDescription.Name = "NotificationDescription"
+		notificationDescription.FontFace = Font.new(
+			assets.interFont,
+			Enum.FontWeight.Medium,
+			Enum.FontStyle.Normal
+		)
+		notificationDescription.Text = Settings.Description
+		notificationDescription.TextColor3 = Color3.fromRGB(255, 255, 255)
+		do
+			local _vp3 = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
+			notificationDescription.TextSize = (UserInputService.TouchEnabled and _vp3.X <= 900) and 9 or 11
+		end
+		notificationDescription.TextTransparency = 0.5
+		notificationDescription.TextWrapped = true
+		notificationDescription.RichText = true
+		notificationDescription.TextXAlignment = Enum.TextXAlignment.Left
+		notificationDescription.TextYAlignment = Enum.TextYAlignment.Top
+		notificationDescription.AutomaticSize = Enum.AutomaticSize.XY
+		notificationDescription.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		notificationDescription.BackgroundTransparency = 1
+		notificationDescription.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		notificationDescription.BorderSizePixel = 0
+		notificationDescription.Size = UDim2.new(1, -12, 0, 0)
+
+		local notificationDescriptionUIPadding = Instance.new("UIPadding")
+		notificationDescriptionUIPadding.Name = "NotificationDescriptionUIPadding"
+		notificationDescriptionUIPadding.PaddingRight = UDim.new(0, 25)
+		notificationDescriptionUIPadding.PaddingTop = UDim.new(0, 17)
+		notificationDescriptionUIPadding.Parent = notificationDescription
+
+		notificationDescription.Parent = notificationInformation
+
+		local notificationUIPadding = Instance.new("UIPadding")
+		notificationUIPadding.Name = "NotificationUIPadding"
+		notificationUIPadding.PaddingBottom = UDim.new(0, 12)
+		notificationUIPadding.PaddingLeft = UDim.new(0, 10)
+		notificationUIPadding.PaddingRight = UDim.new(0, 10)
+		notificationUIPadding.PaddingTop = UDim.new(0, 10)
+		notificationUIPadding.Parent = notificationInformation
+
+		notificationInformation.Parent = notification
+
+		local notificationControls = Instance.new("Frame")
+		notificationControls.Name = "NotificationControls"
+		notificationControls.AutomaticSize = Enum.AutomaticSize.Y
+		notificationControls.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		notificationControls.BackgroundTransparency = 1
+		notificationControls.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		notificationControls.BorderSizePixel = 0
+		notificationControls.Size = UDim2.fromScale(1, 1)
+
+		local interactable = Instance.new("TextButton")
+		interactable.Name = "Interactable"
+		interactable.FontFace = Font.new(assets.interFont)
+		interactable.Text = "✓"
+		interactable.TextColor3 = Color3.fromRGB(255, 255, 255)
+		interactable.TextSize = 17
+		interactable.TextTransparency = 0.2
+		interactable.AnchorPoint = Vector2.new(1, 0.5)
+		interactable.AutomaticSize = Enum.AutomaticSize.XY
+		interactable.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		interactable.BackgroundTransparency = 1
+		interactable.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		interactable.BorderSizePixel = 0
+		interactable.LayoutOrder = 1
+		interactable.Position = UDim2.fromScale(1, 0.5)
+		interactable.Parent = notificationControls
+
+		local uIPadding = Instance.new("UIPadding")
+		uIPadding.Name = "UIPadding"
+		uIPadding.PaddingBottom = UDim.new(0, 6)
+		uIPadding.PaddingRight = UDim.new(0, 13)
+		uIPadding.PaddingTop = UDim.new(0, 6)
+		uIPadding.Parent = notificationControls
+
+		notificationControls.Parent = notification
+
+		local tweens = {
+			In = Tween(notificationUIScale, TweenInfo.new(0.2, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
+				Scale = Settings.Scale or (_notifyScale or 1)
+			}),
+			Out = Tween(notificationUIScale, TweenInfo.new(0.2, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {
+				Scale = 0
+			}),
+		}
+
+		local styles = {
+			None = function() interactable:Destroy() end,
+			Confirm = function() interactable.Text = "✓" end,
+			Cancel = function() interactable.Text = "✗" end
+		}
+
+		local style = styles[Settings.Style] or function() interactable:Destroy() end
+		style()
+
+		if interactable then
+			interactable.MouseButton1Click:Connect(function()
+				NotificationFunctions:Cancel()
+				if Settings.Callback then
+					task.spawn(Settings.Callback)
+				end
+			end)
+		end
+
+		local AnimateNotification = task.spawn(function()
+			tweens.In:Play()
+
+			Settings.Lifetime = Settings.Lifetime or 3
+
+			if Settings.Lifetime ~= 0 then
+				task.wait(Settings.Lifetime)
+
+				local out = tweens.Out
+				out:Play()
+				out.Completed:Wait()
+				notification:Destroy()
+			end
+		end)
+
+		function NotificationFunctions:UpdateTitle(New)
+			notificationTitle.Text = New
+		end
+
+		function NotificationFunctions:UpdateDescription(New)
+			notificationDescription.Text = New
+		end
+
+		function NotificationFunctions:Resize(X)
+			local targ = X or 250
+			notification.Size = UDim2.fromOffset(targ, 0)
+		end
+
+		function NotificationFunctions:Cancel()
+			task.cancel(AnimateNotification)
+
+			local out = tweens.Out
+			out:Play()
+			out.Completed:Wait()
+			notification:Destroy()
+		end
+
+		return NotificationFunctions
+	end
+
+	function WindowFunctions:Dialog(Settings)
+		local DialogFunctions = {}
+
+		local dialogCanvas = Instance.new("CanvasGroup")
+		dialogCanvas.Name = "DialogCanvas"
+		dialogCanvas.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		dialogCanvas.BackgroundTransparency = 1
+		dialogCanvas.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		dialogCanvas.BorderSizePixel = 0
+		dialogCanvas.Size = UDim2.fromScale(1, 1)
+		dialogCanvas.GroupTransparency = 1
+		dialogCanvas.Parent = base
+
+		local dialog = Instance.new("Frame")
+		dialog.Name = "Dialog"
+		dialog.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		dialog.BackgroundTransparency = 0.5
+		dialog.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		dialog.BorderSizePixel = 0
+		dialog.Size = UDim2.fromScale(1, 1)
+
+		local dialogUICorner = Instance.new("UICorner")
+		dialogUICorner.Name = "BaseUICorner"
+		dialogUICorner.CornerRadius = UDim.new(0, 10)
+		dialogUICorner.Parent = dialog
+
+		local prompt = Instance.new("Frame")
+		prompt.Name = "Prompt"
+		prompt.AnchorPoint = Vector2.new(0.5, 0.5)
+		prompt.AutomaticSize = Enum.AutomaticSize.Y
+		prompt.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+		prompt.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		prompt.BorderSizePixel = 0
+		prompt.Position = UDim2.fromScale(0.5, 0.5)
+		prompt.Size = UDim2.fromOffset(280, 0)
+
+		local promptUIScale = Instance.new("UIScale")
+		promptUIScale.Name = "BaseUIScale"
+		promptUIScale.Parent = prompt
+		promptUIScale.Scale = 0.95
+
+		local globalSettingsUIStroke = Instance.new("UIStroke")
+		globalSettingsUIStroke.Name = "GlobalSettingsUIStroke"
+		globalSettingsUIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		globalSettingsUIStroke.Color = Color3.fromRGB(255, 255, 255)
+		globalSettingsUIStroke.Transparency = 0.9
+		globalSettingsUIStroke.Parent = prompt
+
+		local globalSettingsUICorner = Instance.new("UICorner")
+		globalSettingsUICorner.Name = "GlobalSettingsUICorner"
+		globalSettingsUICorner.CornerRadius = UDim.new(0, 10)
+		globalSettingsUICorner.Parent = prompt
+
+		local globalSettingsUIPadding = Instance.new("UIPadding")
+		globalSettingsUIPadding.Name = "GlobalSettingsUIPadding"
+		globalSettingsUIPadding.PaddingBottom = UDim.new(0, 20)
+		globalSettingsUIPadding.PaddingLeft = UDim.new(0, 20)
+		globalSettingsUIPadding.PaddingRight = UDim.new(0, 20)
+		globalSettingsUIPadding.PaddingTop = UDim.new(0, 20)
+		globalSettingsUIPadding.Parent = prompt
+
+		local paragraph = Instance.new("Frame")
+		paragraph.Name = "Paragraph"
+		paragraph.AutomaticSize = Enum.AutomaticSize.Y
+		paragraph.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		paragraph.BackgroundTransparency = 1
+		paragraph.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		paragraph.BorderSizePixel = 0
+		paragraph.Size = UDim2.new(1, 0, 0, 38)
+
+		local paragraphHeader = Instance.new("TextLabel")
+		paragraphHeader.Name = "ParagraphHeader"
+		paragraphHeader.FontFace = Font.new(
+			assets.interFont,
+			Enum.FontWeight.Medium,
+			Enum.FontStyle.Normal
+		)
+		paragraphHeader.RichText = true
+		paragraphHeader.Text = Settings.Title
+		paragraphHeader.TextColor3 = Color3.fromRGB(255, 255, 255)
+		paragraphHeader.TextSize = 18
+		paragraphHeader.TextTransparency = 0.4
+		paragraphHeader.TextWrapped = true
+		paragraphHeader.AutomaticSize = Enum.AutomaticSize.Y
+		paragraphHeader.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		paragraphHeader.BackgroundTransparency = 1
+		paragraphHeader.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		paragraphHeader.BorderSizePixel = 0
+		paragraphHeader.Size = UDim2.fromScale(1, 0)
+		paragraphHeader.Parent = paragraph
+
+		local uIListLayout = Instance.new("UIListLayout")
+		uIListLayout.Name = "UIListLayout"
+		uIListLayout.Padding = UDim.new(0, 15)
+		uIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		uIListLayout.Parent = paragraph
+
+		local paragraphBody = Instance.new("TextLabel")
+		paragraphBody.Name = "ParagraphBody"
+		paragraphBody.FontFace = Font.new(assets.interFont)
+		paragraphBody.RichText = true
+		paragraphBody.Text = Settings.Description
+		paragraphBody.TextColor3 = Color3.fromRGB(255, 255, 255)
+		paragraphBody.TextSize = 14
+		paragraphBody.TextTransparency = 0.5
+		paragraphBody.TextWrapped = true
+		paragraphBody.AutomaticSize = Enum.AutomaticSize.Y
+		paragraphBody.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		paragraphBody.BackgroundTransparency = 1
+		paragraphBody.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		paragraphBody.BorderSizePixel = 0
+		paragraphBody.LayoutOrder = 1
+		paragraphBody.Size = UDim2.fromScale(1, 0)
+		paragraphBody.Parent = paragraph
+
+		paragraph.Parent = prompt
+
+		local interactions = Instance.new("Frame")
+		interactions.Name = "Interactions"
+		interactions.AutomaticSize = Enum.AutomaticSize.Y
+		interactions.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		interactions.BackgroundTransparency = 1
+		interactions.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		interactions.BorderSizePixel = 0
+		interactions.LayoutOrder = 1
+		interactions.Size = UDim2.fromScale(1, 0)
+
+		local uIListLayout1 = Instance.new("UIListLayout")
+		uIListLayout1.Name = "UIListLayout"
+		uIListLayout1.Padding = UDim.new(0, 10)
+		uIListLayout1.SortOrder = Enum.SortOrder.LayoutOrder
+		uIListLayout1.Parent = interactions
+
+		local uIPadding = Instance.new("UIPadding")
+		uIPadding.Name = "UIPadding"
+		uIPadding.PaddingTop = UDim.new(0, 20)
+		uIPadding.Parent = interactions
+
+		interactions.Parent = prompt
+
+		local uIListLayout2 = Instance.new("UIListLayout")
+		uIListLayout2.Name = "UIListLayout"
+		uIListLayout2.SortOrder = Enum.SortOrder.LayoutOrder
+		uIListLayout2.Parent = prompt
+
+		prompt.Parent = dialog
+
+		dialog.Parent = dialogCanvas
+
+		local canvasIn = Tween(dialogCanvas, TweenInfo.new(0.1, Enum.EasingStyle.Sine), { GroupTransparency = 0 })
+		local canvasOut = Tween(dialogCanvas, TweenInfo.new(0.1, Enum.EasingStyle.Sine), { GroupTransparency = 1 })
+
+		local scaleIn = Tween(promptUIScale, TweenInfo.new(0.1, Enum.EasingStyle.Sine), { Scale = 1 })
+		local scaleOut = Tween(promptUIScale, TweenInfo.new(0.1, Enum.EasingStyle.Sine), { Scale = 0.95 })
+
+		local function dialogIn()
+			canvasIn:Play()
+			scaleIn:Play()
+			canvasIn.Completed:Wait()
+			dialog.Parent = base
+		end
+
+		local function dialogOut()
+			if not dialog.Parent then return end
+			dialog.Parent = dialogCanvas
+			canvasOut:Play()
+			scaleOut:Play()
+			canvasOut.Completed:Wait()
+			dialogCanvas:Destroy()
+		end
+
+		for _, v in pairs(Settings.Buttons) do
+			local button = Instance.new("TextButton")
+			button.Name = "Button"
+			button.FontFace = Font.new(assets.interFont)
+			button.Text = v.Name
+			button.TextColor3 = Color3.fromRGB(255, 255, 255)
+			button.TextSize = 15
+			button.TextTransparency = 0.5
+			button.TextTruncate = Enum.TextTruncate.AtEnd
+			button.AutoButtonColor = false
+			button.AutomaticSize = Enum.AutomaticSize.Y
+			button.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+			button.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			button.BorderSizePixel = 0
+			button.Size = UDim2.fromScale(1, 0)
+
+			local uIPadding1 = Instance.new("UIPadding")
+			uIPadding1.Name = "UIPadding"
+			uIPadding1.PaddingBottom = UDim.new(0, 9)
+			uIPadding1.PaddingLeft = UDim.new(0, 10)
+			uIPadding1.PaddingRight = UDim.new(0, 10)
+			uIPadding1.PaddingTop = UDim.new(0, 9)
+			uIPadding1.Parent = button
+
+			local baseUICorner1 = Instance.new("UICorner")
+			baseUICorner1.Name = "BaseUICorner"
+			baseUICorner1.CornerRadius = UDim.new(0, 10)
+			baseUICorner1.Parent = button
+
+			button.Parent = interactions
+
+			local TweenSettings = {
+				DefaultTransparency = 0,
+				DefaultTransparency2 = 0.5,
+				HoverTransparency = 0.3,
+				HoverTransparency2 = 0.6,
+
+				EasingStyle = Enum.EasingStyle.Sine
+			}
+
+			local function ChangeState(State)
+				if State == "Idle" then
+					Tween(button, TweenInfo.new(0.2, TweenSettings.EasingStyle), {
+						BackgroundTransparency = TweenSettings.DefaultTransparency,
+						TextTransparency = TweenSettings.DefaultTransparency2
+					}):Play()
+				elseif State == "Hover" then
+					Tween(button, TweenInfo.new(0.2, TweenSettings.EasingStyle), {
+						BackgroundTransparency = TweenSettings.HoverTransparency,
+						TextTransparency = TweenSettings.HoverTransparency2
+					}):Play()
+				end
+			end
+
+			button.MouseButton1Click:Connect(function()
+				if dialogCanvas.GroupTransparency ~= 0 then return end
+				if v.Callback then
+					v.Callback()
+				end
+
+				dialogOut()
+			end)
+
+			button.MouseEnter:Connect(function()
+				ChangeState("Hover")
+			end)
+			button.MouseLeave:Connect(function()
+				ChangeState("Idle")
+			end)
+		end
+
+		dialogIn()
+
+		function DialogFunctions:UpdateTitle(New)
+			paragraphHeader.Text = New
+		end
+		function DialogFunctions:UpdateDescription(New)
+			paragraphBody.Text = New
+		end
+
+		function DialogFunctions:Cancel()
+			dialogOut()
+		end
+
+		return DialogFunctions
+	end
+
+	function WindowFunctions:SetNotificationsState(State)
+		notifications.Visible = State
+	end
+
+	function WindowFunctions:GetNotificationsState(State)
+		return notifications.Visible
+	end
+
+	function WindowFunctions:SetState(State)
+		windowState = State
+		base.Visible = State
+		if not State then for _,pt in pairs(parts) do pt.Parent=nil end end
+		-- FIX7: синхронизируем иконку toggleBtn при любом изменении состояния
+		if _updateToggleBtnIcon then
+			_updateToggleBtnIcon(State)
+		end
+	end
+
+	function WindowFunctions:GetState()
+		return windowState
+	end
+
+	local onUnloadCallback
+
+	function WindowFunctions:Unload()
+		if onUnloadCallback then
+			onUnloadCallback()  
+		end
+		macLib:Destroy()
+		unloaded = true
+	end
+
+	function WindowFunctions.onUnloaded(callback)
+		onUnloadCallback = callback
+	end
+
+	local MenuKeybind = Settings.Keybind or Enum.KeyCode.RightControl
+
+	local function ToggleMenu()
+		local state = not WindowFunctions:GetState()
+		WindowFunctions:SetState(state)
+		WindowFunctions:Notify({
+			Title = Settings.Title,
+			Description = (state and "Maximized " or "Minimized ") .. "the menu. Use " .. tostring(MenuKeybind.Name) .. " to toggle it.",
+			Lifetime = 5
+		})
+	end
+
+	UserInputService.InputEnded:Connect(function(inp, gpe)
+		if gpe then return end
+		if inp.KeyCode == MenuKeybind then
+			ToggleMenu()
+		end
+	end)
+
+	minimize.MouseButton1Click:Connect(ToggleMenu)
+	exit.MouseButton1Click:Connect(function()
+		WindowFunctions:Dialog({
+			Title = Settings.Title,
+			Description = "Are you sure you want to exit the menu? You will lose any unsaved configurations.",
+			Buttons = {
+				{
+					Name = "Confirm",
+					Callback = function()
+						WindowFunctions:Unload()
+					end,
+				},
+				{
+					Name = "Cancel"
+				}
+			}
+		})
+	end)
+
+	function WindowFunctions:SetKeybind(Keycode)
+		MenuKeybind = Keycode
+	end
+
+	function WindowFunctions:SetAcrylicBlurState(State)
+		acrylicBlur = State
+		base.BackgroundTransparency = State and 0.05 or 0
+	end
+
+	function WindowFunctions:GetAcrylicBlurState()
+		return acrylicBlur
+	end
+
+	local function _SetUserInfoState(State)
+		if State then
+			headshot.Image = (isReady and headshotImage) or "rbxassetid://0"
+			username.Text = "@" .. LocalPlayer.Name
+			displayName.Text = LocalPlayer.DisplayName
+		else
+			headshot.Image = assets.userInfoBlurred
+			local nameLength = #LocalPlayer.Name
+			local displayNameLength = #LocalPlayer.DisplayName
+			username.Text = "@" .. string.rep(".", nameLength)
+			displayName.Text = string.rep(".", displayNameLength)
+		end
+	end
+
+	local showUserInfo
+	if Settings.ShowUserInfo ~= nil then
+		showUserInfo = Settings.ShowUserInfo
+	else
+		showUserInfo = true
+	end
+
+	_SetUserInfoState(showUserInfo)
+
+	function WindowFunctions:SetUserInfoState(State)
+		_SetUserInfoState(State)
+	end
+	function WindowFunctions:GetUserInfoState(State)
+		return showUserInfo
+	end
+
+	function WindowFunctions:SetSize(Size)
+		base.Size = Size
+	end
+	function WindowFunctions:GetSize(Size)
+		return base.Size
+	end
+
+	function WindowFunctions:SetScale(Scale)
+		baseUIScale.Scale = Scale
+		MacLib._uiScale = Scale  -- tracked for dropdown maxHeight
+	end
+	function WindowFunctions:GetScale()
+		return baseUIScale.Scale
+	end
+
+	local ClassParser = {
+		["Toggle"] = {
+			Save = function(Flag, data)
+				return {
+					type = "Toggle", 
+					flag = Flag, 
+					state = data.State or false
+				}
+			end,
+			Load = function(Flag, data)
+				if MacLib.Options[Flag] and data.state ~= nil then
+					MacLib.Options[Flag]:UpdateState(data.state)
+				end
+			end
+		},
+		["Slider"] = {
+			Save = function(Flag, data)
+				return {
+					type = "Slider", 
+					flag = Flag, 
+					value = (data.Value and tostring(data.Value)) or false
+				}
+			end,
+			Load = function(Flag, data)
+				if MacLib.Options[Flag] and data.value then
+					MacLib.Options[Flag]:UpdateValue(data.value, true)
+				end
+			end
+		},
+		["Input"] = {
+			Save = function(Flag, data)
+				return {
+					type = "Input", 
+					flag = Flag, 
+					text = data.Text
+				}
+			end,
+			Load = function(Flag, data)
+				if MacLib.Options[Flag] and data.text and type(data.text) == "string" then
+					MacLib.Options[Flag]:UpdateText(data.text)
+				end
+			end
+		},
+		["Keybind"] = {
+			Save = function(Flag, data)
+				return {
+					type = "Keybind", 
+					flag = Flag, 
+					bind = (typeof(data.Bind) == "EnumItem" and data.Bind.Name) or nil,
+					mbVisible = (MacLib._keybindBtnVisible and MacLib._keybindBtnVisible[Flag]) or false
+				}
+			end,
+			Load = function(Flag, data)
+				if MacLib.Options[Flag] and data.bind then
+					MacLib.Options[Flag]:Bind(Enum.KeyCode[data.bind])
+				end
+				-- Restore mobile button visible state
+				if MacLib.Options[Flag] and data.mbVisible ~= nil then
+					MacLib.Options[Flag]:SetMobileButtonVisibility(data.mbVisible)
+				end
+			end
+		},
+		["Dropdown"] = {
+			Save = function(Flag, data)
+				return {
+					type = "Dropdown", 
+					flag = Flag, 
+					value = data.Value
+				}
+			end,
+			Load = function(Flag, data)
+				if MacLib.Options[Flag] and data.value then
+					MacLib.Options[Flag]:UpdateSelection(data.value)
+				end
+			end
+		},
+		["Colorpicker"] = {
+			Save = function(Flag, data)
+				local function Color3ToHex(color)
+					return string.format("#%02X%02X%02X", math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255))
+				end
+
+				return {
+					type = "Colorpicker", 
+					flag = Flag, 
+					color = Color3ToHex(data.Color) or nil,
+					alpha = data.Alpha
+				}
+			end,
+			Load = function(Flag, data)
+				local function HexToColor3(hex)
+					local r = tonumber(hex:sub(2, 3), 16) / 255
+					local g = tonumber(hex:sub(4, 5), 16) / 255
+					local b = tonumber(hex:sub(6, 7), 16) / 255
+					return Color3.new(r, g, b)
+				end
+
+				if MacLib.Options[Flag] and data.color then
+					MacLib.Options[Flag]:SetColor(HexToColor3(data.color)) 
+					if data.alpha then
+						MacLib.Options[Flag]:SetAlpha(data.alpha)
+					end
+				end
+			end
+		}
+	}
+
+	local function BuildFolderTree()
+		if isStudio or not (isfolder and makefolder) then return "Config system unavailable." end
+
+		local paths = {
+			MacLib.Folder,
+			MacLib.Folder .. "/settings"
+		}
+
+		for i = 1, #paths do
+			local str = paths[i]
+			if not isfolder(str) then
+				makefolder(str)
+			end
+		end
+	end
+
+	function MacLib:LoadAutoLoadConfig()
+		if isStudio or not (isfile and readfile) then return "Config system unavailable." end
+
+		if isfile(MacLib.Folder .. "/settings/autoload.txt") then
+			local name = readfile(MacLib.Folder .. "/settings/autoload.txt")
+
+			local suc, err = MacLib:LoadConfig(name)
+			if not suc then
+				WindowFunctions:Notify({
+					Title = "Interface",
+					Description = "Error loading autoload config: " .. err
+				})
+			end
+
+			WindowFunctions:Notify({
+				Title = "Interface",
+				Description = string.format("Autoloaded config: %q", name),
+			})
+		end
+	end
+
+	function MacLib:SetFolder(Folder)
+		if isStudio then return "Config system unavailable." end
+
+		MacLib.Folder = Folder;
+		BuildFolderTree()
+		-- Автоматически инициализируем папку FAutoLoad
+		MacLib:InitForceAutoLoad()
+	end
+
+	--[[
+		MacLib:GetFolder()
+		Returns the current MacLib folder path set via MacLib:SetFolder().
+		Returns nil if SetFolder has not been called yet.
+		Example:
+		  local folder = MacLib:GetFolder()
+		  -- folder = "Maclib"
+		  -- key file path: folder .. "/key.syl"
+	]]
+	function MacLib:GetFolder()
+		return MacLib.Folder
+	end
+
+	function MacLib:SaveConfig(Path)
+		if isStudio or not writefile then return "Config system unavailable." end
+
+		if (not Path) then
+			return false, "Please select a config file."
+		end
+
+		local fullPath = MacLib.Folder .. "/settings/" .. Path .. ".json"
+
+		local data = {
+			objects = {},
+			custom = MacLib._customData or {},
+			keybind_positions = {},
+			toggle_btn_visible = MacLib._toggleBtnVisible,
+			mobile_keybinds_hidden = MacLib._mobileKeybindsHidden or {},
+			keybind_btn_visible = MacLib._keybindBtnVisible or {},
+		}
+
+		for flag, option in next, MacLib.Options do
+			if not ClassParser[option.Class] then continue end
+			if option.IgnoreConfig then continue end
+			table.insert(data.objects, ClassParser[option.Class].Save(flag, option))
+		end
+
+		-- Сохраняем позиции mobileKeybind кнопок как Scale (относительно viewport)
+		for flag, pos in next, MacLib._keybindPositions or {} do
+			data.keybind_positions[flag] = pos
+		end
+
+		local success, encoded = pcall(HttpService.JSONEncode, HttpService, data)
+		if not success then
+			return false, "Unable to encode into JSON data"
+		end
+
+		writefile(fullPath, encoded)
+		return true
+	end
+
+	function MacLib:LoadConfig(Path)
+		if isStudio or not (isfile and readfile) then return "Config system unavailable." end
+
+		if (not Path) then
+			return false, "Please select a config file."
+		end
+
+		local file = MacLib.Folder .. "/settings/" .. Path .. ".json"
+		if not isfile(file) then return false, "Invalid file" end
+
+		local success, decoded = pcall(HttpService.JSONDecode, HttpService, readfile(file))
+		if not success then return false, "Unable to decode JSON data." end
+
+		-- Восстанавливаем объекты UI
+		for _, option in next, decoded.objects do
+			if ClassParser[option.type] then
+				task.spawn(function()
+					ClassParser[option.type].Load(option.flag, option)
+				end)
+			end
+		end
+
+		-- Восстанавливаем кастомные данные
+		if decoded.custom then
+			MacLib._customData = decoded.custom
+			if MacLib._onDataLoad then
+				task.spawn(MacLib._onDataLoad, MacLib._customData)
+			end
+		end
+
+		-- Восстанавливаем позиции mobileKeybind кнопок
+		if decoded.keybind_positions then
+			for flag, pos in next, decoded.keybind_positions do
+				MacLib._keybindPositions = MacLib._keybindPositions or {}
+				MacLib._keybindPositions[flag] = pos
+				-- Если кнопка уже создана — перемещаем её
+				if MacLib._keybindBtns and MacLib._keybindBtns[flag] then
+					local btn = MacLib._keybindBtns[flag]
+					local vs = workspace.CurrentCamera.ViewportSize
+					local px = math.clamp(pos.sx * vs.X, 0, vs.X - 56) - vs.X
+					local py = math.clamp(pos.sy * vs.Y, 0, vs.Y - 56) - vs.Y
+					btn.Position = UDim2.new(1, px, 1, py)
+				end
+			end
+		end
+
+		-- Восстанавливаем видимость мобильных кнопок keybind
+		if decoded.mobile_keybinds_hidden then
+			MacLib._mobileKeybindsHidden = decoded.mobile_keybinds_hidden
+			if MacLib._keybindPlusBtns then
+				for flag, hidden in next, decoded.mobile_keybinds_hidden do
+					if MacLib._keybindPlusBtns[flag] then
+						MacLib._keybindPlusBtns[flag].Visible = not hidden
+					end
+				end
+			end
+		end
+
+		-- Восстанавливаем состояние видимости floating keybind кнопок
+		if decoded.keybind_btn_visible then
+			MacLib._keybindBtnVisible = decoded.keybind_btn_visible
+			for flag, visible in next, decoded.keybind_btn_visible do
+				MacLib:SetMobileKeybindVisible(flag, visible)
+			end
+		end
+
+		-- Восстанавливаем видимость toggle-кнопки
+		if decoded.toggle_btn_visible ~= nil then
+			MacLib._toggleBtnVisible = decoded.toggle_btn_visible
+			if toggleBtn then
+				toggleBtn.Visible = decoded.toggle_btn_visible
+			end
+		end
+
+		return true
+	end
+
+	-- Инициализация хранилищ
+	MacLib._customData        = MacLib._customData or {}
+	MacLib._keybindPositions  = MacLib._keybindPositions or {}
+	MacLib._keybindBtns       = MacLib._keybindBtns or {}
+	MacLib._keybindPlusBtns   = MacLib._keybindPlusBtns or {}
+	MacLib._mobileKeybindsHidden = MacLib._mobileKeybindsHidden or {}
+	MacLib._toggleBtnVisible  = true
+
+	-- === CUSTOM API ===
+	-- Allows external modules to register plugins that receive section builder access.
+	-- Usage: MacLib:AddPlugin(function(api) api.Section:Button({...}) end, SectionObject)
+	function MacLib:AddPlugin(callback, sectionObject)
+		if type(callback) == "function" and sectionObject then
+			task.spawn(function()
+				callback(sectionObject)
+			end)
+		end
+	end
+
+	-- Retrieve an element from MacLib.Options by flag for external manipulation.
+	function MacLib:GetOption(Flag)
+		return MacLib.Options[Flag]
+	end
+
+	-- Хранилище зарегистрированных кастомных типов
+	local _customBuilders = {}
+
+	--[[
+		MacLib:RegisterElement(typeName, classDef, builderFn)
+		
+		Регистрирует кастомный тип UI-элемента с полной интеграцией
+		в config-систему (Save/Load через ClassParser).
+		
+		Параметры:
+		  typeName  (string) -- уникальное имя типа, напр. "CheckBox"
+		  classDef  (table)  -- { Save(Flag,data)->table, Load(Flag,data) }
+		  builderFn (fn)     -- function(sectionFrame, settings, flag)->elementFns
+		                        Builder создаёт Instance, парентит в sectionFrame,
+		                        возвращает таблицу с .Class = typeName.
+		
+		Пример -- см. MacLib_demo.lua (CheckBox)
+	]]
+	function MacLib:RegisterElement(typeName, classDef, builderFn)
+		assert(type(typeName) == "string",
+			"RegisterElement: typeName must be a string")
+		assert(type(classDef) == "table"
+				and type(classDef.Save) == "function"
+				and type(classDef.Load) == "function",
+			"RegisterElement: classDef must have .Save and .Load functions")
+		assert(type(builderFn) == "function",
+			"RegisterElement: builderFn must be a function")
+		ClassParser[typeName] = classDef
+		_customBuilders[typeName] = builderFn
+	end
+
+	--[[
+		MacLib:CreateCustomElement(sectionObj, typeName, settings, flag)
+		
+		Создаёт экземпляр кастомного элемента в sectionObj.
+		  sectionObj -- объект секции (Tab:Section())
+		  typeName   -- зарегистрированное имя типа
+		  settings   -- { Name, Default, Callback, ... }
+		  flag       -- строка-флаг; nil = не сохраняется в config
+		Возвращает elementFunctions.
+	]]
+	--[[
+		MacLib:PatchSection(methodName, fn)
+
+		Добавляет метод methodName во все будущие и существующие секции.
+		fn(self, settings, flag) -- self = SectionFunctions объект
+
+		Используется кастомными PreLoader-модулями для регистрации
+		своих методов (section:ProgressBar, section:CheckBox и т.д.).
+
+		Пример (в PreLoader-модуле):
+		  MacLib:PatchSection("ProgressBar", function(self, settings, flag)
+		    return MacLib:CreateCustomElement(self, "ProgressBar", settings, flag)
+		  end)
+	]]
+	MacLib._sectionPatches = MacLib._sectionPatches or {}
+	-- Registry of all live SectionFunctions tables so PatchSection can retrofit them
+	MacLib._liveSections = MacLib._liveSections or {}
+
+	function MacLib:PatchSection(methodName, fn)
+		MacLib._sectionPatches[methodName] = fn
+		-- Retrofit ALL already-created sections immediately
+		-- This fixes "missing method" when Preloader fires after sections are built
+		for _, sectionFns in ipairs(MacLib._liveSections) do
+			local _fn = fn
+			sectionFns[methodName] = function(self, settings, flag)
+				return _fn(self, settings, flag)
+			end
+		end
+	end
+
+	-- Called inside Section() creation to apply accumulated patches and register the section
+	function MacLib:_ApplySectionPatches(sectionFns)
+		-- Apply all patches registered so far
+		for name, fn in next, (MacLib._sectionPatches or {}) do
+			local _fn = fn
+			sectionFns[name] = function(self, settings, flag)
+				return _fn(self, settings, flag)
+			end
+		end
+		-- Register so future PatchSection calls can retrofit this section
+		table.insert(MacLib._liveSections, sectionFns)
+	end
+
+	function MacLib:CreateCustomElement(sectionObj, typeName, settings, flag)
+		assert(_customBuilders[typeName],
+			"CreateCustomElement: type '" .. tostring(typeName) ..
+			"' not registered. Call MacLib:RegisterElement first.")
+		-- FIX: резервируем LayoutOrder СИНХРОННО до вызова билдера
+		local reservedOrder = nil
+		if sectionObj._frame and type(sectionObj._nextOrder) == "function" then
+			reservedOrder = sectionObj._nextOrder()
+		end
+		-- FIX: snapshot детей ДО вызова билдера
+		local childrenBefore = {}
+		if sectionObj._frame then
+			for _, c in ipairs(sectionObj._frame:GetChildren()) do
+				childrenBefore[c] = true
+			end
+		end
+		local elementFns = _customBuilders[typeName](sectionObj._frame or sectionObj, settings or {}, flag)
+		-- FIX: rootFrame через diff (не FindFirstChild — он вернёт первый с таким именем!)
+		-- Приоритет: elementFns._frame (прямая ссылка из билдера) → diff детей
+		if reservedOrder and elementFns and sectionObj._frame then
+			local rootFrame = elementFns._frame
+			if not rootFrame then
+				for _, c in ipairs(sectionObj._frame:GetChildren()) do
+					if not childrenBefore[c] then
+						rootFrame = c
+						break
+					end
+				end
+			end
+			if rootFrame then
+				rootFrame.LayoutOrder = reservedOrder
+			end
+		end
+		if flag ~= nil and elementFns ~= nil then
+			elementFns.Class = elementFns.Class or typeName
+			MacLib.Options[flag] = elementFns
+		end
+		return elementFns
+	end
+	-- === EXTENDED API ===
+
+	--[[
+		MacLib:SetData(key, value)
+		Сохраняет произвольное значение в custom-секцию конфига.
+		Поддерживаются: string, number, boolean, table (JSON-совместимые).
+	]]
+	function MacLib:SetData(key, value)
+		MacLib._customData = MacLib._customData or {}
+		MacLib._customData[key] = value
+	end
+
+	--[[
+		MacLib:GetData(key, default)
+		Читает значение из custom-секции конфига.
+		Если ключ не найден — возвращает default.
+	]]
+	function MacLib:GetData(key, default)
+		if MacLib._customData and MacLib._customData[key] ~= nil then
+			return MacLib._customData[key]
+		end
+		return default
+	end
+
+	--[[
+		MacLib:OnDataLoad(callback)
+		Регистрирует callback, который вызывается при загрузке конфига
+		с восстановлением custom-данных. callback(data: table)
+	]]
+	function MacLib:OnDataLoad(callback)
+		MacLib._onDataLoad = callback
+	end
+
+	--[[
+		MacLib:StyleElement(flag, props)
+		Кастомизирует визуальные свойства любого зарегистрированного элемента.
+		props: { TextColor3, BackgroundColor3, TextTransparency, BackgroundTransparency,
+		         TextSize, Size, Font, ... }
+		Применяет свойства ко всем TextLabel/TextButton/Frame внутри элемента.
+		Поддерживаются: Toggle, Slider, Button, Input, Keybind, Dropdown, Colorpicker.
+	]]
+	function MacLib:StyleElement(flag, props)
+		local opt = MacLib.Options[flag]
+		if not opt then return end
+
+		local function applyProps(inst)
+			for prop, val in next, props do
+				pcall(function() inst[prop] = val end)
+			end
+		end
+
+		-- Если объект имеет .Settings (все стандартные элементы MacLib)
+		if opt.Settings then
+			-- Ищем корневой Instance по имени класса
+			local className = opt.Class
+			if className then
+				-- Пробегаем по дочерним элементам родительского фрейма
+				local frame = opt._rootFrame
+				if frame then
+					for _, child in ipairs(frame:GetDescendants()) do
+						if child:IsA("TextLabel") or child:IsA("TextButton") or child:IsA("Frame") then
+							applyProps(child)
+						end
+					end
+				end
+			end
+		end
+	end
+
+	--[[
+		MacLib:StyleToggleButton(props)
+		Кастомизирует кнопку открытия/закрытия UI (floating toggle).
+		props: { Size (UDim2), BackgroundColor3, BackgroundTransparency,
+		         ImageColor3, ImageTransparency, CornerRadius (UDim) }
+		Изменения сохраняются в конфиг (custom data).
+	]]
+	function MacLib:StyleToggleButton(props)
+		if not toggleBtn then return end
+		if props.Size                  then toggleBtn.Size = props.Size end
+		if props.BackgroundColor3      then
+			toggleBtn.BackgroundColor3 = props.BackgroundColor3
+			_toggleBtnCustomColor = props.BackgroundColor3  -- сохраняем чтобы клик не сбрасывал цвет
+		end
+		if props.BackgroundTransparency ~= nil then toggleBtn.BackgroundTransparency = props.BackgroundTransparency end
+		if props.ImageColor3           then toggleBtnIcon.ImageColor3 = props.ImageColor3 end
+		if props.ImageTransparency     ~= nil then toggleBtnIcon.ImageTransparency = props.ImageTransparency end
+		if props.CornerRadius          then
+			local c = toggleBtn:FindFirstChildOfClass("UICorner")
+			if c then c.CornerRadius = props.CornerRadius end
+		end
+		if props.Position              then toggleBtn.Position = props.Position end
+		if props.AnchorPoint           then toggleBtn.AnchorPoint = props.AnchorPoint end
+		-- Сохраняем в custom data
+		MacLib:SetData("__toggleBtnStyle", {
+			sizeX  = props.Size and props.Size.X.Offset or nil,
+			sizeY  = props.Size and props.Size.Y.Offset or nil,
+			bgT    = props.BackgroundTransparency,
+			iconT  = props.ImageTransparency,
+		})
+	end
+
+	--[[
+		MacLib:SetToggleButtonVisible(state: boolean)
+		Показывает или скрывает кнопку открытия/закрытия UI.
+		Состояние сохраняется в конфиг.
+	]]
+	function MacLib:SetToggleButtonVisible(state)
+		MacLib._toggleBtnVisible = state
+		if toggleBtn then
+			toggleBtn.Visible = state
+		end
+		MacLib:SetData("__toggleBtnHidden", not state)
+	end
+
+	--[[
+		MacLib:StyleKeybindButton(flag, props)
+		Кастомизирует плавающую мобильную кнопку конкретного Keybind.
+		flag  -- флаг Keybind-элемента
+		props: { Size (UDim2), BackgroundColor3, BackgroundTransparency,
+		         Image (assetId string), ImageTransparency }
+	]]
+	function MacLib:StyleKeybindButton(flag, props)
+		local btn = MacLib._keybindBtns and MacLib._keybindBtns[flag]
+		if not btn then return end
+		if props.Size                  then
+			-- Сохраняем размер в метаданных (не применяем напрямую — кнопка анимируется через showMobileBtn)
+			MacLib._keybindBtnSizes = MacLib._keybindBtnSizes or {}
+			MacLib._keybindBtnSizes[flag] = props.Size
+			-- Применяем только если кнопка сейчас видима
+			if btn.Parent and btn.Parent.Enabled then
+				btn.Size = props.Size
+			end
+		end
+		if props.BackgroundColor3      then btn.BackgroundColor3 = props.BackgroundColor3 end
+		if props.BackgroundTransparency ~= nil then btn.BackgroundTransparency = props.BackgroundTransparency end
+		if props.Image                 then btn.Image = props.Image end
+		if props.ImageTransparency     ~= nil then btn.ImageTransparency = props.ImageTransparency end
+		-- Сохраняем стили как новые дефолты
+		local saved = MacLib:GetData("__keybindBtnStyles") or {}
+		local prev = saved[flag] or {}
+		saved[flag] = {
+			sizeX = props.Size and props.Size.X.Offset or prev.sizeX,
+			sizeY = props.Size and props.Size.Y.Offset or prev.sizeY,
+			bgT   = props.BackgroundTransparency ~= nil and props.BackgroundTransparency or prev.bgT,
+			iconT = props.ImageTransparency ~= nil and props.ImageTransparency or prev.iconT,
+			image = props.Image or prev.image,
+		}
+		MacLib:SetData("__keybindBtnStyles", saved)
+	end
+
+	--[[
+		MacLib:SetMobileKeybindVisible(flag, state)
+		Показывает или скрывает '+' кнопку конкретного Keybind (только мобильные).
+		Сохраняется в конфиг.
+	]]
+	function MacLib:SetMobileKeybindVisible(flag, state)
+		MacLib._mobileKeybindsHidden = MacLib._mobileKeybindsHidden or {}
+		MacLib._mobileKeybindsHidden[flag] = not state
+		local btn = MacLib._keybindPlusBtns and MacLib._keybindPlusBtns[flag]
+		if btn then btn.Visible = state end
+	end
+
+	--[[
+		MacLib:ShowKeybindButton(flag, state)
+		Показывает или скрывает плавающую Keybind кнопку.
+		Работает на ПК и мобильных.
+		Используется для тестирования кнопки на ПК без касания экрана.
+
+		flag  -- Flag строка Keybind элемента
+		state -- true = показать, false = скрыть
+
+		Пример:
+		  MacLib:ShowKeybindButton("Keybind", true)   -- показать
+		  MacLib:ShowKeybindButton("Keybind", false)  -- скрыть
+	]]
+	function MacLib:ShowKeybindButton(flag, state)
+		-- Сохраняем состояние
+		MacLib._keybindBtnVisible = MacLib._keybindBtnVisible or {}
+		MacLib._keybindBtnVisible[flag] = state
+
+		local btn = MacLib._keybindBtns and MacLib._keybindBtns[flag]
+		if not btn then return end
+		local gui = btn.Parent
+		if not gui then return end
+
+		if state then
+			gui.Enabled = true
+			-- Применяем сохранённые стили
+			local styles = MacLib:GetData("__keybindBtnStyles")
+			local s = styles and styles[flag]
+			local targetSize
+			if s and s.sizeX and s.sizeY then
+				targetSize = UDim2.fromOffset(s.sizeX, s.sizeY)
+			else
+				targetSize = UDim2.fromOffset(56, 56)
+			end
+			if s and s.bgT   ~= nil then btn.BackgroundTransparency = s.bgT end
+			if s and s.image       then btn.Image = s.image end
+			local targetIconT = (s and s.iconT ~= nil) and s.iconT or 0.3
+			Tween(btn, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+				Size = targetSize,
+				ImageTransparency = targetIconT,
+			}):Play()
+		else
+			local t = Tween(btn, TweenInfo.new(0.16, Enum.EasingStyle.Sine, Enum.EasingDirection.In), {
+				Size = UDim2.fromOffset(0, 0),
+				ImageTransparency = 1,
+			})
+			t:Play()
+			t.Completed:Connect(function()
+				gui.Enabled = false
+			end)
+		end
+	end
+
+	--[[
+		MacLib:SimulateKeybindPress(flag)
+		Программно вызывает Callback конкретного Keybind.
+		Полезно для теста на ПК — имитирует нажатие плавающей кнопки.
+
+		flag -- Flag строка Keybind элемента
+
+		Пример:
+		  MacLib:SimulateKeybindPress("Keybind")
+	]]
+	function MacLib:SimulateKeybindPress(flag)
+		local kb = MacLib.Options[flag]
+		if not kb then
+			warn("[MacLib:SimulateKeybindPress] No Keybind found with flag: " .. tostring(flag))
+			return
+		end
+		if kb.Settings and kb.Settings.Callback then
+			task.spawn(kb.Settings.Callback, kb:GetBind() or Enum.KeyCode.Unknown)
+		end
+	end
+
+	-- === END EXTENDED API ===
+
+	function MacLib:RefreshConfigList()
+		if isStudio or not (isfolder and listfiles) then return "Config system unavailable." end
+
+		local list = (isfolder(MacLib.Folder) and isfolder(MacLib.Folder .. "/settings")) and listfiles(MacLib.Folder .. "/settings") or {}
+
+		local out = {}
+		for i = 1, #list do
+			local file = list[i]
+			if file:sub(-5) == ".json" then
+				local pos = file:find(".json", 1, true)
+				local start = pos
+
+				local char = file:sub(pos, pos)
+				while char ~= "/" and char ~= "\\" and char ~= "" do
+					pos = pos - 1
+					char = file:sub(pos, pos)
+				end
+
+				if char == "/" or char == "\\" then
+					local name = file:sub(pos + 1, start - 1)
+					if name ~= "options" then
+						table.insert(out, name)
+					end
+				end
+			end
+		end
+
+		return out
+	end
+
+	macLib.Enabled = false
+
+	local assetList = {}
+	for _, assetId in pairs(assets) do
+		table.insert(assetList, assetId)
+	end
+
+	ContentProvider:PreloadAsync(assetList)
+	macLib.Enabled = true
+	windowState = true
+
+
+	-- ================================================================
+	-- NEW API METHODS (mobile, notify, toggle, keybind, topbar, controls)
+	-- ================================================================
+
+	--- Добавить кастомную иконку в topbar (рядом с кнопкой перемещения)
+	--- Settings: { Image, Callback, Size, ImageTransparency }
+	--- Возвращает объект: { Destroy(), SetImage(id), SetVisible(bool), SetTransparency(t) }
+	function WindowFunctions:AddTopbarIcon(iconSettings)
+		return _addTopbarIcon(iconSettings)
+	end
+
+	--- Добавить кастомную кнопку в controls (рядом с exit/minimize)
+	--- Settings: { Name, Label, Image, Color, TextColor, TextSize, Transparency, Callback, LayoutOrder }
+	--- Возвращает объект: { Destroy(), SetLabel(t), SetColor(c), SetImage(id), SetVisible(bool) }
+	function WindowFunctions:AddWindowControl(ctrlSettings)
+		return _addWindowControl(ctrlSettings)
+	end
+
+	--- Изменить масштаб Notify (по умолчанию 1)
+	--- Пример: WindowFunctions:SetNotifyScale(0.8)
+	-- _notifyScale объявлен выше перед Notify (FIX-V15)
+	function WindowFunctions:SetNotifyScale(scale)
+		_notifyScale = scale
+		-- FIX-V14: применяем scale только к notificationUIScale каждого уведомления.
+		-- notifUIScale трогать нельзя — он масштабирует весь контейнер от (0,0)
+		-- и сдвигает уведомления по диагонали.
+		if notifications then
+			for _, child in ipairs(notifications:GetChildren()) do
+				if child.Name == "Notification" then
+					local uis = child:FindFirstChild("NotificationUIScale")
+					if uis then
+						Tween(uis, TweenInfo.new(0.2, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), { Scale = scale }):Play()
+					end
+				end
+			end
+		end
+	end
+	function WindowFunctions:GetNotifyScale()
+		return _notifyScale
+	end
+	-- Применяем _notifyScale при создании каждого Notify через patch notificationUIScale
+	-- (notificationUIScale.Scale начинается с 0 и анимируется до _notifyScale в Notify)
+
+	--- Получить/задать размер toggleBtn
+	function WindowFunctions:SetToggleBtnSize(size)
+		toggleBtn.Size = UDim2.fromOffset(size, size)
+	end
+	function WindowFunctions:GetToggleBtnSize()
+		return toggleBtn.Size.X.Offset
+	end
+
+	--- Показать/скрыть toggleBtn
+	function WindowFunctions:SetToggleBtnVisible(state)
+		toggleBtn.Visible = state
+	end
+
+	--- Задать позицию toggleBtn (UDim2)
+	function WindowFunctions:SetToggleBtnPosition(pos)
+		toggleBtn.Position = pos
+	end
+
+	--- Задать цвет фона toggleBtn
+	function WindowFunctions:SetToggleBtnColor(color)
+		toggleBtn.BackgroundColor3 = color
+	end
+
+	--- Задать иконку toggleBtn вручную (open, close)
+	function WindowFunctions:SetToggleBtnIcons(openIcon, closeIcon)
+		TOGGLE_ICON_OPEN = openIcon
+		TOGGLE_ICON_CLOSE = closeIcon
+		updateToggleBtnIcon(WindowFunctions:GetState())
+	end
+
+	--- Задать размер mobileKeybindBtn по Flag
+	--- Пример: WindowFunctions:SetKeybindBtnSize("MyFlag", 64)
+	function WindowFunctions:SetKeybindBtnSize(flag, size)
+		local btn = MacLib._keybindBtns and MacLib._keybindBtns[flag]
+		if btn then
+			btn.Size = UDim2.fromOffset(size, size)
+		end
+	end
+
+	--- Показать/скрыть mobileKeybindBtn по Flag
+	function WindowFunctions:SetKeybindBtnVisible(flag, state)
+		if MacLib.Options[flag] and MacLib.Options[flag].SetMobileButtonVisibility then
+			MacLib.Options[flag]:SetMobileButtonVisibility(state)
+		end
+	end
+
+	--- Задать иконку mobileKeybindBtn по Flag
+	function WindowFunctions:SetKeybindBtnImage(flag, assetId)
+		if MacLib.Options[flag] and MacLib.Options[flag].SetMobileImage then
+			MacLib.Options[flag]:SetMobileImage(assetId)
+		end
+	end
+
+	--- Получить видимость hideIconBtn (кнопки скрытия в topbar)
+	function WindowFunctions:SetHideBtnVisible(state)
+		hideIconBtn.Visible = state
+	end
+
+	--- Задать иконку hideIconBtn
+	function WindowFunctions:SetHideBtnImage(assetId)
+		hideIconBtn.Image = assetId
+	end
+
+	--- Задать размер базового окна через Vector2
+	function WindowFunctions:SetWindowSize(x, y)
+		base.Size = UDim2.fromOffset(x, y)
+	end
+
+	--- Получить текущий размер базового окна
+	function WindowFunctions:GetWindowSize()
+		return base.AbsoluteSize
+	end
+
+	--- Задать прозрачность Notify-уведомлений
+	--- Пример: WindowFunctions:SetNotifyTransparency(0.15)
+	local _notifyBgTransparency = 0
+	function WindowFunctions:SetNotifyTransparency(t)
+		_notifyBgTransparency = t
+	end
+
+	--- Принудительно обновить иконку toggleBtn (если state изменился снаружи)
+	function WindowFunctions:RefreshToggleIcon()
+		updateToggleBtnIcon(WindowFunctions:GetState())
+	end
+
+	return WindowFunctions
 end
 
-local function HidePickupCircle()
-    for _, l in ipairs(PickupCircle) do
-        if l and l.Visible ~= nil then l.Visible = false end
-    end
+function MacLib:Demo()
+	local Window = MacLib:Window({
+		Title = "Maclib Demo",
+		Subtitle = "This is a subtitle.",
+		Size = UDim2.fromOffset(868, 650),
+		DragStyle = 1,
+		DisabledWindowControls = {},
+		ShowUserInfo = true,
+		Keybind = Enum.KeyCode.RightControl,
+		AcrylicBlur = true,
+	})
+
+	local globalSettings = {
+		UIBlurToggle = Window:GlobalSetting({
+			Name = "UI Blur",
+			Default = Window:GetAcrylicBlurState(),
+			Callback = function(bool)
+				Window:SetAcrylicBlurState(bool)
+				Window:Notify({
+					Title = Window.Settings.Title,
+					Description = (bool and "Enabled" or "Disabled") .. " UI Blur",
+					Lifetime = 5
+				})
+			end,
+		}),
+		NotificationToggler = Window:GlobalSetting({
+			Name = "Notifications",
+			Default = Window:GetNotificationsState(),
+			Callback = function(bool)
+				Window:SetNotificationsState(bool)
+				Window:Notify({
+					Title = Window.Settings.Title,
+					Description = (bool and "Enabled" or "Disabled") .. " Notifications",
+					Lifetime = 5
+				})
+			end,
+		}),
+		ShowUserInfo = Window:GlobalSetting({
+			Name = "Show User Info",
+			Default = Window:GetUserInfoState(),
+			Callback = function(bool)
+				Window:SetUserInfoState(bool)
+				Window:Notify({
+					Title = Window.Settings.Title,
+					Description = (bool and "Showing" or "Redacted") .. " User Info",
+					Lifetime = 5
+				})
+			end,
+		})
+	}
+
+	local tabGroups = {
+		TabGroup1 = Window:TabGroup()
+	}
+
+	local tabs = {
+		Main = tabGroups.TabGroup1:Tab({ Name = "Demo", Image = "rbxassetid://18821914323" }),
+		Settings = tabGroups.TabGroup1:Tab({ Name = "Settings", Image = "rbxassetid://10734950309" })
+	}
+
+	local sections = {
+		MainSection1 = tabs.Main:Section({ Side = "Left" }),
+	}
+
+	sections.MainSection1:Header({
+		Name = "Header #1"
+	})
+
+	sections.MainSection1:Button({
+		Name = "Button",
+		Callback = function()
+			Window:Dialog({
+				Title = Window.Settings.Title,
+				Description = "Lorem ipsum odor amet, consectetuer adipiscing elit. Eros vestibulum aliquet mattis, ex platea nunc.",
+				Buttons = {
+					{
+						Name = "Confirm",
+						Callback = function()
+							print("Confirmed!")
+						end,
+					},
+					{
+						Name = "Cancel"
+					}
+				}
+			})
+		end,
+	})
+
+	sections.MainSection1:Input({
+		Name = "Input",
+		Placeholder = "Input",
+		AcceptedCharacters = "All",
+		Callback = function(input)
+			Window:Notify({
+				Title = Window.Settings.Title,
+				Description = "Successfully set input to " .. input
+			})
+		end,
+		onChanged = function(input)
+			print("Input is now " .. input)
+		end,
+	}, "Input")
+
+	sections.MainSection1:Slider({
+		Name = "Slider",
+		Default = 50,
+		Minimum = 0,
+		Maximum = 100,
+		DisplayMethod = "Percent",
+		Precision = 0,
+		Callback = function(Value)
+			print("Changed to ".. Value)
+		end
+	}, "Slider")
+
+	sections.MainSection1:Toggle({
+		Name = "Toggle",
+		Default = false,
+		Callback = function(value)
+			Window:Notify({
+				Title = Window.Settings.Title,
+				Description = (value and "Enabled " or "Disabled ") .. "Toggle"
+			})
+		end,
+	}, "Toggle")
+
+	sections.MainSection1:Keybind({
+		Name = "Keybind",
+		Blacklist = false,
+		Callback = function(binded)
+			Window:Notify({
+				Title = "Demo Window",
+				Description = "Pressed keybind - "..tostring(binded.Name),
+				Lifetime = 3
+			})
+		end,
+		onBinded = function(bind)
+			Window:Notify({
+				Title = "Demo Window",
+				Description = "Successfully Binded Keybind to - "..tostring(bind.Name),
+				Lifetime = 3
+			})
+		end,
+	}, "Keybind")
+
+	sections.MainSection1:Colorpicker({
+		Name = "Colorpicker",
+		Default = Color3.fromRGB(0, 255, 255),
+		Callback = function(color)
+			print("Color: ", color)
+		end,
+	}, "Colorpicker")
+
+	local alphaColorPicker = sections.MainSection1:Colorpicker({
+		Name = "Transparency Colorpicker",
+		Default = Color3.fromRGB(255,0,0),
+		Alpha = 0,
+		Callback = function(color, alpha)
+			print("Color: ", color, " Alpha: ", alpha)
+		end,
+	}, "TransparencyColorpicker")
+
+	local rainbowActive
+	local rainbowConnection
+	local hue = 0
+
+	sections.MainSection1:Toggle({
+		Name = "Rainbow",
+		Default = false,
+		Callback = function(value)
+			rainbowActive = value
+
+			if rainbowActive then
+				rainbowConnection = game:GetService("RunService").RenderStepped:Connect(function(deltaTime)
+					hue = (hue + deltaTime * 0.1) % 1
+					alphaColorPicker:SetColor(Color3.fromHSV(hue, 1, 1))
+				end)
+			elseif rainbowConnection then
+				rainbowConnection:Disconnect()
+				rainbowConnection = nil
+			end
+		end,
+	}, "RainbowToggle")
+
+	local optionTable = {
+		"Apple",
+		"Banana",
+		"Orange",
+		"Grapes",
+		"Pineapple",
+		"Mango",
+		"Strawberry",
+		"Blueberry",
+		"Watermelon",
+		"Peach"
+	}
+
+	local Dropdown = sections.MainSection1:Dropdown({
+		Name = "Dropdown",
+		Multi = false,
+		Required = true,
+		Options = optionTable,
+		Default = 1,
+		Callback = function(Value)
+			print("Dropdown changed: ".. Value)
+		end,
+	}, "Dropdown")
+
+	local MultiDropdown = sections.MainSection1:Dropdown({
+		Name = "Multi Dropdown",
+		Search = true,
+		Multi = true,
+		Required = false,
+		Options = optionTable,
+		Default = {"Apple", "Orange"},
+		Callback = function(Value)
+			local Values = {}
+			for Value, State in next, Value do
+				table.insert(Values, Value)
+			end
+			print("Mutlidropdown changed:", table.concat(Values, ", "))
+		end,
+	}, "MultiDropdown")
+
+	sections.MainSection1:Button({
+		Name = "Update Selection",
+		Callback = function()
+			Dropdown:UpdateSelection("Grapes")
+			MultiDropdown:UpdateSelection({"Banana", "Pineapple"})
+		end,
+	})
+
+	sections.MainSection1:Divider()
+
+	sections.MainSection1:Header({
+		Text = "Header #2"
+	})
+
+	sections.MainSection1:Paragraph({
+		Header = "Paragraph",
+		Body = "Paragraph body. Lorem ipsum odor amet, consectetuer adipiscing elit. Morbi tempus netus aliquet per velit est gravida."
+	})
+
+	sections.MainSection1:Label({
+		Text = "Label. Lorem ipsum odor amet, consectetuer adipiscing elit."
+	})
+
+	sections.MainSection1:SubLabel({
+		Text = "Sub-Label. Lorem ipsum odor amet, consectetuer adipiscing elit."
+	})
+
+	MacLib:SetFolder("Maclib")
+	tabs.Settings:InsertConfigSection("Left")
+
+	Window.onUnloaded(function()
+		print("Unloaded!")
+	end)
+
+	tabs.Main:Select()
+	MacLib:LoadAutoLoadConfig()
 end
 
-local function InitializePickupCircle()
-    for i = 1, PICKUP_CIRCLE_SEGMENTS do
-        if PickupCircle[i] and PickupCircle[i].Remove then PickupCircle[i]:Remove() end
-        PickupCircle[i] = Drawing.new("Line")
-        PickupCircle[i].Thickness    = 2.5
-        PickupCircle[i].Transparency = PICKUP_CIRCLE_BASE_ALPHA  -- ~opaque
-        PickupCircle[i].ZIndex       = 998
-        PickupCircle[i].Visible      = false
-    end
-    _pcAlpha  = 1.0   -- начинаем невидимым
-    _pcRadius = nil
-    -- Не сбрасываем _pcColor чтобы не было резкого скачка цвета при реинициализации
-    if _pcColor == nil then _pcColor = PickupCircleColor end
-end
-
--- Каждый сегмент проецируется через WorldToViewportPoint раздельно —
--- это устраняет иллюзию "парения" при взгляде под углом на большой радиус.
--- Анимация: плавный fade-in/out + lerp радиуса + lerp цвета через deltaTime.
-local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
-    local dt = dt or 0.016
-
-    -- Кешируем последнюю известную позицию (используется при fade-out / Indicate)
-    if centerXZ ~= nil then
-        _pcLastCenter = centerXZ
-        _pcLastFootY  = footY
-    end
-
-    -- Определяем целевой цвет: если PickupCircleIndicate и пикап выкл — красный
-    local targetColor = (PickupCircleIndicate and not AutoPickupEnabled)
-        and PICKUP_CIRCLE_DISABLED_COLOR
-        or  PickupCircleColor
-
-    -- Видим ли мы круг:
-    -- shouldShow=true если ShowPickupCircle и есть хоть какая-то позиция (текущая или кешированная)
-    local hasPos = centerXZ ~= nil or _pcLastCenter ~= nil
-    local shouldShow = ShowPickupCircle and hasPos
-
-    -- Анимируем Drawing.Transparency: BASE_ALPHA (виден) ↔ 1.0 (невидим)
-    local targetAlpha = shouldShow and PICKUP_CIRCLE_BASE_ALPHA or 1.0
-    _pcAlpha = _pcAlpha + (targetAlpha - _pcAlpha) * math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1)
-
-    -- Если почти полностью невидим — скрываем и выходим
-    if _pcAlpha > 0.97 then HidePickupCircle(); return end
-
-    -- Анимируем радиус (плавное изменение при смене AutoPickupDist)
-    if _pcRadius == nil then _pcRadius = targetRadius end
-    _pcRadius = _pcRadius + (targetRadius - _pcRadius) * math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1)
-
-    -- Анимируем цвет (fade между enabled/disabled)
-    if _pcColor == nil then _pcColor = targetColor end
-    _pcColor = _lerpColor(_pcColor, targetColor, math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1))
-
-    -- Используем кешированную позицию при fade-out
-    local drawCenter = centerXZ or _pcLastCenter
-    if not drawCenter then HidePickupCircle(); return end
-    local drawFootY  = centerXZ ~= nil and footY or _pcLastFootY
-    local origin = Vector3.new(drawCenter.X, drawFootY, drawCenter.Z)
-    local prev2D, prevOk = nil, false
-    local first2D, firstOk = nil, false
-    for i = 1, PICKUP_CIRCLE_SEGMENTS do
-        local a   = ((i - 1) / PICKUP_CIRCLE_SEGMENTS) * math.pi * 2
-        local p   = origin + Vector3.new(math.cos(a) * _pcRadius, 0, math.sin(a) * _pcRadius)
-        local s, onScreen = Camera:WorldToViewportPoint(p)
-        local ok  = onScreen and s.Z > 0
-        local cur = Vector2.new(s.X, s.Y)
-        if i == 1 then first2D, firstOk = cur, ok end
-        if i > 1 then
-            local line = PickupCircle[i - 1]
-            if prevOk and ok then
-                line.From        = prev2D
-                line.To          = cur
-                line.Color        = _pcColor
-                line.Thickness    = 2.5
-                line.Transparency = _pcAlpha
-                line.Visible      = true
-            else
-                line.Visible = false
-            end
-        end
-        prev2D, prevOk = cur, ok
-    end
-    local last = PickupCircle[PICKUP_CIRCLE_SEGMENTS]
-    if prevOk and firstOk then
-        last.From        = prev2D
-        last.To          = first2D
-        last.Color        = _pcColor
-        last.Thickness    = 2.5
-        last.Transparency = _pcAlpha
-        last.Visible      = true
-    else
-        last.Visible = false
-    end
-end
-
--- ============================================================
--- GUI
--- ============================================================
-local Gui = nil
-local function SetupGUI()
-    Gui = {
-        Status = Drawing.new("Text"), Dist   = Drawing.new("Text"),
-        Target = Drawing.new("Text"), Power  = Drawing.new("Text"),
-        Spin   = Drawing.new("Text"), GK     = Drawing.new("Text"),
-        Debug  = Drawing.new("Text"), Mode   = Drawing.new("Text"),
-        Goal   = Drawing.new("Text"),
-    }
-    local s = Camera.ViewportSize
-    local cx, y = s.X / 2, s.Y * 0.46
-    for i, v in ipairs({Gui.Status, Gui.Dist, Gui.Target, Gui.Power, Gui.Spin, Gui.GK, Gui.Debug, Gui.Mode, Gui.Goal}) do
-        v.Size = 18; v.Color = Color3.fromRGB(255,255,255); v.Outline = true; v.Center = true
-        v.Position = Vector2.new(cx, y + (i-1)*20); v.Visible = AutoShootDebugText
-    end
-    Gui.Status.Text = "v40.0: Ready"
-end
-
-local function ToggleDebugText(value)
-    if not Gui then return end
-    for _, v in pairs(Gui) do v.Visible = value end
-end
-
--- ============================================================
--- 3D КУБЫ: зелёный = выбранная цель, красный = зона ворот, голубой = NoSpin
--- ============================================================
-local TargetCube, GoalCube, NoSpinCube = {}, {}, {}
-local TRAJ_SEGMENTS = 20               -- кол-во сегментов дуги траектории
-local TrajectoryLines = {}             -- оранжевая пунктирная дуга
-local PeakCube = {}                    -- жёлтый бокс: пик траектории
-local StartCircle = {}                 -- 3D-круг в StartPos, из которого выходит траектория
-local function ApplyVisualStyles()
-    for _, l in ipairs(TrajectoryLines) do
-        l.Color = TrajectoryColor
-        l.Thickness = TrajectoryThickness
-        l.Transparency = TrajectoryAlpha
-        l.ZIndex = 999
-        l.Visible = false
-    end
-    local function SC(cube, color, th)
-        for _, l in ipairs(cube) do
-            l.Color = color
-            l.Thickness = th or BoxThicknessThin
-            l.Transparency = BoxAlpha
-            l.ZIndex = 1000
-            l.Visible = false
-        end
-    end
-    SC(TargetCube, TargetCubeColor, BoxThicknessMain)
-    SC(GoalCube,   GoalCubeColor,   BoxThicknessMain)
-    SC(NoSpinCube, NoSpinCubeColor, BoxThicknessThin)
-    SC(PeakCube,   PeakCubeColor,   math.max(BoxThicknessThin + 1, 3))
-    for _, l in ipairs(StartCircle) do
-        l.Color = StartCircleColor
-        l.Thickness = StartCircleThickness
-        l.Transparency = StartCircleAlpha
-        l.ZIndex = 1000
-        l.Visible = false
-    end
-    ApplyPickupCircleStyle()
-end
-
-local function InitializeCubes()
-    for i = 1, 12 do
-        if TargetCube[i] and TargetCube[i].Remove then TargetCube[i]:Remove() end
-        if GoalCube[i]   and GoalCube[i].Remove   then GoalCube[i]:Remove()   end
-        if NoSpinCube[i] and NoSpinCube[i].Remove  then NoSpinCube[i]:Remove()  end
-        if PeakCube[i]   and PeakCube[i].Remove    then PeakCube[i]:Remove()    end
-        TargetCube[i] = Drawing.new("Line")
-        GoalCube[i]   = Drawing.new("Line")
-        NoSpinCube[i] = Drawing.new("Line")
-        PeakCube[i]   = Drawing.new("Line")
-    end
-    for i = 1, TRAJ_SEGMENTS do
-        if TrajectoryLines[i] and TrajectoryLines[i].Remove then TrajectoryLines[i]:Remove() end
-        TrajectoryLines[i] = Drawing.new("Line")
-    end
-    for i = 1, 28 do
-        if StartCircle[i] and StartCircle[i].Remove then StartCircle[i]:Remove() end
-        StartCircle[i] = Drawing.new("Line")
-    end
-    ApplyVisualStyles()
-end
-
--- DrawTrajectory: кубический Безье с боковым смещением для Магнус-эффекта.
--- P0=start, P3=land (красный куб), P1/P2 = управляющие точки для подъёма + Magnus curl.
-local function DrawTrajectory(startPos, peakPos, endPos, peakFrac, spinStr)
-    if not ShowTrajectory or not peakPos or not endPos then
-        for _, l in ipairs(TrajectoryLines) do l.Visible = false end
-        for _, l in ipairs(StartCircle) do l.Visible = false end
-        return
-    end
-
-    -- Горизонтальные направления
-    local fwdH = Vector3.new(endPos.X - startPos.X, 0, endPos.Z - startPos.Z)
-    if fwdH.Magnitude < 0.1 then fwdH = Vector3.new(1,0,0) end
-    fwdH = fwdH.Unit
-    local right = Vector3.new(-fwdH.Z, 0, fwdH.X)
-
-    -- Нейтральный пик: peakPos содержит боковое смещение из-за derivation.
-    -- Оставляем только высоту (Y), а XZ проецируем на прямую start→end.
-    -- Это даёт правильную вертикальную дугу без артефактов от аим-смещения.
-    local fwdTotal = (Vector3.new(endPos.X-startPos.X, 0, endPos.Z-startPos.Z)).Magnitude
-    local peakHoriz= (Vector3.new(peakPos.X-startPos.X, 0, peakPos.Z-startPos.Z)).Magnitude
-    local t_peak   = (fwdTotal > 0.1) and math.clamp(peakHoriz/fwdTotal, 0.36, 0.44) or 0.40
-    local neutralXZ= startPos + fwdH * peakHoriz
-    local neutralPk= Vector3.new(neutralXZ.X, peakPos.Y, neutralXZ.Z)
-
-    -- Bezier-контрольная точка
-    local f   = t_peak
-    local Pc  = (neutralPk - startPos*((1-f)^2) - endPos*(f^2))
-                / math.max(2*f*(1-f), 1e-4)
-
-    -- Боковой Magnus-curl (только от spinStr, без Bezier bias)
-    -- Игра ИНВЕРТИРУЕТ: "Right" → мяч летит ВЛЕВО, "Left" → ВПРАВО
-    local spinSign = (spinStr == "Right") and -1 or (spinStr == "Left") and 1 or 0
-    local dist3D   = (endPos - startPos).Magnitude
-    -- Амплитуда растёт с дистанцией, нулевая на старте и финише
-    local curlAmp  = spinSign * math.min(0.9 + dist3D / 160, 2.2)
-
-    local function point(t)
-        local mt  = 1 - t
-        local arc = startPos*(mt*mt) + Pc*(2*mt*t) + endPos*(t*t)
-        local curl= right * curlAmp * math.sin(math.pi * t)
-        return arc + curl
-    end
-
-    for i = 1, TRAJ_SEGMENTS do
-        local t0 = (i-1)/TRAJ_SEGMENTS
-        local t1 = i / TRAJ_SEGMENTS
-        local p0 = point(t0); local p1 = point(t1)
-        local s0, v0 = Camera:WorldToViewportPoint(p0)
-        local s1, v1 = Camera:WorldToViewportPoint(p1)
-        local l = TrajectoryLines[i]
-        if v0 and v1 and s0.Z > 0 and s1.Z > 0 then
-            l.From = Vector2.new(s0.X, s0.Y); l.To = Vector2.new(s1.X, s1.Y); l.Visible = true
-        else l.Visible = false end
-    end
-    local ringR = math.max(0.9, 0.70 + dist3D * 0.006)
-    local prev2D, prevOk = nil, false
-    for i = 1, #StartCircle do
-        local a = ((i-1) / #StartCircle) * math.pi * 2
-        local p = startPos + Vector3.new(math.cos(a) * ringR, 0, math.sin(a) * ringR)
-        local s, v = Camera:WorldToViewportPoint(p)
-        local ok = v and s.Z > 0
-        if i > 1 and prevOk and ok then
-            local l = StartCircle[i-1]
-            l.From = prev2D
-            l.To = Vector2.new(s.X, s.Y)
-            l.Visible = true
-        elseif i > 1 then
-            StartCircle[i-1].Visible = false
-        end
-        prev2D, prevOk = Vector2.new(s.X, s.Y), ok
-    end
-    local firstP = startPos + Vector3.new(ringR, 0, 0)
-    local fs, fv = Camera:WorldToViewportPoint(firstP)
-    if prevOk and fv and fs.Z > 0 then
-        local l = StartCircle[#StartCircle]
-        l.From = prev2D
-        l.To = Vector2.new(fs.X, fs.Y)
-        l.Visible = true
-    else
-        StartCircle[#StartCircle].Visible = false
-    end
-end
-
-local function DrawOrientedCube(cube, cframe, size)
-    if not cframe or not size then for _, l in ipairs(cube) do l.Visible = false end; return end
-    pcall(function()
-        local h = size / 2
-        local corners = {
-            cframe * Vector3.new(-h.X,-h.Y,-h.Z), cframe * Vector3.new(h.X,-h.Y,-h.Z),
-            cframe * Vector3.new(h.X,h.Y,-h.Z),   cframe * Vector3.new(-h.X,h.Y,-h.Z),
-            cframe * Vector3.new(-h.X,-h.Y,h.Z),  cframe * Vector3.new(h.X,-h.Y,h.Z),
-            cframe * Vector3.new(h.X,h.Y,h.Z),    cframe * Vector3.new(-h.X,h.Y,h.Z),
-        }
-        local edges = {{1,2},{2,3},{3,4},{4,1},{5,6},{6,7},{7,8},{8,5},{1,5},{2,6},{3,7},{4,8}}
-        for i, e in ipairs(edges) do
-            local a, b = corners[e[1]], corners[e[2]]
-            local as, av = Camera:WorldToViewportPoint(a)
-            local bs, bv = Camera:WorldToViewportPoint(b)
-            local l = cube[i]
-            if av and bv and as.Z > 0 and bs.Z > 0 then
-                l.From = Vector2.new(as.X, as.Y); l.To = Vector2.new(bs.X, bs.Y); l.Visible = true
-            else l.Visible = false end
-        end
-    end)
-end
-
--- ============================================================
--- ОПРЕДЕЛЕНИЕ ВОРОТ — полностью автоматически по реальным позициям стоек
--- Не используем никаких Y-offset — берём реальные координаты из мира
--- ============================================================
--- Начальная позиция мяча: Character.ball (реальное положение мяча на поле),
--- а не HumanoidRootPart (центр тела игрока, сдвинут на ~1-3 stud)
-local function GetBallStartPos()
-    -- Workspace.[PlayerName].ball — реальная физическая позиция мяча в мире
-    -- (не смещённая weld-attachment на персонаже), это критично для точного CalcLaunchDir
-    local wsModel = Workspace:FindFirstChild(LocalPlayer.Name)
-    if wsModel then
-        local wsBall = wsModel:FindFirstChild("ball")
-        if wsBall then
-            if wsBall:IsA("BasePart")   then return wsBall.Position end
-            if wsBall:IsA("Attachment") then return wsBall.WorldPosition end
-        end
-    end
-    local ballPart = Character:FindFirstChild("ball")
-    if ballPart then
-        if ballPart:IsA("BasePart")   then return ballPart.Position     end
-        if ballPart:IsA("Attachment") then return ballPart.WorldPosition end
-    end
-    return HumanoidRootPart.Position
-end
-
--- Визуальный старт траектории: держим ниже, на уровне ног, и независимо от наклона/падения персонажа.
--- Физика выстрела использует реальный мяч (GetBallStartPos), а рендер — стабильную точку у ног.
-local function GetVisualStartPos()
-    local hrp = HumanoidRootPart
-    if not hrp then return GetBallStartPos() end
-    local rootPos = hrp.Position
-    local footY = rootPos.Y - (Humanoid and (Humanoid.HipHeight + hrp.Size.Y * 0.5) or (hrp.Size.Y * 0.9))
-    local ballPos = GetBallStartPos()
-    local flatToBall = Vector3.new(ballPos.X - rootPos.X, 0, ballPos.Z - rootPos.Z)
-    local flatMag = flatToBall.Magnitude
-    local lateral = (flatMag > 0.01) and (flatToBall.Unit * math.min(flatMag, 1.8)) or Vector3.zero
-    return Vector3.new(rootPos.X + lateral.X, footY + 0.15, rootPos.Z + lateral.Z)
-end
-
-local GoalCFrame, GoalWidth, GoalHeight, GoalFloorY
-local function IsLocalGoalkeeper()
-    local wModel = Workspace:FindFirstChild(LocalPlayer.Name)
-    local hitbox = wModel and wModel:FindFirstChild("Hitbox")
-    return hitbox and hitbox:IsA("BasePart") or false
-end
-
-local function UpdateGoal()
-    local myTeam, enemyGoalName = (function()
-        local stats = Workspace:FindFirstChild("PlayerStats")
-        if not stats then return nil, nil end
-        if stats:FindFirstChild("Away") and stats.Away:FindFirstChild(LocalPlayer.Name) then return "Away","HomeGoal"
-        elseif stats:FindFirstChild("Home") and stats.Home:FindFirstChild(LocalPlayer.Name) then return "Home","AwayGoal" end
-        return nil, nil
-    end)()
-    if not enemyGoalName then return nil end
-
-    local goalFolder = Workspace:FindFirstChild(enemyGoalName)
-    if not goalFolder then return nil end
-    local frame = goalFolder:FindFirstChild("Frame")
-    if not frame then return nil end
-
-    local posts, crossbar = {}, nil
-    for _, part in ipairs(frame:GetChildren()) do
-        if part:IsA("BasePart") then
-            if part.Name == "Crossbar" then
-                crossbar = part
-            else
-                local hasCyl, hasSnd = false, false
-                for _, c in ipairs(part:GetChildren()) do
-                    if c:IsA("CylinderMesh") then hasCyl = true end
-                    if c:IsA("Sound")        then hasSnd = true end
-                end
-                if hasCyl and hasSnd then table.insert(posts, part) end
-            end
-        end
-    end
-    if #posts < 2 then
-        for _, part in ipairs(frame:GetChildren()) do
-            if part:IsA("BasePart") and part.Name ~= "Crossbar" then table.insert(posts, part) end
-        end
-    end
-    if #posts < 2 or not crossbar then return nil end
-
-    table.sort(posts, function(a,b) return a.Position.X < b.Position.X end)
-    local leftPost, rightPost = posts[1], posts[#posts]
-
-    -- Пол ворот = нижний торец стоек (центр поста - полувысота)
-    -- Стойки — вертикальные цилиндры, Size.Y = их высота
-    local lFloor = leftPost.Position.Y  - leftPost.Size.Y  / 2
-    local rFloor = rightPost.Position.Y - rightPost.Size.Y / 2
-    local floorY = math.min(lFloor, rFloor)
-
-    -- Верхняя граница = нижний торец перекладины
-    -- Перекладина — горизонтальный цилиндр, Size.Y = его длина вдоль оси, Size.X/Z = диаметр
-    -- Реальный радиус перекладины: min(Size.X, Size.Z) / 2
-    local crossbarRadius = math.min(crossbar.Size.X, crossbar.Size.Z) / 2
-    local topY = crossbar.Position.Y - crossbarRadius
-
-    -- Внутренняя ширина (между внутренними гранями стоек)
-    local postRadiusL = math.min(leftPost.Size.X, leftPost.Size.Z) / 2
-    local postRadiusR = math.min(rightPost.Size.X, rightPost.Size.Z) / 2
-    local width = (leftPost.Position - rightPost.Position).Magnitude - postRadiusL - postRadiusR
-
-    local height = math.abs(topY - floorY)
-
-    -- CFrame: начало координат = центр пола ворот, X = вправо, Y = вверх
-    local rightDir = (rightPost.Position - leftPost.Position).Unit
-    local upDir    = Vector3.new(0, 1, 0)
-    local fwdDir   = rightDir:Cross(upDir).Unit
-    local floorCenter = Vector3.new(
-        (leftPost.Position.X + rightPost.Position.X) / 2,
-        floorY,
-        (leftPost.Position.Z + rightPost.Position.Z) / 2
-    )
-    GoalCFrame  = CFrame.fromMatrix(floorCenter, rightDir, upDir, -fwdDir)
-    GoalWidth   = width
-    GoalHeight  = height
-    GoalFloorY  = floorY
-    return width
-end
-
--- ============================================================
--- ОПРЕДЕЛЕНИЕ ВРАТАРЯ — точная позиция в локальных координатах ворот
--- Возвращает: hrp, localX (отступ от центра), localY (высота от пола ворот),
---             gkWidth (ширина тела ≈ 4 stud), isAggressive
--- ============================================================
-local GkTrack = {}  -- { [name] = {pos=, time=, vel=} }
-
-local function GetEnemyGoalie()
-    if not GoalCFrame or not GoalWidth then
-        if Gui then Gui.GK.Text = "GK: No Goal" end
-        return nil, 0, 0, false, Vector3.zero, false, 2.2, 0, 0
-    end
-    local myTeam = (function()
-        local stats = Workspace:FindFirstChild("PlayerStats")
-        if not stats then return nil end
-        if stats:FindFirstChild("Away") and stats.Away:FindFirstChild(LocalPlayer.Name) then return "Away"
-        elseif stats:FindFirstChild("Home") and stats.Home:FindFirstChild(LocalPlayer.Name) then return "Home" end
-    end)()
-
-    local goalies = {}
-    local halfW = GoalWidth / 2
-
-    local function addGoalie(part, name, isNPC)
-        if not part or not part:IsA("BasePart") then return end
-        local local3 = GoalCFrame:PointToObjectSpace(part.Position)
-        local localX = local3.X
-        local localY = local3.Y
-        local distGoal = (part.Position - GoalCFrame.Position).Magnitude
-        local isInGoal = distGoal < 20 and math.abs(localX) < halfW + 3
-        local hbRadius = math.max(part.Size.X, part.Size.Z) * 0.5
-        table.insert(goalies, {
-            hrp = part, localX = localX, localY = localY,
-            distGoal = distGoal, name = name, isInGoal = isInGoal,
-            isNPC = isNPC or false, hbRadius = hbRadius
-        })
-    end
-
-    -- Основной способ: тот, у кого есть Hitbox, и есть вратарь.
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Team and player.Team.Name ~= myTeam then
-            local wModel = Workspace:FindFirstChild(player.Name)
-            local hitbox = wModel and wModel:FindFirstChild("Hitbox")
-            if hitbox and hitbox:IsA("BasePart") then
-                addGoalie(hitbox, player.Name, false)
-            end
-        end
-    end
-
-    for _, npcName in ipairs({ myTeam == "Away" and "HomeGoalie" or "Goalie", "Goalie", "HomeGoalie" }) do
-        local npc = Workspace:FindFirstChild(npcName)
-        local hitbox = npc and npc:FindFirstChild("Hitbox")
-        if hitbox and hitbox:IsA("BasePart") then
-            addGoalie(hitbox, "NPC", true)
-            break
-        end
-    end
-
-    -- Fallback на старую логику только если Hitbox не найден вообще.
-    if #goalies == 0 then
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer and player.Team and player.Team.Name ~= myTeam then
-                local char = player.Character
-                if char then
-                    local hum = char:FindFirstChild("Humanoid")
-                    local hrp = char:FindFirstChild("HumanoidRootPart")
-                    if hum and hrp and hum.HipHeight >= 4 then
-                        addGoalie(hrp, player.Name, false)
-                    end
-                end
-            end
-        end
-        local npcName = myTeam == "Away" and "HomeGoalie" or "Goalie"
-        local npc = Workspace:FindFirstChild(npcName)
-        if npc and npc:FindFirstChild("HumanoidRootPart") then
-            addGoalie(npc.HumanoidRootPart, "NPC", true)
-        end
-    end
-
-    if #goalies == 0 then
-        if Gui then Gui.GK.Text = "GK: None"; Gui.GK.Color = Color3.fromRGB(150,150,150) end
-        return nil, 0, 0, false, Vector3.zero, false, 2.2, 0, 0
-    end
-
-    table.sort(goalies, function(a,b)
-        if a.isInGoal ~= b.isInGoal then return a.isInGoal end
-        return a.distGoal < b.distGoal
-    end)
-
-    local best = goalies[1]
-    local now = tick()
-    local tr  = GkTrack[best.name]
-    local vel = Vector3.zero
-    local dt  = tr and (now - tr.time) or 0
-    if tr and dt > 0.02 and dt < 0.8 then
-        vel = (best.hrp.Position - tr.pos) / dt
-    end
-    local assemblyVel = best.hrp.AssemblyLinearVelocity or Vector3.zero
-    if assemblyVel.Magnitude > vel.Magnitude then
-        vel = assemblyVel
-    end
-
-    local hist = (tr and tr.hist) or {}
-    table.insert(hist, best.localX)
-    while #hist > 8 do table.remove(hist, 1) end
-    local sumX = 0
-    for _, x in ipairs(hist) do sumX = sumX + x end
-    local biasX = (#hist > 0) and (sumX / #hist) or best.localX
-    local driftX = (tr and tr.localX and dt > 0.02 and dt < 0.8) and ((best.localX - tr.localX) / dt) or 0
-
-    GkTrack[best.name] = {
-        pos = best.hrp.Position, time = now, vel = vel,
-        hist = hist, localX = best.localX
-    }
-
-    best.localY = GoalCFrame:PointToObjectSpace(best.hrp.Position).Y
-    local isAggressive = not best.isInGoal
-    if Gui then
-        Gui.GK.Text = string.format("GK: %s%s X=%.1f Y=%.1f v=%.1f b=%.1f",
-            best.name, isAggressive and " [RUSH]" or "",
-            best.localX, best.localY, vel.Magnitude, biasX)
-        Gui.GK.Color = isAggressive and Color3.fromRGB(255,80,0) or Color3.fromRGB(255,200,0)
-    end
-    return best.hrp, best.localX, best.localY, isAggressive, vel, (best.isNPC or false), (best.hbRadius or 2.2), biasX, driftX
-end
-
--- ============================================================
--- ЯДРО: БАЛЛИСТИКА + SMART TARGET SELECTION
--- CalcLaunchDir: решает обратную задачу траектории.
--- Нам нужно попасть в точку targetPos стартуя из startPos.
--- Мяч летит под углом θ с начальной скоростью v.
--- По горизонтали: dist = v*cos(θ)*t  →  t = dist/(v*cos(θ))
--- По вертикали:   dh   = v*sin(θ)*t - 0.5*g*t²
--- Подстановка t и u=tan(θ):
---   k*u² - dist*u + (dh+k) = 0  где k = g*dist²/(2*v²)
--- Берём низкоугольное решение (более прямой удар).
--- ============================================================
-local TargetPoint, ShootDir, ShootVel, CurrentSpin, CurrentPower, CurrentType
-local AimPoint          = nil
-local PredictedLand     = nil
-local CurrentFlightTime = 0
-local CurrentLaunchDir  = nil
-local CurrentSpeed      = 0
-local CurrentPeakPos    = nil
-local CurrentPeakFrac   = 0.40
-local CurrentIsLob      = false
-local CurrentDist       = 0
-local LastShoot = 0
-local CanShoot  = true
-
--- CalcLaunchDir: первопорядковая коррекция гравитации + трение.
---
--- Принцип: мяч летит со скоростью V (константа, не зависит от power).
--- За время полёта t ≈ horizDist/V гравитация роняет его на Δy_g = 0.5*g*t².
--- Трение замедляет мяч → он падает ещё ниже → компенсируем дополнительной высотой Δy_d.
--- Решение: целимся в точку targetPos + Vector3.yAxis*(Δy_g + Δy_d).
--- В отличие от квадратного уравнения — не зависит от точности оценки V.
--- Ошибка ≈ O((Δy/horizDist)²) — мала при небольших углах.
---
--- Возвращает: launchDir (unit vector), horizDist, flightTime
-local function CalcLaunchDir(startPos, targetPos)
-    local toTarget  = targetPos - startPos
-    local horiz     = Vector3.new(toTarget.X, 0, toTarget.Z)
-    local horizDist = horiz.Magnitude
-
-    if horizDist < 0.5 then
-        return Vector3.new(0, 1, 0), 0, 0.1
-    end
-
-    local V  = AutoShootBallSpeed
-    local k  = AutoShootDragComp   -- 1/s, экспоненциальная модель v_h(t)=V·exp(-k·t)
-    -- Горизонтальная дистанция: d = (V/k)·(1-exp(-k·t))  =>  t = -ln(1 - k·d/V) / k
-    -- При k→0: t = d/V.  Непрерывная функция, нет if-костылей.
-    local t
-    if k < 1e-5 then
-        t = horizDist / V
-    else
-        local kd = math.min(k * horizDist / V, 0.990)
-        t = -math.log(1 - kd) / k
-    end
-
-    -- Непрерывная физика без порогов по distance.
-    -- 1) На ближних/коротких апхил-ударах мяч сначала сам "вырастает" над линией прицеливания,
-    --    поэтому часть компенсации нужно УБРАТЬ.
-    -- 2) На очень дальних полётах компенсация должна плавно расти сильнее.
-    local gravRamp = 1 - math.exp(-(t / 0.26) ^ 2)
-    local baseComp = (0.5 * GRAVITY + 0.19 * k * V) * t * t * gravRamp
-    local t2       = t * t
-    local s        = t2 / (t2 + 0.80 * 0.80)
-    local farScale = 0.80 + 0.16 * s + 0.58 * s * s + 0.46 * s * s * s
-    local upDy     = math.max(targetPos.Y - startPos.Y, 0)
-    local nearRise = upDy * 0.68 * math.exp(-(t / 0.34) ^ 2)
-    local corrY    = targetPos.Y + baseComp * farScale - nearRise
-    local dir      = (Vector3.new(targetPos.X, corrY, targetPos.Z) - startPos).Unit
-    local cosAngle = math.sqrt(dir.X*dir.X + dir.Z*dir.Z)
-
-    local realT
-    if k < 1e-5 then
-        realT = (cosAngle > 0.01) and (horizDist / (V * cosAngle)) or t
-    else
-        local kdCos = math.min(k * horizDist / math.max(V * cosAngle, 1), 0.990)
-        realT = -math.log(1 - kdCos) / k
-    end
-
-    return dir, horizDist, realT
-end
-
-local function GetTarget(dist, gkX, gkY, isAggressive, gkHrp, gkVel, gkIsNPC, gkHitRadius, gkBiasX, gkDriftX)
-    if not GoalCFrame or not GoalWidth or not GoalHeight then return nil end
-    if dist > AutoShootMaxDistance then return nil end
-
-    local startPos     = GetBallStartPos()
-    -- Умный inset: базовый отступ + позиционный компонент.
-    -- Чем острее угол между игроком и штангой (playerLocalX близко к halfW),
-    -- тем сильнее нужно отодвигаться от штанги, т.к. мяч летит наискосок
-    -- и физически "срезается" о неё.
-    local halfWRaw = GoalWidth / 2
-    local angleFrac = math.clamp(math.abs(GoalCFrame:PointToObjectSpace(startPos).X) / math.max(halfWRaw - 0.5, 0.1), 0, 1)
-    -- Дальние удары (>130 studs) тоже требуют большего отступа из-за разброса физики.
-    local distInsetBonus = math.clamp((dist - 100) / 150, 0, 1) * 0.55
-    local dynamicInset = INSET + angleFrac * 0.85 + distInsetBonus
-    local halfW        = halfWRaw - dynamicInset
-    local playerLocalX = GoalCFrame:PointToObjectSpace(startPos).X
-    gkVel = gkVel or Vector3.zero
-    gkHitRadius = gkHitRadius or 2.2
-    gkBiasX = gkBiasX or 0
-    gkDriftX = gkDriftX or 0
-
-    -- Предикт позиции GK через approxT секунд
-    local approxT    = dist / AutoShootBallSpeed
-    local gkPredW    = gkHrp and (gkHrp.Position + gkVel * math.min(approxT, 0.8)) or nil
-    local gkPredLoc  = gkPredW and GoalCFrame:PointToObjectSpace(gkPredW) or nil
-    local pgkX       = gkPredLoc and gkPredLoc.X or gkX
-    local pgkY       = gkPredLoc and GoalCFrame:PointToObjectSpace(gkPredW).Y or gkY
-    -- Зона дайва GK: статичный радиус + то что успеет пробежать за time
-    -- diveRange: предикт GK уже сдвинут на approxT*gkVel (см. gkPredW выше).
-    -- Здесь diveRange = только физический рывок из предиктной позиции.
-    -- Небольшой бонус за время реакции, но без безграничного роста на дальних.
-    local reactionBonus = math.min(GK_REACH_SPEED * approxT * 0.25, 3.0)
-    local diveRange     = GK_REACH_RADIUS + reactionBonus
-
-    local xPoints = {-halfW, -halfW*0.82, -halfW*0.60, -halfW*0.35, -halfW*0.15, 0, halfW*0.15, halfW*0.35, halfW*0.60, halfW*0.82, halfW}
-    -- Добавлены навесные фракции 0.88 и 0.96
-    local yFracs  = {0.08, 0.18, 0.30, 0.46, 0.60, 0.74, 0.86, 0.96}
-
-    local candidates = {}
-
-    for _, xf in ipairs(xPoints) do
-        for _, yf in ipairs(yFracs) do
-            local xSign = (xf >= 0) and 1 or -1
-            local playerSideFrac = math.clamp(math.abs(playerLocalX) / math.max(halfW, 0.1), 0, 1)
-            local cornerness = math.clamp((math.abs(xf) / math.max(halfW, 0.1) - 0.70) / 0.30, 0, 1)
-            local sameSide = ((playerLocalX >= 0 and xf >= 0) or (playerLocalX < 0 and xf < 0)) and 1 or 0
-            local centerness = 1 - playerSideFrac
-            local shotOpen = math.clamp(math.abs(xf - playerLocalX) / math.max(GoalWidth * 0.95, 0.1), 0, 1)
-
-            -- Геометрия угла зависит от открытости коридора полёта.
-            -- Если игрок с той же стороны и угол реально открыт, можно чуть ближе к штанге.
-            -- Из центра или при закрытом коридоре — наоборот сильнее уходим от штанги.
-            local laneTightness = cornerness * math.clamp(
-                0.18 + 0.58 * centerness + 0.54 * sameSide * playerSideFrac - 0.76 * shotOpen,
-                0, 1
-            )
-            local sameSideNarrow = cornerness * math.max(0, sameSide * playerSideFrac * (shotOpen - 0.38)) * 0.18
-            local distTightBoost = cornerness * math.clamp((dist - 150) / 120, 0, 1) * (0.10 + 0.22 * centerness + 0.16 * sameSide * playerSideFrac)
-            local longCornerInset = cornerness * math.clamp((dist - 140) / 160, 0, 1) * (0.22 + 0.24 * (1 - shotOpen) + 0.14 * centerness + 0.08 * sameSide * playerSideFrac)
-            local cornerPull = math.max(0, cornerness * (0.14 + 0.82 * laneTightness) + distTightBoost + longCornerInset - sameSideNarrow)
-            local localX = xf - xSign * cornerPull
-
-            -- Верхние tight-angle удары опускаем ниже, чтобы не лизать стойку/перекладину.
-            local yRange = math.max(0.5, GoalHeight - Y_TOP_TARGET - Y_BOT_INSET)
-            local localY = Y_BOT_INSET + yf * yRange
-            local highFrac = math.clamp((yf - 0.60) / 0.40, 0, 1)
-            local localY = math.max(Y_BOT_INSET, localY - (laneTightness + distTightBoost + longCornerInset * 0.65) * highFrac * 0.56)
-
-            -- 3D позиция цели (idealPos) — точка в плоскости ворот
-            local idealPos = GoalCFrame * Vector3.new(localX, localY, 0)
-
-            -- === SCORING (предикт где GK будет когда мяч прилетит) ===
-            local gkDistX   = math.abs(gkX - localX)
-            local gkDistY   = math.abs(gkY - localY)
-            local gkDist2D  = math.sqrt(gkDistX*gkDistX + gkDistY*gkDistY)
-            local pgkDistX  = math.abs(pgkX - localX)
-            -- GK: прыжок ВВЕРХ сложнее чем нырок вниз. Смещаем эффективный Y вниз
-            -- → высокие цели оцениваются как более труднодосягаемые для GK.
-            local gkEffY    = math.max(0, pgkY - GoalHeight * 0.22)
-            local pgkDistY  = math.abs(gkEffY - localY)
-            local pgkDist2D = math.sqrt(pgkDistX*pgkDistX + pgkDistY*pgkDistY)
-
-            -- Base: ТОЛЬКО горизонтальное расстояние от GK, игнорируем pgkDistY в базе.
-            -- Причина: pgkY (HRP вратаря) ≈ GoalHeight на малых воротах, что делает
-            -- высокие цели визуально "близкими к GK" и портит выбор верхних углов.
-            local reachability = math.clamp(1 - pgkDist2D / diveRange, 0, 1)
-            local score = pgkDistX * 4.0
-                        + (localY / math.max(GoalHeight, 1)) * 8.0
-                        - reachability * 8.0
-            -- Штраф если GK на той же высоте что и цель (может достать без прыжка)
-            if math.abs(pgkY - localY) < GK_REACH_RADIUS * 0.7 then
-                score = score - 4.5
-            end
-
-            local isTopCorner = (yf >= 0.66) and (math.abs(localX) > halfW * 0.45)
-            local isCorner    = math.abs(localX) > halfW * 0.5
-            local isLobShot   = (yf >= 0.85)
-
-            -- Верхние углы: прыжок + смещение = труднее всего
-            if isTopCorner then score = score + 9.0 end
-            if isCorner and not isTopCorner then score = score + 3.0 end
-
-            local hFrac = localY / math.max(yRange, 1)
-            -- Мягкий бонус за высоту: верх полезен, но не должен доминировать всегда
-            score = score + hFrac * 0.75
-            -- Только на дальних реально поощряем высокие цели
-            score = score + hFrac * math.clamp((dist - 120) / 85, 0, 1) * 1.15
-            -- На ближних и средних сильнее штрафуем слишком верхние цели
-            score = score - hFrac * hFrac * math.clamp((85 - dist) / 40, 0, 1) * 3.8
-            -- В зоне 100-150 без спина высокие точки часто приходят выше нужного → мягко прижимаем выбор вниз
-            local midNoSpinHighPenalty = hFrac * math.clamp((dist - 95) / 45, 0, 1) * math.clamp((160 - dist) / 60, 0, 1) * 3.2
-            if isLobShot and dist > 95 then score = score + 4.0 end
-
-            -- Навес: ценен когда GK низко или выходит вперёд
-            if isLobShot then
-                if pgkY < GoalHeight * 0.55 then score = score + 5.0 end
-                if isAggressive             then score = score + 7.0 end
-                -- На малых дистанциях навес бесполезен — мяч не успевает подняться
-                if dist < 50 then score = score - 12.0 end
-            end
-
-            -- На близких дистанциях (<45 studs) штраф за очень высокие точки (>85% H)
-            if dist < 45 and localY > GoalHeight * 0.82 then score = score - 8.0 end
-
-            -- Штраф за центр (но не слишком жёсткий — иначе скрипт бьёт только в углы)
-            local centerPenalty = math.max(0, 1 - math.abs(localX) / (halfW * 0.4)) * 2.5
-            score = score - centerPenalty
-
-            -- Дальний угол (противоположный стороне игрока)
-            local isFarCorner = (playerLocalX > halfW*0.2 and localX < -halfW*0.4)
-                             or (playerLocalX < -halfW*0.2 and localX >  halfW*0.4)
-            if gkIsNPC then
-                -- NPC не нужно обманывать спином: просто бьём в самые трудные не-spin точки.
-                score = score + pgkDist2D * 1.55 + math.abs(localX) * 0.45
-                if isTopCorner then score = score + 0.7 end
-                if isCorner then score = score + 1.3 end
-                score = score - hFrac * math.clamp((dist - 110) / 55, 0, 1) * 3.0
-                score = score - midNoSpinHighPenalty * 1.2
-            else
-                score = score - midNoSpinHighPenalty
-                if isFarCorner then score = score + 3.5 end
-                -- Паттерны вратаря: если он системно сидит с одной стороны или смещается,
-                -- то противоположная сторона и фейковые траектории получают бонус.
-                local biasFrac  = math.min(math.abs(gkBiasX) / math.max(halfW, 0.1), 1)
-                local driftFrac = math.min(math.abs(gkDriftX) / 8, 1)
-                if gkBiasX < -halfW * 0.10 and localX > 0 then score = score + 1.6 + biasFrac * 2.6 end
-                if gkBiasX >  halfW * 0.10 and localX < 0 then score = score + 1.6 + biasFrac * 2.6 end
-                if gkDriftX < -0.35 and localX > 0 then score = score + 1.0 + driftFrac * 1.8 end
-                if gkDriftX >  0.35 and localX < 0 then score = score + 1.0 + driftFrac * 1.8 end
-            end
-
-            -- PreferSpin: если включён и GK не NPC — существенный бонус за spin-кандидатов
-            if AutoShootPreferSpin and not gkIsNPC and spinDir ~= "None" then
-                score = score + 4.5
-            end
-
-            -- GK blocking check: всегда проверяем (не только при rush)
-            if gkHrp then
-                local toTarget = (idealPos - startPos).Unit
-                local toGK     = (gkHrp.Position - startPos)
-                local gkOnPath = toGK:Dot(toTarget) / math.max(toTarget.Magnitude, 1)
-                local gkPerp   = (toGK - toTarget * toGK:Dot(toTarget)).Magnitude
-                -- Если GK стоит поперёк траектории мяча (перпендикуляр < 2 studs)
-                if gkOnPath > 1 and gkPerp < math.max(1.7, gkHitRadius * 0.70) then
-                    score = score - 10.0  -- GK прямо на пути
-                end
-            end
-            if isAggressive and gkHrp then
-                local dot = (idealPos - startPos).Unit:Dot((gkHrp.Position - startPos).Unit)
-                score = score + (dot > 0.90 and -12.0 or 8.0)
-            end
-            -- GK у обоих углов → середина открыта
-            if math.abs(gkX) > halfW * 0.55 and math.abs(localX) < halfW * 0.3 then
-                score = score + 6.0
-            end
-
-            -- GK движется к точке: штраф
-            if gkVel.Magnitude > 2 and gkHrp then
-                local toT = (idealPos - gkHrp.Position).Unit
-                if gkVel.Unit:Dot(toT) > 0.65 then score = score - 4.5 end
-            end
-
-            -- Тень тела GK: проекция на плоскость ворот.
-            -- Если candidate попадает в силуэт GK → сильный штраф (удар блокируется телом).
-            if gkHrp then
-                local gkProj = GoalCFrame:PointToObjectSpace(gkHrp.Position)
-                local gkBX   = gkProj.X
-                local gkBY   = gkProj.Y
-                local hbHalfW = math.max(1.15, gkHitRadius * 0.62)
-                local hbLow   = math.max(1.0, gkHrp.Size.Y * 0.38)
-                local hbHigh  = math.max(1.8, gkHrp.Size.Y * 0.55)
-                local inShadow = math.abs(localX - gkBX) < hbHalfW
-                             and localY > (gkBY - hbLow)
-                             and localY < (gkBY + hbHigh)
-                if inShadow then score = score - 14.0 end
-            end
-
-            -- Power не влияет на траекторию → константа
-            local power = FIXED_POWER
-            local speed = AutoShootBallSpeed
-
-            -- Решение о спине.
-            -- ПРАВИЛО ИГРЫ (инверсия): "Right" label → мяч ВЛЕВО, "Left" label → мяч ВПРАВО.
-            -- Деривация всегда компенсирует снос: "Right"→+dMult, "Left"→−dMult.
-            --
-            -- Причина старых багов: условия b и c добавляли спин при dist < SPIN_TRICK_DIST,
-            -- где velMult ≈ 3×. Реальный снос сервером ≈ 3× больше нашего dMult → мяч
-            -- вылетал за ворота, что выглядело как "реверсия". Поэтому только v36_9-условия:
-            local spinDir = "None"
-
-            -- Серверные ограничения для спина:
-            -- ниже ~120 studs спин почти не применяется;
-            -- надёжно работает в same-side lane, но не только у самой штанги.
-            local sameSideLane = (playerLocalX < 0 and localX < 0) or (playerLocalX > 0 and localX > 0)
-            local crossLaneOpen = math.abs(localX - playerLocalX) / math.max(halfW, 0.1)
-            -- PreferSpin: снижаем минимальную дистанцию для спина на 20 studs
-            local spinMinDist   = AutoShootPreferSpin and math.max(50, SPIN_SERVER_MIN_DIST - 20) or SPIN_SERVER_MIN_DIST
-            local canServerSpin = (not gkIsNPC) and dist > spinMinDist and dist <= AutoShootCurveDistanceLimit
-            local isCenterCurl  = math.abs(localX) < halfW * 0.30
-                               and (math.abs(gkX) > halfW * 0.14 or math.abs(gkBiasX) > halfW * 0.12)
-
-            -- a) GK рядом с целью → огибаем ОТ вратаря
-            if canServerSpin and gkDist2D < 5.8 then
-                spinDir = (gkX > localX) and "Right" or "Left"
-                score   = score + 3.4 + (sameSideLane and 0.8 or 0.0)
-
-            -- b) Новый тип: закрученный фейк в центр ворот.
-            elseif canServerSpin and isCenterCurl then
-                spinDir = (playerLocalX < 0) and "Left" or "Right"
-                score   = score + 4.8 + (sameSideLane and 0.5 or 0.0)
-
-            -- c) Угловой spin: same-side надёжнее, но cross-side тоже возможен если коридор открыт.
-            elseif canServerSpin and isCorner then
-                spinDir = (localX >= 0) and "Left" or "Right"
-                score   = score + 2.4 + (sameSideLane and 1.0 or math.min(crossLaneOpen, 1) * 0.9)
-
-            -- d) Остальные дальние spin-удары
-            elseif canServerSpin then
-                local goalDir  = (GoalCFrame.Position - startPos).Unit
-                local fwdDir   = HumanoidRootPart.CFrame.LookVector
-                local fwdAngle = math.deg(math.acos(math.clamp(goalDir:Dot(fwdDir), -1, 1)))
-                if fwdAngle < 42 then
-                    spinDir = localX >= 0 and "Left" or "Right"
-                    score   = score + 1.8 + (sameSideLane and 0.6 or 0.0)
-                end
-            end
-
-            -- Деривация: "Right"→+dMult (цель правее), "Left"→−dMult (цель левее)
-            local derivation = 0
-            if spinDir ~= "None" then
-                local dMult  = AutoShootDerivMult * (dist / 100)^2
-                derivation   = (spinDir == "Right" and 1 or -1) * dMult
-                score = score + math.min(dMult * 0.35, 1.5)
-            end
-
-            -- shootPos = с учётом деривации (реальная точка куда направляем мяч)
-            -- Clamp: центр мяча должен быть минимум BALL_RADIUS от внутреннего края штанги
-            -- safeEdge учитывает тот же динамический инсет что и сетка кандидатов
-            local safeEdge    = GoalWidth/2 - dynamicInset - BALL_RADIUS * 0.5
-            local shootLocalX = math.clamp(localX + derivation, -safeEdge, safeEdge)
-            local shootLocalY = localY
-            -- Закрученные удары в игре приходят чуть ВЫШЕ ожидаемого, поэтому физически целимся немного ниже.
-            if spinDir ~= "None" then
-                local hFrac = localY / math.max(GoalHeight, 1)
-                local spinDrop = 0.20 + 0.35 * hFrac
-                shootLocalY = math.max(Y_BOT_INSET, localY - spinDrop)
-            else
-                local midBand = math.clamp((dist - 95) / 40, 0, 1) * math.clamp((160 - dist) / 60, 0, 1)
-                local npcBand = gkIsNPC and 1 or 0
-                -- No-spin мяч физически летит выше spin-мяча (сервер применяет Magnus-lift).
-                -- Компенсируем: целимся ниже на ~35% больше чем раньше.
-                local noSpinDrop = (0.21 + 0.30 * hFrac) * midBand * (1.35 + 0.45 * npcBand)
-                local extraFlatDrop = (0.13 + 0.11 * math.clamp(1 - hFrac, 0, 1)) * midBand
-                shootLocalY = math.max(Y_BOT_INSET, localY - noSpinDrop - extraFlatDrop)
-            end
-
-            -- Глубина ворот: для спина увеличиваем умеренно, чтобы сервер принял эффект,
-            -- но не настолько, чтобы мяч начинал системно не долетать по высоте/дальности.
-            local depthAlpha  = 1 - math.exp(-dist / 95)
-            local goalDepth   = GOAL_DEPTH_MIN + (GOAL_DEPTH_MAX - GOAL_DEPTH_MIN) * depthAlpha
-            if spinDir ~= "None" then
-                goalDepth = goalDepth + 0.90
-            end
-            if isLobShot then goalDepth = goalDepth + 0.45 end
-            local shootPos    = GoalCFrame * Vector3.new(shootLocalX, shootLocalY, -goalDepth)
-
-            -- *** БАЛЛИСТИКА: рассчитываем LaunchDir с учётом гравитации + трения ***
-            local launchDir, horizD, flightT = CalcLaunchDir(startPos, shootPos)
-            -- sinTheta = launchDir.Y. sinTheta > 0.64 → угол > 40° (слишком крутой для обычного удара)
-            local launchAngleDeg = math.deg(math.asin(math.clamp(launchDir.Y, -1, 1)))
-            local trajOk = (launchAngleDeg < 42)  -- больше 42° — крутой, штраф
-
-            -- Штраф за крутую траекторию (выше 42° = риск перелёта)
-            if not trajOk then
-                score = score - 5.0
-                if launchAngleDeg > 55 then score = score - 6.0 end  -- очень крутой = сильный штраф
-            end
-
-            -- AimPoint: где физически находится мяч в момент пересечения плоскости ворот
-            -- Это точка на НАШЕЙ параболе при t=flightT (должна совпасть с shootPos если формула верна)
-            local V    = AutoShootBallSpeed
-            local cosA = math.sqrt(launchDir.X^2 + launchDir.Z^2)
-            local aimPoint
-            if cosA > 0.01 and flightT > 0 then
-                local hFactor = (AutoShootDragComp > 1e-5)
-                    and ((1 - math.exp(-AutoShootDragComp * flightT)) / AutoShootDragComp)
-                    or flightT
-                aimPoint = Vector3.new(
-                    startPos.X + launchDir.X * V * hFactor,
-                    startPos.Y + launchDir.Y * V * flightT - 0.5 * GRAVITY * flightT * flightT,
-                    startPos.Z + launchDir.Z * V * hFactor
-                )
-            else
-                aimPoint = shootPos
-            end
-
-            -- Crossbar check удалён: aimLocalY ≠ реальная высота мяча (его пик всегда за воротами).
-            -- Y_TOP_TARGET (1.27 studs) уже гарантирует, что цель ниже перекладины.
-            -- Оставляем мягкий штраф за слишком крутую траекторию (>42°).
-
-            -- flightTime уже рассчитан CalcLaunchDir
-            local flightTime = flightT
-            -- Пик дуги: момент когда vy - g*t = 0
-            -- Визуальный midPos: сэмплируем физическую позицию мяча при t=0.40*flightTime.
-            -- • Гарантированно между startPos и idealPos → Безье не деградирует.
-            -- • Горизонтальное смещение учитывает drag (hFactor).
-            -- • Боковое смещение (спин/деривация) отражено автоматически через launchDir.
-            -- • Высота даёт видимую дугу: мяч выше прямой линии start→idealPos.
-            local t40     = 0.40 * flightTime
-            local hF40    = (AutoShootDragComp > 1e-5)
-                            and ((1 - math.exp(-AutoShootDragComp * t40)) / AutoShootDragComp)
-                            or t40
-            local peakPos = Vector3.new(
-                startPos.X + launchDir.X * speed * hF40,
-                startPos.Y + launchDir.Y * speed * t40 - 0.5 * GRAVITY * t40 * t40,
-                startPos.Z + launchDir.Z * speed * hF40
-            )
-            local peakFrac = 0.40
-            table.insert(candidates, {
-                idealPos      = idealPos,
-                aimPoint      = aimPoint,
-                shootPos      = shootPos,
-                launchDir     = launchDir,
-                localX        = localX,
-                localY        = localY,
-                spin          = spinDir,
-                power         = power,
-                speed         = speed,
-                score         = score,
-                gkDist        = gkDist2D,
-                trajOk        = trajOk,
-                flightTime    = flightTime,
-                peakPos       = peakPos,
-                peakFrac      = peakFrac,
-                isTopCorner   = isTopCorner,
-                isLobShot     = isLobShot,
-                isRicochet    = false,
-            })
-
-            -- Сложный рикошет: бьём мяч в землю перед воротами, чтобы после отскока он вошёл в створ.
-            -- Особенно полезно против rush/центрального GK и для NPC, которым спин не нужен.
-            local canRicochet = dist >= RICOCHET_MIN_DIST and dist <= RICOCHET_MAX_DIST
-                             and spinDir == "None" and not isTopCorner and localY < GoalHeight * 0.70
-            if canRicochet then
-                local bounceFront = 5.0 + 5.8 * math.clamp(dist / 170, 0, 1)
-                local bounceX     = math.clamp(localX * 0.90, -halfW * 0.86, halfW * 0.86)
-                local bouncePos   = GoalCFrame * Vector3.new(bounceX, Y_BOT_INSET + 0.04, bounceFront)
-                local ricDir, _, ricT = CalcLaunchDir(startPos, bouncePos)
-                local ricAng = math.deg(math.asin(math.clamp(ricDir.Y, -1, 1)))
-                local ricOk  = ricAng > 1 and ricAng < 30
-                if ricOk then
-                    local ricScore = score - 0.8
-                    if gkIsNPC then ricScore = ricScore + 7.0 end
-                    if isAggressive then ricScore = ricScore + 6.5 end
-                    if math.abs(pgkX) < halfW * 0.34 then ricScore = ricScore + 4.2 end
-                    if pgkY > GoalHeight * 0.36 then ricScore = ricScore + 2.2 end
-                    if localY < GoalHeight * 0.50 then ricScore = ricScore + 2.4 end
-                    local ricT40  = 0.40 * ricT
-                    local ricHF40 = (AutoShootDragComp > 1e-5)
-                        and ((1 - math.exp(-AutoShootDragComp * ricT40)) / AutoShootDragComp)
-                        or ricT40
-                    local ricPeak = Vector3.new(
-                        startPos.X + ricDir.X * speed * ricHF40,
-                        startPos.Y + ricDir.Y * speed * ricT40 - 0.5 * GRAVITY * ricT40 * ricT40,
-                        startPos.Z + ricDir.Z * speed * ricHF40
-                    )
-                    table.insert(candidates, {
-                        idealPos      = idealPos,
-                        aimPoint      = idealPos,
-                        shootPos      = bouncePos,
-                        launchDir     = ricDir,
-                        localX        = localX,
-                        localY        = localY,
-                        spin          = "None",
-                        power         = power,
-                        speed         = speed,
-                        score         = ricScore,
-                        gkDist        = gkDist2D,
-                        trajOk        = true,
-                        flightTime    = ricT,
-                        peakPos       = ricPeak,
-                        peakFrac      = 0.40,
-                        isTopCorner   = false,
-                        isLobShot     = false,
-                        isRicochet    = true,
-                    })
-                end
-            end
-        end
-    end
-
-    -- ================================================================
-    -- РИКОШЕТЫ ОТ ШТАНГ
-    -- Мяч намеренно бьётся об внутреннюю грань штанги и отскакивает в ворота.
-    -- Полезно когда вратарь перекрывает прямой путь, а угловой путь заблокирован.
-    -- Геометрия:
-    --   Центр мяча при касании штанги = innerEdge + BALL_RADIUS (в сторону центра)
-    --   Нормаль отражения = горизонтальный вектор от штанги к центру ворот
-    --   d_out = d_in - 2*(d_in·n)*n
-    -- ================================================================
-    local ricochetEnabled = (dist > 15)  -- рикошеты возможны на любой дистанции
-    if ricochetEnabled then
-        local postDefs = {
-            { side =  1, postLocalX = -GoalWidth/2 },  -- левая штанга, нормаль = +X (вправо)
-            { side = -1, postLocalX =  GoalWidth/2 },  -- правая штанга, нормаль = -X (влево)
-        }
-        -- Нормаль отражения: от штанги к центру ворот (горизонтальная)
-        -- side=+1 → левая штанга → нормаль смотрит вправо (+X в goal local)
-        -- side=-1 → правая штанга → нормаль смотрит влево (-X в goal local)
-        for _, pd in ipairs(postDefs) do
-            local normalLocal = Vector3.new(pd.side, 0, 0)
-            local nWorld      = GoalCFrame:VectorToWorldSpace(normalLocal)
-
-            -- Открытость угла рикошета
-            -- Если игрок с той же стороны что и штанга — угол закрыт (летим почти параллельно)
-            -- pd.postLocalX < 0 = левая штанга; playerLocalX < -halfW*0.25 = игрок слева
-            local isClosedAngle = (pd.postLocalX < 0 and playerLocalX < -halfW * 0.15)
-                                or (pd.postLocalX > 0 and playerLocalX >  halfW * 0.15)
-            -- Открытый угол: игрок на противоположной стороне → хороший угол атаки
-            local isOpenSide    = (pd.postLocalX < 0 and playerLocalX >  halfW * 0.20)
-                                or (pd.postLocalX > 0 and playerLocalX < -halfW * 0.20)
-
-            for _, hf in ipairs({0.20, 0.45, 0.72}) do
-                local hitY      = hf * GoalHeight
-                local hitLocalX = pd.postLocalX + pd.side * BALL_RADIUS
-                local hitWorld  = GoalCFrame * Vector3.new(hitLocalX, hitY, -0.45)
-
-                -- Вектор прихода мяча (без вертикальной коррекции — для вычисления отражения)
-                local dInFlat = Vector3.new(
-                    hitWorld.X - startPos.X, 0, hitWorld.Z - startPos.Z
-                ).Unit
-
-                -- Отражение: d_out = d_in - 2*(d_in·n)*n
-                local dotVal = dInFlat:Dot(nWorld)
-                local dOut   = (dInFlat - 2 * dotVal * nWorld).Unit
-
-                -- Угол падения на штангу (cosIncidence = |d_in · n|)
-                local cosInc = math.abs(dotVal)
-                local incDeg = math.deg(math.acos(math.clamp(cosInc, 0, 1)))
-                -- Хороший рикошет: 20°-72° (слишком мелкий = скользящий, слишком большой = назад)
-                local badAngle = isClosedAngle or (incDeg < 18) or (incDeg > 74)
-
-                local dOutLocalZ = GoalCFrame:VectorToObjectSpace(dOut).Z
-                local goesIn = (dOutLocalZ < 0.1) and not badAngle
-
-                if goesIn then
-                    -- Трейс dOut до задней сетки ворот (Z_local = -NET_DEPTH)
-                    local NET_DEPTH  = 5
-                    local dOutLoc    = GoalCFrame:VectorToObjectSpace(dOut)
-                    local hitLoc     = GoalCFrame:PointToObjectSpace(hitWorld)
-                    local tNet       = (dOutLoc.Z < -0.01)
-                                        and ((-NET_DEPTH - hitLoc.Z) / dOutLoc.Z)
-                                        or  5
-                    local landLocal  = hitLoc + dOutLoc * tNet
-                    local landX      = landLocal.X
-                    local landY      = landLocal.Y
-
-                    -- Scoring: как далеко от вратаря место приземления?
-                    -- Predicted GK scoring для рикошета
-                    local rpgkDistX = math.abs(pgkX - landX)
-                    local rpgkDistY = math.abs(pgkY - landY)
-                    local rpgkDist  = math.sqrt(rpgkDistX*rpgkDistX + rpgkDistY*rpgkDistY)
-                    local rReach    = math.clamp(1 - rpgkDist / (GK_REACH_RADIUS + 2.0), 0, 1)
-                    local rscore    = rpgkDist * 3.0 - rReach * 8.0
-
-                    -- Мяч после рикошета летит на противоположную сторону от GK
-                    local crossSide = (pgkX > 0 and landX < -GoalWidth*0.20)
-                                   or (pgkX < 0 and landX >  GoalWidth*0.20)
-                    if crossSide   then rscore = rscore + 7.0 end
-                    if isOpenSide  then rscore = rscore + 4.5 end
-
-                    -- Бонус за угол рикошета близкий к 45° (идеальный отскок)
-                    rscore = rscore + 7.5  -- рикошет: приоритет сложной атаки
-                    rscore = rscore + (30 - math.abs(incDeg - 45)) * 0.1
-
-                    rscore = rscore - 1.0  -- базовый штраф за сложность
-
-                    -- LaunchDir на точку касания (с гравитационной коррекцией)
-                    local rLaunchDir, rHorizD, rFlightT = CalcLaunchDir(startPos, hitWorld)
-                    local rcosA = math.sqrt(rLaunchDir.X^2 + rLaunchDir.Z^2)
-                    local rAimPoint
-                    if rcosA > 0.01 then
-                        rAimPoint = Vector3.new(
-                            startPos.X + rLaunchDir.X * AutoShootBallSpeed * rFlightT,
-                            startPos.Y + rLaunchDir.Y * AutoShootBallSpeed * rFlightT
-                                       - 0.5 * GRAVITY * rFlightT * rFlightT,
-                            startPos.Z + rLaunchDir.Z * AutoShootBallSpeed * rFlightT
-                        )
-                    else rAimPoint = hitWorld end
-
-                    local ryComp  = rLaunchDir.Y * AutoShootBallSpeed
-                    local rtPeak  = math.max(ryComp / GRAVITY, 0)
-                    local rPeak   = Vector3.new(
-                        startPos.X + rLaunchDir.X * AutoShootBallSpeed * rtPeak,
-                        startPos.Y + rLaunchDir.Y * AutoShootBallSpeed * rtPeak
-                                   - 0.5 * GRAVITY * rtPeak * rtPeak,
-                        startPos.Z + rLaunchDir.Z * AutoShootBallSpeed * rtPeak
-                    )
-
-                    table.insert(candidates, {
-                        idealPos    = hitWorld,    -- красный бокс = точка касания штанги
-                        aimPoint    = rAimPoint,
-                        shootPos    = hitWorld,
-                        launchDir   = rLaunchDir,
-                        localX      = hitLocalX,
-                        localY      = hitY,
-                        spin        = "None",      -- для рикошета спин не нужен
-                        power       = FIXED_POWER,
-                        speed       = AutoShootBallSpeed,
-                        score       = rscore,
-                        gkDist      = rgkDist,
-                        trajOk      = (rLaunchDir.Y < 0.85),
-                        flightTime  = rFlightT,
-                        peakPos     = rPeak,
-                        peakFrac    = math.clamp(rtPeak / math.max(rFlightT, 1e-4), 0.15, 0.80),
-                        isTopCorner = false,
-                        isRicochet  = true,
-                    })
-                end
-            end
-        end
-    end
-
-    if #candidates == 0 then return nil end
-    table.sort(candidates, function(a,b) return a.score > b.score end)
-    return candidates[1]
-end
-
--- ============================================================
--- CALCULATE TARGET (вызывается каждый кадр)
--- ============================================================
-local function CalculateTarget()
-    local width = UpdateGoal()
-    if not GoalCFrame or not width then
-        TargetPoint = nil; LastShootRedBox = nil
-        if Gui then Gui.Target.Text = "Target: --"; Gui.Power.Text = "Power: --"; Gui.Spin.Text = "Spin: --" end
-        return
-    end
-
-    local dist = (GetBallStartPos() - GoalCFrame.Position).Magnitude
-    if Gui then
-        Gui.Dist.Text = string.format("Dist: %.0f | Goal: %.0f×%.0f", dist, GoalWidth, GoalHeight)
-    end
-
-    if dist > AutoShootMaxDistance then
-        TargetPoint = nil; ShootDir = nil; ShootVel = nil
-        CurrentSpin = "None"; CurrentPower = FIXEDPOWER; CurrentType = nil
-        AimPoint = nil; PredictedLand = nil
-        CurrentFlightTime = 0; CurrentLaunchDir = nil; CurrentSpeed = 0
-        CurrentPeakPos = nil; CurrentPeakFrac = 0.40; CurrentIsLob = false
-        CurrentDist = dist
-        LastShootRedBox = nil
-        if Gui then Gui.Target.Text = "Too Far" end
-        return
-    end
-
-    local gkHrp, gkX, gkY, isAggressive, gkVel, gkIsNPC, gkHitRadius, gkBiasX, gkDriftX = GetEnemyGoalie()
-    local result = GetTarget(dist, gkX or 0, gkY or 0, isAggressive or false, gkHrp, gkVel, gkIsNPC or false, gkHitRadius or 2.2, gkBiasX or 0, gkDriftX or 0)
-    if not result then
-        TargetPoint = nil; ShootDir = nil; ShootVel = nil
-        CurrentSpin = "None"; CurrentType = nil
-        AimPoint = nil; PredictedLand = nil
-        CurrentFlightTime = 0; CurrentLaunchDir = nil; CurrentSpeed = 0
-        CurrentPeakPos = nil; CurrentIsLob = false
-        LastShootRedBox = nil
-        if Gui then Gui.Target.Text = "No Candidate" end
-        return
-    end
-
-    ShootDir       = result.launchDir
-    -- "Aim past goal": target за воротами → сервер видит дальний выстрел → спин всегда.
-    -- Также помогает долетать на дальних дистанциях (больше "мощности").
-    local closeExtra = (CurrentDist < SPIN_TRICK_DIST) and PAST_GOAL_CLOSE or 0
-    local velMult    = (CurrentDist + PAST_GOAL_BASE + closeExtra) / math.max(CurrentDist, 5)
-    ShootVel = ShootDir * (FIXED_POWER * 1400 * velMult)
-    CurrentSpin    = result.spin
-    CurrentPower   = FIXED_POWER  -- power константа, не влияет на траекторию
-    local typePrefix = result.isRicochet and "[RIC] "
-        or (result.isLobShot and "[LOB] "
-        or (result.isTopCorner and "[TC] " or ""))
-    CurrentType    = string.format("%sX=%.1f Y=%.1f/%.1f gk=%.1f",
-                        typePrefix, result.localX, result.localY, GoalHeight, result.gkDist)
-
-    -- 🔴 Красный = PredictedLand: куда мяч должен прийти (уже С УЧЁТОМ глубины ворот)
-    -- 🟢 Зелёный = AimPoint: куда направлен ствол/прицел
-    -- 🟡 Жёлтый  = PeakPoint: реальный пик дуги
-    -- 🟠 Оранж.  = TrajectoryLines: предикт траектории
-    PredictedLand    = result.idealPos
-    AimPoint         = result.aimPoint
-    CurrentFlightTime = result.flightTime
-    CurrentLaunchDir  = result.launchDir
-    CurrentSpeed      = result.speed
-    CurrentPeakPos    = result.peakPos
-    CurrentPeakFrac   = result.peakFrac or 0.40
-    CurrentIsLob      = result.isLobShot or false
-    CurrentDist       = dist
-    TargetPoint       = result.shootPos
-
-    if Gui then
-        Gui.Target.Text = string.format("→ X=%.1f Y=%.1f/%.1f", result.localX, result.localY, GoalHeight)
-        local cosA_d = math.sqrt(result.launchDir.X^2 + result.launchDir.Z^2)
-        local launchAngle = math.deg(math.atan(result.launchDir.Y / math.max(cosA_d, 0.01)))
-        local spinShown = (result.spin == "Right") and "CurveLeft"
-                          or (result.spin == "Left") and "CurveRight"
-                          or "None"
-        Gui.Power.Text  = string.format("θ=%.1f° t=%.2fs %s | Spin=%s",
-                            launchAngle, result.flightTime,
-                            result.trajOk and "OK" or "!steep",
-                            spinShown)
-        Gui.Spin.Text   = string.format("V=%.0f k=%.2f drv=%.1f curve<=%.0f d=%.0f",
-                            AutoShootBallSpeed, AutoShootDragComp, AutoShootDerivMult, AutoShootCurveDistanceLimit, dist)
-        Gui.Goal.Text   = string.format("Goal W=%.1f H=%.1f floor=%.1f", GoalWidth, GoalHeight, GoalFloorY)
-    end
-end
-
--- ============================================================
--- SPOOF POWER
--- ============================================================
-local function GetSpoofPower()
-    if not AutoShootSpoofPowerEnabled then return nil end
-    if AutoShootSpoofPowerType == "math.huge" then return math.huge
-    elseif AutoShootSpoofPowerType == "9999999" then return 9999999
-    elseif AutoShootSpoofPowerType == "100"     then return 100 end
-    return nil
-end
-
-local function GetKeyName(key)
-    if key == Enum.KeyCode.Unknown then return "None" end
-    local name = tostring(key):match("KeyCode%.(.+)") or tostring(key)
-    local pretty = {LeftMouse="LMB",RightMouse="RMB",Space="Space",LeftShift="LShift",RightShift="RShift"}
-    return pretty[name] or name
-end
-local function UpdateModeText()
-    if not Gui then return end
-    if AutoShootMode == "Hook" then
-        Gui.Mode.Text = "Mode: Hook (keybind disabled)"
-        Gui.Mode.Color = Color3.fromRGB(255, 100, 0)
-    else
-        Gui.Mode.Text = AutoShootManualShot
-            and string.format("Mode: Packet | %s", GetKeyName(AutoShootShootKey))
-            or "Mode: Packet | Auto"
-        Gui.Mode.Color = Color3.fromRGB(255, 255, 255)
-    end
-end
-
--- ============================================================
--- SHOOT
--- ============================================================
--- ============================================================
--- HOOK MODE
--- ============================================================
-local HookState = { Active = false, Unhook = nil, _orig = nil }
-
-local function DisableHook()
-    if HookState.Unhook then
-        pcall(HookState.Unhook)
-        HookState.Unhook = nil
-    end
-    HookState.Active = false
-    HookState._orig  = nil
-end
-
-local function EnableHook()
-    if HookState.Active then return end
-    local ok, result = pcall(function()
-        return hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            if method == "FireServer" and self == Shooter then
-                local a1, a2, a3, a4, a5, a6, a7, a8, a9 = ...
-                if HookDebugMode then
-                    local s = ""
-                    for i,v in ipairs({a1,a2,a3,a4,a5,a6,a7,a8,a9}) do
-                        s = s..i.."="..type(v).." "
-                    end
-                    warn("[HookDebug FireServer]", s)
-                    return HookState._orig(self, ...)
-                end
-                -- Логика v40: подменяем только если ShootDir задан (CalculateTarget отработал)
-                -- Не проверяем дистанцию — CalculateTarget уже валидировал её до выставления ShootDir
-                -- a1=dir(V3), a2=CFrame, a3=power, a4=vel(V3), a5=isMobile, a6=flag, a7=spin, a8, a9
-                if ShootDir then
-                    -- CurrentDist обновляется каждый Heartbeat в CalculateTarget.
-                    -- Используем его вместо пересчёта в хуке — безопасно и без лишних вызовов.
-                    if CurrentDist <= AutoShootMaxDistance then
-                        local power = (AutoShootSpoofPowerEnabled and GetSpoofPower()) or CurrentPower
-                        -- a5 (isMobile) принудительно false — фикс мобильной траектории
-                        return HookState._orig(self, ShootDir, a2, power, ShootVel, false, a6, CurrentSpin, a8, a9)
-                    end
-                end
-                return HookState._orig(self, ...)
-            end
-            return HookState._orig(self, ...)
-        end))
-    end)
-    if ok and result then
-        HookState.Active = true
-        HookState._orig  = result
-        HookState.Unhook = function()
-            pcall(hookmetamethod, game, "__namecall", result)
-        end
-        if Gui then Gui.Status.Text = "Hook: Active"; Gui.Status.Color = Color3.fromRGB(0, 255, 100) end
-    else
-        warn("[AutoShoot Hook] hookmetamethod error:", result)
-    end
-end
-
-local function DoShoot()
-    if not ShootDir then return false end
-    if AutoShootMode == "Hook" then
-        -- Hook-режим: подменяем аргументы при следующем FireServer от самой игры
-        if not HookState.Active then EnableHook() end
-        return HookState.Active
-    end
-    -- Packet-режим
-    if IsAnimating and AutoShootLegit then return false end
-    if AutoShootLegit then
-        IsAnimating = true; RShootAnim:Play()
-        task.delay(AnimationHoldTime, function() IsAnimating = false end)
-    end
-    local power = GetSpoofPower() or CurrentPower
-    local ok = pcall(function()
-        Shooter:FireServer(ShootDir, BallAttachment.CFrame, power, ShootVel, false, false, CurrentSpin, nil, false)
-    end)
-    return ok
-end
-
-
--- ============================================================
--- AUTO SHOOT MODULE
--- ============================================================
-local AutoShoot = {}
-AutoShoot.Start = function()
-    if AutoShootStatus.Running then return end
-    AutoShootStatus.Running = true
-    SetupGUI(); InitializeCubes(); UpdateModeText()
-    if AutoShootMode == "Hook" then EnableHook() else DisableHook() end
-
-    AutoShootStatus.Connection = RunService.Heartbeat:Connect(function()
-        if not AutoShootEnabled then return end
-        pcall(CalculateTarget)
-        local ball    = Workspace:FindFirstChild("ball")
-        local hasBall = ball and ball:FindFirstChild("playerWeld") and ball.creator.Value == LocalPlayer
-        local dist    = GoalCFrame and (GetBallStartPos() - GoalCFrame.Position).Magnitude or 999
-
-        if hasBall and TargetPoint and dist <= AutoShootMaxDistance then
-            if Gui then
-                Gui.Status.Text  = AutoShootManualShot and ("Ready [" .. GetKeyName(AutoShootShootKey) .. "]") or "Aiming..."
-                Gui.Status.Color = Color3.fromRGB(0,255,0)
-            end
-        elseif hasBall then
-            if Gui then Gui.Status.Text = dist > AutoShootMaxDistance and "Too Far" or "No Target"; Gui.Status.Color = Color3.fromRGB(255,100,0) end
-        else
-            if Gui then Gui.Status.Text = "No Ball"; Gui.Status.Color = Color3.fromRGB(255,165,0) end
-        end
-
-        if AutoShootMode == "Packet" and hasBall and TargetPoint and dist <= AutoShootMaxDistance and not AutoShootManualShot and tick() - LastShoot >= 0.3 then
-            if DoShoot() then LastShoot = tick() end
-        end
-    end)
-
-    -- DoManualShoot: единая функция выстрела для PC (InputBegan) и mobile (MacLib FAB Callback)
-    local function DoManualShoot()
-        if not AutoShootEnabled or not AutoShootManualShot or not CanShoot then return end
-        if AutoShootMode ~= "Packet" then return end
-        local ball = Workspace:FindFirstChild("ball")
-        local hasBall = ball and ball:FindFirstChild("playerWeld") and ball.creator.Value == LocalPlayer
-        if hasBall and TargetPoint then
-            pcall(CalculateTarget)
-            if DoShoot() then
-                if Gui then Gui.Status.Text = "SHOT! [" .. CurrentType .. "]"; Gui.Status.Color = Color3.fromRGB(0,255,0) end
-                LastShoot = tick(); CanShoot = false
-                task.delay(0.3, function() CanShoot = true end)
-            end
-        end
-    end
-    AutoShootStatus.ManualShootFn = DoManualShoot
-
-    -- PC: InputBegan — работает по клавише или UserInputType
-    AutoShootStatus.InputConnection = UserInputService.InputBegan:Connect(function(inp, gp)
-        if gp then return end
-        if AutoShootMode ~= "Packet" then return end
-        if inp.KeyCode == AutoShootShootKey or inp.UserInputType == AutoShootShootKey then
-            DoManualShoot()
-        end
-    end)
-
-    AutoShootStatus.RenderConnection = RunService.RenderStepped:Connect(function(dt)
-        local width = UpdateGoal()
-        local hasTarget = TargetPoint ~= nil
-        local ball = Workspace:FindFirstChild("ball")
-        local hasBall = ball and ball:FindFirstChild("playerWeld") and ball.creator.Value == LocalPlayer
-        local showVisuals = (not VisualsOnlyWithBall) or hasBall
-
-        -- 🟠 Траектория дуги (оранжевые линии) — главный визуал
-        if showVisuals and ShowTrajectory and hasTarget and CurrentLaunchDir and CurrentFlightTime > 0 then
-            DrawTrajectory(GetVisualStartPos(), CurrentPeakPos, PredictedLand, CurrentPeakFrac, CurrentSpin)
-        else
-            for _, l in ipairs(TrajectoryLines) do l.Visible = false end
-            for _, l in ipairs(StartCircle) do l.Visible = false end
-        end
-
-        if showVisuals and Show3DBoxes and AimPoint then
-            DrawOrientedCube(TargetCube, CFrame.new(AimPoint), Vector3.new(2,2,2))
-        else
-            for _, l in ipairs(TargetCube) do l.Visible = false end
-        end
-
-        if showVisuals and Show3DBoxes and PredictedLand then
-            DrawOrientedCube(GoalCube, CFrame.new(PredictedLand), Vector3.new(2.5,2.5,2.5))
-        else
-            for _, l in ipairs(GoalCube) do l.Visible = false end
-        end
-
-        if showVisuals and Show3DBoxes and CurrentPeakPos and hasTarget then
-            DrawOrientedCube(PeakCube, CFrame.new(CurrentPeakPos), Vector3.new(2,2,2))
-        else
-            for _, l in ipairs(PeakCube) do l.Visible = false end
-        end
-
-        if showVisuals and Show3DBoxes and GoalCFrame and width and GoalHeight then
-            DrawOrientedCube(NoSpinCube, GoalCFrame * CFrame.new(0, GoalHeight/2, 0),
-                Vector3.new(width, GoalHeight, 1))
-        else
-            for _, l in ipairs(NoSpinCube) do l.Visible = false end
-        end
-    end)
-end
-
-AutoShoot.Stop = function()
-    if AutoShootStatus.Connection     then AutoShootStatus.Connection:Disconnect();      AutoShootStatus.Connection     = nil end
-    if AutoShootStatus.RenderConnection then AutoShootStatus.RenderConnection:Disconnect(); AutoShootStatus.RenderConnection = nil end
-    if AutoShootStatus.InputConnection  then AutoShootStatus.InputConnection:Disconnect();  AutoShootStatus.InputConnection  = nil end
-    AutoShootStatus.Running = false
-    if Gui then for _, v in pairs(Gui) do if v.Remove then v:Remove() end end; Gui = nil end
-    for i = 1, 12 do
-        if TargetCube[i] and TargetCube[i].Remove then TargetCube[i]:Remove() end
-        if GoalCube[i]   and GoalCube[i].Remove   then GoalCube[i]:Remove()   end
-        if NoSpinCube[i] and NoSpinCube[i].Remove  then NoSpinCube[i]:Remove()  end
-        if PeakCube[i]   and PeakCube[i].Remove    then PeakCube[i]:Remove()    end
-    end
-    for i = 1, TRAJ_SEGMENTS do
-        if TrajectoryLines[i] and TrajectoryLines[i].Remove then TrajectoryLines[i]:Remove() end
-    end
-    for i = 1, #StartCircle do if StartCircle[i] and StartCircle[i].Remove then StartCircle[i]:Remove() end end
-    StartCircle = {}
-    -- PickupCircle управляется AutoPickup, не AutoShoot
-end
-
-AutoShoot.SetDebugText = function(v)
-    AutoShootDebugText = v; ToggleDebugText(v)
-end
-
--- ============================================================
--- AUTO PICKUP
--- ============================================================
--- Notify: задаётся в AutoShootModule.Init; здесь fallback
-local Notify = function(title, message) print("["..title.."]: "..message) end
-
-local AutoPickup = {}
-
-local function SetAutoPickupState(enabled)
-    AutoPickupEnabled = enabled
-    if enabled then
-        AutoPickup.Start()
-        Notify("AutoPickup", "Enabled")
-    else
-        AutoPickup.Stop()
-        Notify("AutoPickup", "Disabled")
-    end
-    if uiElements and uiElements.AutoPickupEnabled and uiElements.AutoPickupEnabled.UpdateState then
-        pcall(function() uiElements.AutoPickupEnabled:UpdateState(enabled) end)
-    end
-end
-
-local function AutoPickupTick()
-    if not AutoPickupEnabled or not PickupRemote or not HumanoidRootPart then return end
-    if IsLocalGoalkeeper() then return end
-    local ball = Workspace:FindFirstChild("ball")
-    if not ball or ball:FindFirstChild("playerWeld") then return end
-    -- Height check: не поднимаем мяч если он слишком высоко (прыжок, вылет)
-    if ball.Position.Y > HumanoidRootPart.Position.Y + AutoPickupMaxHeight then return end
-    if (HumanoidRootPart.Position - ball.Position).Magnitude <= AutoPickupDist then
-        pcall(function() PickupRemote:FireServer(AutoPickupSpoofValue) end)
-    end
-end
-
-AutoPickup.Start = function()
-    if AutoPickupStatus.Running then return end
-    AutoPickupStatus.Running = true
-    -- Инициализируем линии круга при каждом старте пикапа
-    InitializePickupCircle()
-    pcall(AutoPickupTick)
-    AutoPickupStatus.Connection = RunService.Heartbeat:Connect(function()
-        AutoPickupTick()
-    end)
-    -- Рисуем круг радиуса пикапа — привязан к AutoPickup, не к AutoShoot
-    AutoPickupStatus.RenderConnection = RunService.RenderStepped:Connect(function(dt)
-        -- Передаём реальную позицию если есть HRP, иначе nil (используется кеш в DrawPickupCircle)
-        local pos   = HumanoidRootPart and HumanoidRootPart.Position or nil
-        local feetY = HumanoidRootPart and GetFeetY() or _pcLastFootY
-        DrawPickupCircle(pos, feetY, AutoPickupDist, dt)
-    end)
-end
-AutoPickup.Stop = function()
-    if AutoPickupStatus.Connection then AutoPickupStatus.Connection:Disconnect(); AutoPickupStatus.Connection = nil end
-    if AutoPickupStatus.RenderConnection then
-        AutoPickupStatus.RenderConnection:Disconnect()
-        AutoPickupStatus.RenderConnection = nil
-        -- Запускаем fade-out: один финальный RenderStepped тикает пока круг не исчезнет
-        local fadeConn; fadeConn = RunService.RenderStepped:Connect(function(dt)
-            if PickupCircleIndicate then
-                -- Indicate: круг остаётся красным и следует за игроком
-                local pos   = HumanoidRootPart and HumanoidRootPart.Position or nil
-                local feetY = HumanoidRootPart and GetFeetY() or _pcLastFootY
-                DrawPickupCircle(pos, feetY, AutoPickupDist, dt)
-            else
-                -- Indicate выкл: fade-out и стоп
-                DrawPickupCircle(nil, _pcLastFootY, AutoPickupDist, dt)
-                if _pcAlpha > 0.97 then fadeConn:Disconnect() end
-            end
-        end)
-    end
-    AutoPickupStatus.Running = false
-end
-
--- ============================================================
--- UI
--- ============================================================
-local uiElements = {}
-
-
-local function SetupUI(UI)
-    -- ═══════════════════════════════════════════════════════════
-    -- ВАЖНО: Colorpicker'ы регистрируются ПОСЛЕДНИМИ (после всех
-    -- Toggle/Slider/Dropdown/Keybind) — иначе скрытый Toggle
-    -- внутри каждого Colorpicker сдвигает bool-индекс библиотеки
-    -- и все Toggle ПОСЛЕ colorpicker'ов читают неверные значения
-    -- из конфига при загрузке.
-    -- ═══════════════════════════════════════════════════════════
-
-    if UI.Sections.AutoShoot then
-        UI.Sections.AutoShoot:Header({ Name = "AutoShoot" })
-        UI.Sections.AutoShoot:Divider()
-
-        uiElements.AutoShootEnabled = UI.Sections.AutoShoot:Toggle({
-            Name = "Enabled", Default = AutoShootEnabled,
-            Callback = function(v) AutoShootEnabled = v; if v then AutoShoot.Start() else AutoShoot.Stop() end end
-        }, "AutoShootEnabled")
-
-        uiElements.AutoShootMode = UI.Sections.AutoShoot:Dropdown({
-            Name = "Mode",
-            Options = {"Packet", "Hook"},
-            Default = 1,
-            Required = true,
-            Callback = function(v)
-                AutoShootMode = v
-                UpdateModeText()
-                if uiElements.AutoShootKey then
-                    uiElements.AutoShootKey:SetVisibility(v == "Packet")
-                end
-                if AutoShootEnabled then
-                    AutoShoot.Stop(); AutoShoot.Start()
-                elseif v == "Hook" then
-                    EnableHook()
-                else
-                    DisableHook()
-                end
-            end
-        }, "AutoShootMode")
-
-        uiElements.AutoShootLegit = UI.Sections.AutoShoot:Toggle({
-            Name = "Legit Animation", Default = AutoShootLegit,
-            Callback = function(v) AutoShootLegit = v end
-        }, "AutoShootLegit")
-
-        uiElements.AutoShootPreferSpin = UI.Sections.AutoShoot:Toggle({
-            Name = "Prefer Spin", Default = AutoShootPreferSpin,
-            Callback = function(v) AutoShootPreferSpin = v end
-        }, "AutoShootPreferSpin")
-        UI.Sections.AutoShoot:SubLabel({Text = "[\xF0\x9F\x8C\x80] Prefer curved shots vs non-NPC GK"})
-
-        UI.Sections.AutoShoot:Divider()
-
-        uiElements.AutoShootManual = UI.Sections.AutoShoot:Toggle({
-            Name = "Manual Shot", Default = AutoShootManualShot,
-            Callback = function(v) AutoShootManualShot = v; UpdateModeText() end
-        }, "AutoShootManual")
-
-        -- Keybind: Callback срабатывает и при PC-клавише и при нажатии мобильного FAB (MacLib)
-        uiElements.AutoShootKey = UI.Sections.AutoShoot:Keybind({
-            Name = "Shoot Key", Default = AutoShootShootKey,
-            Callback = function(v)
-                -- MacLib вызывает Callback и на PC и через мобильный FAB
-                if AutoShootMode ~= "Packet" then return end
-                if AutoShootStatus.ManualShootFn then
-                    AutoShootStatus.ManualShootFn()
-                end
-            end,
-            onBinded = function(v)
-                -- onBinded = пользователь сменил бинд
-                if AutoShootMode == "Hook" then return end
-                AutoShootShootKey = v
-                UpdateModeText()
-            end,
-        }, "AutoShootKey")
-
-        UI.Sections.AutoShoot:Divider()
-
-        uiElements.AutoShootMaxDist = UI.Sections.AutoShoot:Slider({
-            Name = "Max Distance", Minimum = 50, Maximum = 300,
-            Default = AutoShootMaxDistance, Precision = 1,
-            Callback = function(v) AutoShootMaxDistance = v end
-        }, "AutoShootMaxDist")
-
-        uiElements.AutoShootCurveDistanceLimit = UI.Sections.AutoShoot:Slider({
-            Name = "Curve Distance Limit", Minimum = 130, Maximum = 300,
-            Default = AutoShootCurveDistanceLimit, Precision = 1,
-            Callback = function(v) AutoShootCurveDistanceLimit = v end
-        }, "AutoShootCurveDistanceLimit")
-
-        uiElements.AutoShootBallSpeed = UI.Sections.AutoShoot:Slider({
-            Name = "Ball Speed", Minimum = 100, Maximum = 1000,
-            Default = AutoShootBallSpeed, Precision = 1,
-            Callback = function(v) AutoShootBallSpeed = v end
-        }, "AutoShootBallSpeed")
-        UI.Sections.AutoShoot:SubLabel({Text = "~400 studs/s. if ball higher → increase | ball down → reduce"})
-
-        uiElements.AutoShootDragComp = UI.Sections.AutoShoot:Slider({
-            Name = "Drag Compensation", Minimum = 0, Maximum = 3,
-            Default = AutoShootDragComp, Precision = 2,
-            Callback = function(v) AutoShootDragComp = v end
-        }, "AutoShootDragComp")
-        UI.Sections.AutoShoot:SubLabel({Text = "[↑] ball does not reach → increase  | flight away → reduce"})
-
-        uiElements.AutoShootDerivMult = UI.Sections.AutoShoot:Slider({
-            Name = "Derivation Mult", Minimum = 0.5, Maximum = 10.0,
-            Default = AutoShootDerivMult, Precision = 2,
-            Callback = function(v) AutoShootDerivMult = v end
-        }, "AutoShootDerivMult")
-
-        UI.Sections.AutoShoot:Divider()
-
-        uiElements.AutoShootSpoofPower = UI.Sections.AutoShoot:Toggle({
-            Name = "Spoof Power", Default = AutoShootSpoofPowerEnabled,
-            Callback = function(v) AutoShootSpoofPowerEnabled = v end
-        }, "AutoShootSpoofPower")
-
-        uiElements.AutoShootSpoofType = UI.Sections.AutoShoot:Dropdown({
-            Name = "Spoof Power Type", Default = AutoShootSpoofPowerType,
-            Options = {"math.huge", "9999999", "100"}, Required = true,
-            Callback = function(v) AutoShootSpoofPowerType = v end
-        }, "AutoShootSpoofType")
-
-        uiElements.AutoShootDebugText = UI.Sections.AutoShoot:Toggle({
-            Name = "Debug Text", Default = AutoShootDebugText,
-            Callback = function(v) AutoShoot.SetDebugText(v) end
-        }, "AutoShootDebugText")
-
-        UI.Sections.AutoShoot:Divider()
-        uiElements.ShowTrajectory = UI.Sections.AutoShoot:Toggle({
-            Name = "Show Trajectory", Default = ShowTrajectory,
-            Callback = function(v) ShowTrajectory = v end
-        }, "ShowTrajectory")
-        uiElements.Show3DBoxes = UI.Sections.AutoShoot:Toggle({
-            Name = "Show 3D Boxes", Default = Show3DBoxes,
-            Callback = function(v) Show3DBoxes = v end
-        }, "Show3DBoxes")
-        uiElements.VisualsOnlyWithBall = UI.Sections.AutoShoot:Toggle({
-            Name = "Visuals Only With Ball", Default = VisualsOnlyWithBall,
-            Callback = function(v) VisualsOnlyWithBall = v end
-        }, "VisualsOnlyWithBall")
-
-
-    end
-
-    if UI.Sections.AutoPickup then
-        UI.Sections.AutoPickup:Header({ Name = "AutoPickup" })
-        UI.Sections.AutoPickup:Divider()
-
-        uiElements.AutoPickupEnabled = UI.Sections.AutoPickup:Toggle({
-            Name = "Enabled", Default = AutoPickupEnabled,
-            Callback = function(v) SetAutoPickupState(v) end
-        }, "AutoPickupEnabled")
-
-        uiElements.AutoPickupToggleKey = UI.Sections.AutoPickup:Keybind({
-            Name = "Toggle Pickup Key",
-            Default = AutoPickupToggleKey,
-            ForceAutoLoad = true,
-            Callback = function()
-                local newState = not AutoPickupEnabled
-                SetAutoPickupState(newState)
-                if uiElements.AutoPickupEnabled and uiElements.AutoPickupEnabled.UpdateState then
-                    pcall(function() uiElements.AutoPickupEnabled:UpdateState(newState) end)
-                end
-            end,
-            onBinded = function(v)
-                AutoPickupToggleKey = v
-            end,
-        }, "AutoPickupToggleKey")
-
-        UI.Sections.AutoPickup:Divider()
-
-        uiElements.AutoPickupDist = UI.Sections.AutoPickup:Slider({
-            Name = "Pickup Distance", Minimum = 10, Maximum = 300,
-            Default = AutoPickupDist, Precision = 1,
-            Callback = function(v) AutoPickupDist = v end
-        }, "AutoPickupDist")
-
-        uiElements.AutoPickupMaxHeight = UI.Sections.AutoPickup:Slider({
-            Name = "Max Ball Height", Minimum = 0, Maximum = 200,
-            Default = AutoPickupMaxHeight, Precision = 1,
-            Callback = function(v) AutoPickupMaxHeight = v end
-        }, "AutoPickupMaxHeight")
-        UI.Sections.AutoPickup:SubLabel({Text = "[↑] Max ball Y relative to player for pickup"})
-
-        uiElements.AutoPickupSpoof = UI.Sections.AutoPickup:Slider({
-            Name = "Spoof Value", Minimum = 0.1, Maximum = 5.0,
-            Default = AutoPickupSpoofValue, Precision = 2,
-            Callback = function(v) AutoPickupSpoofValue = v end
-        }, "AutoPickupSpoof")
-
-        UI.Sections.AutoPickup:SubLabel({Text = "[💠] Distance sent to server for pickup"})
-
-        UI.Sections.AutoPickup:Divider()
-        uiElements.ShowPickupCircle = UI.Sections.AutoPickup:Toggle({
-            Name = "Show Pickup Circle", Default = ShowPickupCircle,
-            Callback = function(v)
-                ShowPickupCircle = v
-            end
-        }, "ShowPickupCircle")
-
-        uiElements.PickupCircleIndicate = UI.Sections.AutoPickup:Toggle({
-            Name = "Indicate Toggle", Default = PickupCircleIndicate,
-            Callback = function(v) PickupCircleIndicate = v end
-        }, "PickupCircleIndicate")
-        UI.Sections.AutoPickup:SubLabel({Text = "[ 🔴/🟢 ] Circle stays red when pickup disabled"})
-    end
-
-    -- ═══════════════════════════════════════════════════════════
-    -- Colorpicker'ы — ВСЕГДА В САМОМ КОНЦЕ SetupUI
-    -- Каждый Colorpicker занимает 1 скрытый bool-слот внутри
-    -- библиотеки. Размещение здесь гарантирует, что все Toggle
-    -- выше зарегистрированы с правильными индексами и корректно
-    -- загружаются из конфига.
-    -- ═══════════════════════════════════════════════════════════
-    if UI.Sections.AutoShoot then
-        UI.Sections.AutoShoot:Divider()
-        uiElements.TrajectoryColor = UI.Sections.AutoShoot:Colorpicker({
-            Name = "Trajectory Color", Default = TrajectoryColor,
-            Callback = function(v) TrajectoryColor = v; ApplyVisualStyles() end
-        }, "TrajectoryColor")
-        uiElements.StartCircleColor = UI.Sections.AutoShoot:Colorpicker({
-            Name = "Start Circle Color", Default = StartCircleColor,
-            Callback = function(v) StartCircleColor = v; ApplyVisualStyles() end
-        }, "StartCircleColor")
-        uiElements.TargetCubeColor = UI.Sections.AutoShoot:Colorpicker({
-            Name = "Aim Box Color", Default = TargetCubeColor,
-            Callback = function(v) TargetCubeColor = v; ApplyVisualStyles() end
-        }, "TargetCubeColor")
-        uiElements.GoalCubeColor = UI.Sections.AutoShoot:Colorpicker({
-            Name = "Predicted Box Color", Default = GoalCubeColor,
-            Callback = function(v) GoalCubeColor = v; ApplyVisualStyles() end
-        }, "GoalCubeColor")
-        uiElements.NoSpinCubeColor = UI.Sections.AutoShoot:Colorpicker({
-            Name = "Goal Frame Color", Default = NoSpinCubeColor,
-            Callback = function(v) NoSpinCubeColor = v; ApplyVisualStyles() end
-        }, "NoSpinCubeColor")
-        uiElements.PeakCubeColor = UI.Sections.AutoShoot:Colorpicker({
-            Name = "Peak Box Color", Default = PeakCubeColor,
-            Callback = function(v) PeakCubeColor = v; ApplyVisualStyles() end
-        }, "PeakCubeColor")
-
-    end
-    -- Colorpicker AutoPickup — после всех Toggle/Slider
-    if UI.Sections.AutoPickup then
-        uiElements.PickupCircleColor = UI.Sections.AutoPickup:Colorpicker({
-            Name = "Pickup Circle Color", Default = PickupCircleColor,
-            Callback = function(v) PickupCircleColor = v; ApplyPickupCircleStyle() end
-        }, "PickupCircleColor")
-    end
-end
-
--- ============================================================
--- MODULE INIT
--- ============================================================
-local AutoShootModule = {}
-function AutoShootModule.Init(UI, coreParam, notifyFunc)
-    local notify = notifyFunc or function(t,m) print("["..t.."]: "..m) end
-    Notify = notify
-    SetupUI(UI)
-
-    if AutoPickupEnabled then AutoPickup.Start() end
-    if AutoShootEnabled then AutoShoot.Start() end
-
-    LocalPlayer.CharacterAdded:Connect(function(newChar)
-        task.wait(1)
-        Character     = newChar
-        Humanoid      = newChar:WaitForChild("Humanoid")
-        HumanoidRootPart = newChar:WaitForChild("HumanoidRootPart")
-        BallAttachment   = newChar:WaitForChild("ball")
-        RShootAnim       = Humanoid:LoadAnimation(Animations:WaitForChild("RShoot"))
-        RShootAnim.Priority = Enum.AnimationPriority.Action4
-        GoalCFrame = nil; TargetPoint = nil; PredictedLand = nil; AimPoint = nil
-        CurrentFlightTime = 0; CurrentLaunchDir = nil; CurrentSpeed = 0; CurrentPeakPos = nil
-        LastShoot = 0; IsAnimating = false; CanShoot = true
-        InitializePickupCircle()
-        if AutoShootEnabled then AutoShoot.Start() end
-        if AutoPickupEnabled then AutoPickup.Start() end
-    end)
-end
-
-function AutoShootModule:Destroy()
-    AutoShoot.Stop(); AutoPickup.Stop()
-end
-
-return AutoShootModule
+	--[[
+		ForceAutoLoad API
+		=================
+		Позволяет автоматически сохранять и восстанавливать значения
+		отдельных элементов (Slider, Toggle, Input, Dropdown, Colorpicker)
+		при каждом запуске скрипта.
+
+		Данные хранятся в отдельной папке FAutoLoad (не в /settings/),
+		по одному файлу на флаг элемента.
+
+		Параметры в конфигурации элемента:
+		  ForceAutoLoad = true   -- включить автосохранение для этого элемента
+		  FALoadDelay   = 1.5   -- задержка в секундах перед загрузкой при старте (default: 0)
+
+		Методы MacLib:
+		  MacLib:InitForceAutoLoad()          -- инициализирует папку FAutoLoad (вызывается автоматически при SetFolder)
+		  MacLib:FALSave(flag, elementObj)    -- сохраняет текущее значение элемента (вызывается при изменении)
+		  MacLib:FALLoad(flag, elementObj, delay) -- загружает сохранённое значение (вызывается при создании элемента)
+		  MacLib:FALClear(flag)               -- удаляет файл автосохранения для флага
+
+		Пример использования:
+		  section:Slider({
+		    Name = "Speed",
+		    Min = 0, Max = 100, Default = 50,
+		    ForceAutoLoad = true,
+		    FALoadDelay = 0.5,
+		    Callback = function(v) ... end
+		  }, "SpeedFlag")
+	]]
+
+	MacLib._falFolder = nil  -- путь к папке FAutoLoad
+
+	function MacLib:InitForceAutoLoad()
+		if isStudio or not (isfolder and makefolder) then return end
+		MacLib._falFolder = MacLib.Folder .. "/FAutoLoad"
+		if not isfolder(MacLib._falFolder) then
+			makefolder(MacLib._falFolder)
+		end
+	end
+
+	function MacLib:FALSave(flag, elementObj)
+		if isStudio or not (MacLib._falFolder and writefile) then return end
+		if not isfolder(MacLib._falFolder) then
+			makefolder(MacLib._falFolder)
+		end
+		local path = MacLib._falFolder .. "/" .. tostring(flag) .. ".syl"
+		local class = elementObj and elementObj.Class
+		local data = {}
+		if class == "Slider" then
+			data = { type = "Slider", value = tostring(elementObj:GetValue()) }
+		elseif class == "Toggle" then
+			data = { type = "Toggle", state = elementObj:GetState() }
+		elseif class == "Input" then
+			data = { type = "Input", text = elementObj:GetText() }
+		elseif class == "Dropdown" then
+			data = { type = "Dropdown", value = elementObj.Value }
+		elseif class == "Colorpicker" then
+			local c = elementObj.Color
+			if c then
+				data = { type = "Colorpicker", r = c.R, g = c.G, b = c.B, a = elementObj.Alpha or 0 }
+			end
+		elseif class == "Keybind" then
+			-- FALSave for Keybind: saves binded key name + mobile button visible state
+			local bind = elementObj.GetBind and elementObj:GetBind()
+			local bindName = (typeof(bind) == "EnumItem" and bind.Name) or nil
+			local falFlag = elementObj._falFlag
+			local mbVis = (MacLib._keybindBtnVisible and falFlag and MacLib._keybindBtnVisible[falFlag]) or false
+			data = { type = "Keybind", bind = bindName, mbVisible = mbVis }
+		end
+		local ok, encoded = pcall(HttpService.JSONEncode, HttpService, data)
+		if ok then
+			pcall(writefile, path, encoded)
+		end
+	end
+
+	function MacLib:FALLoad(flag, elementObj, delay)
+		if isStudio or not (MacLib._falFolder and isfile and readfile) then return end
+		task.spawn(function()
+			if delay and delay > 0 then
+				task.wait(delay)
+			end
+			local path = MacLib._falFolder .. "/" .. tostring(flag) .. ".syl"
+			if not isfile(path) then return end
+			local ok, data = pcall(HttpService.JSONDecode, HttpService, readfile(path))
+			if not ok or not data then return end
+			local class = data.type
+			pcall(function()
+				if class == "Slider" and elementObj.Class == "Slider" then
+					elementObj:UpdateValue(tonumber(data.value), true)
+				elseif class == "Toggle" and elementObj.Class == "Toggle" then
+					elementObj:UpdateState(data.state)
+				elseif class == "Input" and elementObj.Class == "Input" then
+					if elementObj.UpdateText then elementObj:UpdateText(data.text) end
+				elseif class == "Dropdown" and elementObj.Class == "Dropdown" then
+					if elementObj.UpdateSelection then elementObj:UpdateSelection(data.value) end
+				elseif class == "Colorpicker" and elementObj.Class == "Colorpicker" then
+					if data.r and elementObj.SetColor then
+						elementObj:SetColor(Color3.new(data.r, data.g, data.b))
+					end
+				elseif class == "Keybind" and elementObj.Class == "Keybind" then
+					-- Restore bind key
+					if data.bind and elementObj.Bind then
+						local ok2, kc = pcall(function() return Enum.KeyCode[data.bind] end)
+						if ok2 and kc then elementObj:Bind(kc) end
+					end
+					-- Restore mobile button visibility
+					if data.mbVisible ~= nil and elementObj.SetMobileButtonVisibility then
+						task.defer(function()
+							elementObj:SetMobileButtonVisibility(data.mbVisible)
+						end)
+					end
+				end
+			end)
+		end)
+	end
+
+	function MacLib:FALClear(flag)
+		if isStudio or not (MacLib._falFolder and isfile) then return end
+		local path = MacLib._falFolder .. "/" .. tostring(flag) .. ".syl"
+		if isfile(path) then
+			pcall(function() delfile(path) end)
+		end
+	end
+
+
+	--[[
+		MacLib:FALSetData(flag, value)
+		Сохраняет произвольные кастомные данные под ключом `flag` в папке FAutoLoad.
+		Аналог MacLib:SetData(), но хранится в FAutoLoad/flag.syl.
+		Позволяет разработчику сохранять значения без привязки к UI-элементу.
+
+		MacLib:FALGetData(flag, default?)
+		Читает ранее сохранённые кастомные данные. Возвращает `default` если не найдено.
+
+		MacLib:FALLoadData(flag, callback, delay?, default?)
+		Отложенный хелпер — ждёт `delay` секунд, затем читает данные и вызывает callback(value).
+		Поведение полностью аналогично ForceAutoLoad у элементов.
+
+		Пример использования:
+		  MacLib:FALSetData("MySpeed", 75)
+		  MacLib:FALLoadData("MySpeed", function(v)
+		      print("Loaded speed:", v)  --> 75
+		  end, 0.5, 50)
+	]]
+	function MacLib:FALSetData(flag, value)
+		if isStudio then return false, "Studio mode" end
+		if not (MacLib._falFolder and writefile) then return false, "Config system unavailable" end
+		if not isfolder(MacLib._falFolder) then makefolder(MacLib._falFolder) end
+		local path = MacLib._falFolder .. "/" .. tostring(flag) .. ".syl"
+		local ok, encoded = pcall(HttpService.JSONEncode, HttpService, { type = "Custom", value = value })
+		if not ok then return false, "Encode error: " .. tostring(encoded) end
+		local wrote, err = pcall(writefile, path, encoded)
+		return wrote, wrote and nil or tostring(err)
+	end
+
+	function MacLib:FALGetData(flag, default)
+		if isStudio then return default end
+		if not (MacLib._falFolder and isfile and readfile) then return default end
+		local path = MacLib._falFolder .. "/" .. tostring(flag) .. ".syl"
+		if not isfile(path) then return default end
+		local ok, data = pcall(HttpService.JSONDecode, HttpService, readfile(path))
+		if not ok or type(data) ~= "table" or data.type ~= "Custom" then return default end
+		return data.value ~= nil and data.value or default
+	end
+
+	function MacLib:FALLoadData(flag, callback, delay, default)
+		task.spawn(function()
+			if delay and delay > 0 then task.wait(delay) end
+			local value = MacLib:FALGetData(flag, default)
+			if callback then callback(value) end
+		end)
+	end
+
+
+	--[[
+		MacLib:Preloader(url, config)
+
+		Загружает внешний Lua-модуль и регистрирует его как полноценный элемент
+		библиотеки. Разработчик сам определяет методы и логику элемента.
+
+		url    -- URL до raw Lua-скрипта (string)
+		config -- таблица конфигурации:
+		  {
+		    Name    = "MyElement",   -- имя для регистрации (опционально)
+		    Window  = WindowFunctions, -- окно для передачи в модуль
+		    Timeout = 10,            -- таймаут загрузки в секундах (default: 10)
+		    onLoad  = function(element) ... end,  -- вызывается после загрузки
+		    onError = function(err)   ... end,    -- вызывается при ошибке
+		  }
+
+		Внешний модуль (url) должен возвращать функцию или таблицу:
+		  - Если функция: вызывается с context-таблицей, результат = элемент
+		  - Если таблица: возвращается напрямую как элемент
+
+		Context-таблица, передаваемая в модуль:
+		  {
+		    MacLib  = MacLib,
+		    Options = MacLib.Options,
+		    Window  = config.Window,
+		    Name    = config.Name,
+		  }
+
+		Пример внешнего модуля (MyElement.lua):
+		  return function(ctx)
+		    local element = {}
+		    local _value = 0
+
+		    -- Разработчик сам создаёт любые методы:
+		    function element:SetValue(v) _value = v end
+		    function element:GetValue() return _value end
+		    function element:Build(section, settings)
+		      -- создаём UI через section:Slider / section:Toggle и т.д.
+		      section:Slider({ Name = settings.Name, Min=0, Max=100, Callback=function(v) _value=v end })
+		    end
+
+		    return element
+		  end
+
+		Пример использования:
+		  MacLib:Preloader("https://.../MyElement.lua", {
+		    Window = Window,
+		    Name   = "MyElement",
+		    onLoad = function(element)
+		      element:Build(tab:Section({ Name = "Custom" }), { Name = "Speed" })
+		      -- теперь можно вызывать: element:SetValue(50)
+		    end,
+		  })
+	]]
+	--[[
+		MacLib:Preloader(moduleResult, config)
+
+		Интегрирует уже загруженный внешний модуль в MacLib.
+		Разработчик сам загружает файл через loadstring/loadfile/require,
+		а Preloader только вызывает его с нужным контекстом.
+
+		moduleResult -- результат loadstring(src)() или require(), т.е. функция или таблица
+		config       -- таблица конфигурации (опционально):
+		  {
+		    Window  = Window,              -- передаётся в ctx.Window
+		    Name    = "MyElement",         -- имя для логирования
+		    onLoad  = function(el) end,    -- callback после успешного вызова
+		    onError = function(err) end,   -- callback при ошибке
+		  }
+
+		Внешний модуль должен быть функцией(ctx) или таблицей.
+		  - Функция: вызывается с ctx = { MacLib, Options, Window, Name }
+		  - Таблица:  возвращается напрямую как элемент
+
+		Пример:
+		  local src = game:HttpGet("https://.../ProgressBar_Element.lua")
+		  local moduleFn = loadstring(src)
+		  MacLib:Preloader(moduleFn, {
+		    Window  = Window,
+		    Name    = "ProgressBar",
+		    onLoad  = function() print("loaded!") end,
+		  })
+
+		Также поддерживает уже вызванный результат:
+		  local mod = loadstring(src)()   -- вызвали сами
+		  MacLib:Preloader(mod, { onLoad = function(el) ... end })
+
+		Обратная совместимость:
+		  MacLib:Preloader(fn, callback)  -- callback = onLoad
+	]]
+	MacLib._loadedModules   = MacLib._loadedModules   or {}
+	MacLib._onLoadCallbacks = MacLib._onLoadCallbacks or {}
+
+	function MacLib:OnLoad(name, callback)
+		if MacLib._loadedModules[name] then
+			task.spawn(callback)
+		else
+			MacLib._onLoadCallbacks[name] = MacLib._onLoadCallbacks[name] or {}
+			table.insert(MacLib._onLoadCallbacks[name], callback)
+		end
+	end
+
+	function MacLib:IsLoaded(name)
+		return MacLib._loadedModules[name] == true
+	end
+
+		function MacLib:Preloader(moduleResult, config)
+		-- Поддержка старого API: Preloader(fn, callback)
+		if type(config) == "function" then
+			config = { onLoad = config }
+		end
+		config = config or {}
+
+		task.spawn(function()
+			local ok, result = pcall(function()
+				local ctx = {
+					MacLib  = MacLib,
+					Options = MacLib.Options,
+					Window  = config.Window,
+					Name    = config.Name,
+				}
+
+				local mod = moduleResult
+
+				-- Если передана функция — вызываем с ctx
+				if type(mod) == "function" then
+					mod = mod(ctx)
+				end
+
+				-- Если результат тоже функция (loadstring вернул closure) — вызываем ещё раз
+				if type(mod) == "function" then
+					mod = mod(ctx)
+				end
+
+				return mod
+			end)
+
+			if ok then
+				if type(config.onLoad) == "function" then
+					config.onLoad(result)
+				end
+				-- FIX: помечаем модуль загруженным и диспатчим MacLib:OnLoad callbacks
+				if config.Name then
+					MacLib._loadedModules[config.Name] = true
+					local cbs = MacLib._onLoadCallbacks and MacLib._onLoadCallbacks[config.Name]
+					if cbs then
+						for _, cb in ipairs(cbs) do
+							task.spawn(cb)
+						end
+						MacLib._onLoadCallbacks[config.Name] = nil
+					end
+				end
+			else
+				warn("[MacLib:Preloader] Error" .. (config.Name and (" in '" .. config.Name .. "'") or "") .. ": " .. tostring(result))
+				if type(config.onError) == "function" then
+					config.onError(result)
+				end
+			end
+		end)
+	end
+
+	-- ============================================================
+	-- V11 EXTENDED API
+	-- ============================================================
+
+	--[[
+		MacLib:Extend(name, fn)
+		Добавляет (или заменяет) метод прямо в таблицу MacLib.
+		Используется внешними модулями, чтобы патчить MacLib так же,
+		как это делает KeySystem (MacLib:KeySystem = ...).
+		Аналог Object.assign / prototype extension.
+
+		Пример:
+		  MacLib:Extend("KeySystem", function(self, cfg)
+		    -- build overlay, return { Show, Hide, Destroy, SetKey }
+		  end)
+		  local ks = MacLib:KeySystem({...})
+	]]
+	function MacLib:Extend(name, fn)
+		assert(type(name) == "string", "[MacLib:Extend] name must be a string")
+		assert(type(fn) == "function", "[MacLib:Extend] fn must be a function")
+		MacLib[name] = function(self, ...)
+			return fn(self, ...)
+		end
+	end
+
+	--[[
+		MacLib:ExtendSection(name, fn)
+		Алиас / обёртка над MacLib:PatchSection.
+		Добавляет метод во все существующие и будущие секции.
+		Предпочтительный API для расширений вместо прямого PatchSection.
+
+		Пример:
+		  MacLib:ExtendSection("ProgressBar", function(self, settings, flag)
+		    return MacLib:CreateCustomElement(self, "ProgressBar", settings, flag)
+		  end)
+		  section:ProgressBar({ Name = "Load", Default = 0 }, "PB")
+	]]
+	function MacLib:ExtendSection(name, fn)
+		assert(type(name) == "string", "[MacLib:ExtendSection] name must be a string")
+		assert(type(fn) == "function", "[MacLib:ExtendSection] fn must be a function")
+		MacLib:PatchSection(name, fn)
+	end
+
+	--[[
+		MacLib:Hook(name, hookFn)
+		Перехватывает существующий метод MacLib.
+		hookFn получает (original, ...) — original это исходная функция.
+		Позволяет реализовывать pre/post-логику без разрушения оригинала.
+
+		Пример (post-hook — логировать каждый Notify):
+		  MacLib:Hook("Notify", function(original, self, settings)
+		    settings.Title = "[Hooked] " .. (settings.Title or "")
+		    return original(self, settings)
+		  end)
+
+		Пример (pre-hook — блокировать пустые уведомления):
+		  MacLib:Hook("Notify", function(original, self, settings)
+		    if not settings.Description or settings.Description == "" then return end
+		    return original(self, settings)
+		  end)
+	]]
+	function MacLib:Hook(name, hookFn)
+		assert(type(name) == "string",   "[MacLib:Hook] name must be a string")
+		assert(type(hookFn) == "function", "[MacLib:Hook] hookFn must be a function")
+		local original = MacLib[name]
+		assert(type(original) == "function",
+			"[MacLib:Hook] '" .. name .. "' is not an existing MacLib method — cannot hook")
+		MacLib[name] = function(self, ...)
+			return hookFn(original, self, ...)
+		end
+	end
+
+	--[[
+		MacLib:WatchOption(flag, fn)
+		Подписывается на изменение значения элемента по флагу,
+		НЕ заменяя исходный Callback. Все watcher-ы вызываются
+		после оригинального Callback через task.spawn.
+
+		fn(value, alpha?) — сигнатура совпадает с Callback элемента.
+
+		Поддерживаемые типы: Toggle, Slider, Input, Dropdown, Colorpicker.
+		Для остальных типов watcher не будет вызван.
+
+		Возвращает функцию disconnect(), которая снимает watcher.
+
+		Пример:
+		  local stop = MacLib:WatchOption("SpeedFlag", function(v)
+		    print("Speed changed to", v)
+		  end)
+		  -- позже:
+		  stop()
+	]]
+	MacLib._watchers = MacLib._watchers or {}
+
+	function MacLib:WatchOption(flag, fn)
+		assert(type(flag) == "string",  "[MacLib:WatchOption] flag must be a string")
+		assert(type(fn)   == "function","[MacLib:WatchOption] fn must be a function")
+
+		MacLib._watchers[flag] = MacLib._watchers[flag] or {}
+		local id = {} -- unique key
+		MacLib._watchers[flag][id] = fn
+
+		local opt = MacLib.Options[flag]
+		if opt and not opt._watcherPatched then
+			opt._watcherPatched = true
+			local origCB = opt.Settings and opt.Settings.Callback
+			if opt.Settings then
+				opt.Settings.Callback = function(...)
+					local args = {...}
+					if origCB then origCB(table.unpack(args)) end
+					local watchers = MacLib._watchers[flag]
+					if watchers then
+						for _, wfn in next, watchers do
+							task.spawn(wfn, table.unpack(args))
+						end
+					end
+				end
+			end
+		end
+
+		return function()
+			if MacLib._watchers[flag] then
+				MacLib._watchers[flag][id] = nil
+			end
+		end
+	end
+
+	--[[
+		MacLib:BatchSet(tbl)
+		Массово применяет значения к flagged-элементам.
+		tbl — таблица вида { [flag] = value, ... }.
+		Использует UpdateState / UpdateValue / UpdateSelection /
+		UpdateText / SetColor в зависимости от класса элемента.
+		silent = true предотвращает вызов Callback при установке.
+
+		Пример:
+		  MacLib:BatchSet({
+		    Enabled  = true,      -- Toggle
+		    Speed    = 75,        -- Slider
+		    Fruit    = "Mango",   -- Dropdown
+		    Nickname = "Player",  -- Input
+		  })
+	]]
+	function MacLib:BatchSet(tbl, silent)
+		assert(type(tbl) == "table", "[MacLib:BatchSet] tbl must be a table")
+		for flag, value in next, tbl do
+			local opt = MacLib.Options[flag]
+			if not opt then continue end
+			local class = opt.Class
+			local ok = pcall(function()
+				if class == "Toggle" then
+					opt:UpdateState(value, silent)
+				elseif class == "Slider" then
+					opt:UpdateValue(value, silent)
+				elseif class == "Dropdown" then
+					opt:UpdateSelection(value)
+				elseif class == "Input" then
+					if opt.UpdateText then opt:UpdateText(value)
+					elseif opt.GetInput then opt.Settings.Placeholder = value end
+				elseif class == "Colorpicker" then
+					if type(value) == "table" then
+						if value.color then opt:SetColor(value.color) end
+						if value.alpha ~= nil then opt:SetAlpha(value.alpha) end
+					elseif typeof(value) == "Color3" then
+						opt:SetColor(value)
+					end
+				end
+			end)
+			if not ok then
+				warn("[MacLib:BatchSet] Failed to set flag '" .. tostring(flag) .. "'")
+			end
+		end
+	end
+
+	--[[
+		MacLib:RemoveOption(flag)
+		Удаляет элемент из реестра MacLib.Options.
+		Если у элемента есть поле .frame или .rootFrame — уничтожает UI.
+		Также снимает все WatchOption-подписки для этого флага.
+
+		Возвращает true если элемент был найден и удалён, иначе false.
+
+		Пример:
+		  MacLib:RemoveOption("MyToggle")
+	]]
+	function MacLib:RemoveOption(flag)
+		assert(type(flag) == "string", "[MacLib:RemoveOption] flag must be a string")
+		local opt = MacLib.Options[flag]
+		if not opt then return false end
+
+		-- Уничтожить UI если есть rootFrame / frame
+		local frame = opt.frame or opt.rootFrame
+		if frame and typeof(frame) == "Instance" and frame.Parent then
+			pcall(function() frame:Destroy() end)
+		end
+
+		-- Снять watchers
+		if MacLib._watchers and MacLib._watchers[flag] then
+			MacLib._watchers[flag] = nil
+		end
+
+		-- Удалить из реестра
+		MacLib.Options[flag] = nil
+		return true
+	end
+
+	--[[
+		MacLib:GetOptions()
+		Возвращает копию таблицы всех flagged-элементов (MacLib.Options).
+		Безопасна для итерации — изменение результата не влияет на реестр.
+
+		Пример:
+		  local opts = MacLib:GetOptions()
+		  for flag, element in next, opts do
+		    print(flag, element.Class)
+		  end
+	]]
+	function MacLib:GetOptions()
+		local copy = {}
+		for k, v in next, MacLib.Options do
+			copy[k] = v
+		end
+		return copy
+	end
+
+	-- ============================================================
+	-- END V11 EXTENDED API
+	-- ============================================================
+
+return MacLib
