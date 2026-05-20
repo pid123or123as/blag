@@ -1,9 +1,9 @@
 -- [v3.6] AUTO DRIBBLE + AUTO TACKLE
 -- Changelog v3.6:
--- - AutoDribble: дек ТОЛЬКО при IsTackling == true, весь fallback убран
--- - AutoDribble: кэш результата ShouldDribbleNow (dirty-flag), пересчёт
---   только при смене таклера/позиции/IsTackling — 0 лишних вычислений
--- - PrecomputePlayers: RecordTargetPosition только в зоне DribbleActivation*1.5
+-- - FIX: Attack Angle теперь работает на ВСЕХ стадиях (включая DribbleActivation)
+-- - FIX: кэш IsTackling=true → всегда пересчёт (точность момента удара)
+-- - AutoDribble: дек ТОЛЬКО при IsTackling == true
+-- - PrecomputePlayers: RecordTargetPosition только в зоне Activation*1.5
 -- - Убраны task.desynchronize/synchronize (несовместимы без Actor)
 -- Changelog v3.5 (предыдущий):
 --   - Manual Button полностью удалён (кнопка, настройки, Toggle, Slider)
@@ -1038,26 +1038,30 @@ end
 --
 -- [СОХРАНЕНО] Все оригинальные стадии 0/1/2 из v3.4.
 -- ============================================================
+-- [v3.6 FIX] ShouldDribbleNow — Attack Angle работает на ВСЕХ стадиях
+-- Стадия 0: point blank < 3 studs — return true всегда (физически уже в контакте)
+-- Стадия 1: DribbleActivationDistance + IsTackling → ОБЯЗАТЕЛЬНО проверяем угол
+-- Стадия 2: MaxDribble → угол + скорость + TTC (без изменений)
 local function ShouldDribbleNow(specificTarget, tacklerData)
     if not specificTarget or not tacklerData then return false end
 
     local tacklerRoot = tacklerData.RootPart
     if not tacklerRoot then return false end
 
-    local serverCF     = GetMyServerCFrame()
-    local myServerPos  = Vector3.new(serverCF.Position.X, 0, serverCF.Position.Z)
+    local serverCF    = GetMyServerCFrame()
+    local myServerPos = Vector3.new(serverCF.Position.X, 0, serverCF.Position.Z)
 
-    -- v3.5: используем прогнозную позицию таклера (ping-компенсация)
-    local histVel      = GetPositionBasedVelocity(specificTarget)
-    local flatHistVel  = Vector3.new(histVel.X, 0, histVel.Z)
+    -- ping-компенсация позиции таклера
+    local histVel         = GetPositionBasedVelocity(specificTarget)
+    local flatHistVel     = Vector3.new(histVel.X, 0, histVel.Z)
     local predictedTacklerPos = Vector3.new(
         tacklerRoot.Position.X + flatHistVel.X * AutoTackleStatus.Ping * 1.5,
         0,
         tacklerRoot.Position.Z + flatHistVel.Z * AutoTackleStatus.Ping * 1.5
     )
 
-    local toMe         = myServerPos - predictedTacklerPos
-    local distFlat     = toMe.Magnitude
+    local toMe     = myServerPos - predictedTacklerPos
+    local distFlat = toMe.Magnitude
 
     if distFlat > AutoDribbleConfig.MaxDribbleDistance then
         if Gui and AutoDribbleConfig.Enabled then
@@ -1066,47 +1070,54 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
         return false
     end
 
-    -- [СТАДИЯ 0] Вплотную
-    if distFlat < 4 then
+    -- вычисляем угол один раз — используется во всех стадиях
+    local tacklerVel   = tacklerData.Velocity
+    local flatVel      = Vector3.new(tacklerVel.X, 0, tacklerVel.Z)
+    local tacklerSpeed = flatVel.Magnitude
+    local dirToMe      = toMe.Magnitude > 0.01 and toMe.Unit or Vector3.new(0, 0, 1)
+    local tacklerDir   = tacklerSpeed > 0.5 and flatVel.Unit or dirToMe -- если стоит — смотрим на нас
+    local dot          = tacklerDir:Dot(dirToMe)
+    local cosThresh    = GetCosThreshold()
+    local angleDeg     = math.deg(math.acos(math.clamp(dot, -1, 1)))
+
+    -- [СТАДИЯ 0] Буквально вплотную — дек в любом случае
+    if distFlat < 3 then
         if Gui and AutoDribbleConfig.Enabled then
-            Gui.AngleLabel.Text = string.format("⚡ POINT BLANK d=%.1f", distFlat)
+            Gui.AngleLabel.Text = string.format("⚡ PB d=%.1f A=%.0f°", distFlat, angleDeg)
         end
         return true
     end
 
-    -- [СТАДИЯ 1] Зона активации — ТОЛЬКО если враг активно таклует (v3.6)
+    -- [СТАДИЯ 1] Зона активации: враг таклует + летит в нашу сторону (угол проверяется!)
     if distFlat <= AutoDribbleConfig.DribbleActivationDistance then
         if not tacklerData.IsTackling then
             if Gui and AutoDribbleConfig.Enabled then
-                Gui.AngleLabel.Text = string.format("CLOSE d=%.1f NO_TACKLE", distFlat)
+                Gui.AngleLabel.Text = string.format("d=%.1f NO_TACKLE", distFlat)
+            end
+            return false
+        end
+        -- угол обязателен — именно это и регулирует слайдер Attack Angle
+        if dot < cosThresh then
+            if Gui and AutoDribbleConfig.Enabled then
+                Gui.AngleLabel.Text = string.format("TACKLE A=%.0f°>%.0f° skip", angleDeg, AutoDribbleConfig.MinAngleForDribble)
             end
             return false
         end
         if Gui and AutoDribbleConfig.Enabled then
-            Gui.AngleLabel.Text = string.format("⚡ TACKLE CLOSE d=%.1f", distFlat)
+            Gui.AngleLabel.Text = string.format("⚡ TACKLE d=%.1f A=%.0f°", distFlat, angleDeg)
         end
         return true
     end
 
-    -- [СТАДИЯ 2] Средняя дистанция
-    local tacklerVel   = tacklerData.Velocity
-    local flatVel      = Vector3.new(tacklerVel.X, 0, tacklerVel.Z)
-    local tacklerSpeed = flatVel.Magnitude
-
+    -- [СТАДИЯ 2] Средняя дистанция: скорость + угол + TTC
     if tacklerSpeed < 1.5 then
         if Gui and AutoDribbleConfig.Enabled then
-            Gui.AngleLabel.Text = string.format("v=%.1f (slow)", tacklerSpeed)
+            Gui.AngleLabel.Text = string.format("v=%.1f SLOW d=%.1f", tacklerSpeed, distFlat)
         end
         return false
     end
 
-    local tacklerDir  = flatVel.Unit
-    local dirToMe     = toMe.Unit
-    local dot         = tacklerDir:Dot(dirToMe)
-    local cosThresh   = GetCosThreshold()
-
     if Gui and AutoDribbleConfig.Enabled then
-        local angleDeg = math.deg(math.acos(math.clamp(dot, -1, 1)))
         Gui.AngleLabel.Text = string.format("A=%.0f° v=%.1f d=%.1f", angleDeg, tacklerSpeed, distFlat)
     end
 
@@ -1114,13 +1125,12 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
         return false
     end
 
-    local myFlatVel   = GetMyVelocityFromHistory()
-    local myFlatSpeed = Vector3.new(myFlatVel.X, 0, myFlatVel.Z).Magnitude
+    local myFlatVel      = GetMyVelocityFromHistory()
+    local myFlatSpeed    = Vector3.new(myFlatVel.X, 0, myFlatVel.Z).Magnitude
     local myDirToTackler = -dirToMe
-    local myVelUnit  = myFlatSpeed > 0.1 and Vector3.new(myFlatVel.X, 0, myFlatVel.Z).Unit or Vector3.zero
-    local myApproach = myVelUnit:Dot(myDirToTackler)
-    local relSpeed   = tacklerSpeed + myFlatSpeed * math.max(myApproach, 0)
-
+    local myVelUnit      = myFlatSpeed > 0.1 and Vector3.new(myFlatVel.X, 0, myFlatVel.Z).Unit or Vector3.zero
+    local myApproach     = myVelUnit:Dot(myDirToTackler)
+    local relSpeed       = tacklerSpeed + myFlatSpeed * math.max(myApproach, 0)
     local timeToCollision = distFlat / math.max(relSpeed, 1)
 
     if timeToCollision < 0.4 then
@@ -1162,18 +1172,15 @@ local _dribbleCache = {
 
 local function IsDribbleCacheDirty(specificTarget, tacklerData)
     if not specificTarget or not tacklerData then return true end
+    -- если таклер активно атакует — всегда пересчитываем (нельзя кэшировать момент удара)
+    if tacklerData.IsTackling then return true end
+    -- для idle-состояния кэш допустим: таклер не атакует, незачем считать каждый кадр
     local now = tick()
-    -- принудительный пересчёт каждые 16мс (1 кадр)
-    if now - _dribbleCache.lastCalcTime > _dribbleCache.RECALC_INTERVAL then return true end
-    -- пересчёт если таклер поменялся
+    if now - _dribbleCache.lastCalcTime > 0.05 then return true end -- 50мс для idle
     if _dribbleCache.lastTacklerPlayer ~= specificTarget then return true end
-    -- пересчёт если IsTackling изменился
-    if _dribbleCache.lastIsTackling ~= tacklerData.IsTackling then return true end
-    -- пересчёт если таклер переместился больше чем на 0.3 студа
     local root = tacklerData.RootPart
-    if root and (_dribbleCache.lastTacklerPos - root.Position).Magnitude > 0.3 then return true end
-    -- пересчёт если мы переместились больше чем на 0.3 студа
-    if (_dribbleCache.lastMyPos - HumanoidRootPart.Position).Magnitude > 0.3 then return true end
+    if root and (_dribbleCache.lastTacklerPos - root.Position).Magnitude > 0.5 then return true end
+    if (_dribbleCache.lastMyPos - HumanoidRootPart.Position).Magnitude > 0.5 then return true end
     return false
 end
 AutoDribble.Start = function()
