@@ -1,4 +1,4 @@
--- [v42.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
+-- [v43.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
 local Players = game:GetService("Players")
 print('2')
 local RunService = game:GetService("RunService")
@@ -120,6 +120,8 @@ local PICKUP_CIRCLE_SEGMENTS = 64
 local _pcAlpha        = 1.0     -- начинаем невидимым; lerp к BASE_ALPHA при показе
 local _pcRadius       = nil
 local _pcColor        = nil
+local _pcLastCenter   = nil     -- последняя известная позиция (для fade-out)
+local _pcLastFootY    = 0
 local PICKUP_CIRCLE_BASE_ALPHA = 0.18  -- Drawing.Transparency: 0=opaque, 1=invisible. 0.18=slight transparency
 local PICKUP_CIRCLE_ANIM_SPEED = 8.0   -- скорость lerp (выше = быстрее)
 
@@ -180,13 +182,22 @@ end
 -- Анимация: плавный fade-in/out + lerp радиуса + lerp цвета через deltaTime.
 local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
     local dt = dt or 0.016
+
+    -- Кешируем последнюю известную позицию (используется при fade-out / Indicate)
+    if centerXZ ~= nil then
+        _pcLastCenter = centerXZ
+        _pcLastFootY  = footY
+    end
+
     -- Определяем целевой цвет: если PickupCircleIndicate и пикап выкл — красный
     local targetColor = (PickupCircleIndicate and not AutoPickupEnabled)
         and PICKUP_CIRCLE_DISABLED_COLOR
         or  PickupCircleColor
 
-    -- Видим ли мы круг
-    local shouldShow = ShowPickupCircle and centerXZ ~= nil
+    -- Видим ли мы круг:
+    -- shouldShow=true если ShowPickupCircle и есть хоть какая-то позиция (текущая или кешированная)
+    local hasPos = centerXZ ~= nil or _pcLastCenter ~= nil
+    local shouldShow = ShowPickupCircle and hasPos
 
     -- Анимируем Drawing.Transparency: BASE_ALPHA (виден) ↔ 1.0 (невидим)
     local targetAlpha = shouldShow and PICKUP_CIRCLE_BASE_ALPHA or 1.0
@@ -203,7 +214,11 @@ local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
     if _pcColor == nil then _pcColor = targetColor end
     _pcColor = _lerpColor(_pcColor, targetColor, math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1))
 
-    local origin = Vector3.new(centerXZ.X, footY, centerXZ.Z)
+    -- Используем кешированную позицию при fade-out
+    local drawCenter = centerXZ or _pcLastCenter
+    if not drawCenter then HidePickupCircle(); return end
+    local drawFootY  = centerXZ ~= nil and footY or _pcLastFootY
+    local origin = Vector3.new(drawCenter.X, drawFootY, drawCenter.Z)
     local prev2D, prevOk = nil, false
     local first2D, firstOk = nil, false
     for i = 1, PICKUP_CIRCLE_SEGMENTS do
@@ -1438,14 +1453,17 @@ local function EnableHook()
         return hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local method = getnamecallmethod()
             if method == "FireServer" and self == Shooter then
-                -- Только перехватываем если скрипт включён, есть цель и в радиусе
+                -- Читаем аргументы ПЕРВЫМ делом до любых вычислений
+                local a1, a2, a3, a4, a5, a6, a7, a8, a9 = ...
+                -- Перехватываем только если AutoShoot включён, есть цель и в радиусе
                 local hookDist = GoalCFrame and (GetBallStartPos() - GoalCFrame.Position).Magnitude or 999
                 if ShootDir and AutoShootEnabled and hookDist <= AutoShootMaxDistance then
                     local power = (AutoShootSpoofPowerEnabled and GetSpoofPower()) or CurrentPower
-                    local a1, a2, a3, a4, a5, a6, a7, a8, a9 = ...
                     -- a5 (isMobile) принудительно false — иначе сервер считает траекторию по мобильной физике
                     return HookState._orig(self, ShootDir, a2, power, ShootVel, false, a6, CurrentSpin, a8, a9)
                 end
+                -- Вне радиуса / скрипт выкл — пропускаем без изменений
+                return HookState._orig(self, a1, a2, a3, a4, a5, a6, a7, a8, a9)
             end
             return HookState._orig(self, ...)
         end))
@@ -1653,12 +1671,10 @@ AutoPickup.Start = function()
     end)
     -- Рисуем круг радиуса пикапа — привязан к AutoPickup, не к AutoShoot
     AutoPickupStatus.RenderConnection = RunService.RenderStepped:Connect(function(dt)
-        local shouldDraw = ShowPickupCircle and HumanoidRootPart ~= nil
-        if shouldDraw or PickupCircleIndicate then
-            DrawPickupCircle(HumanoidRootPart and HumanoidRootPart.Position or nil, HumanoidRootPart and GetFeetY() or 0, AutoPickupDist, dt)
-        else
-            DrawPickupCircle(nil, 0, AutoPickupDist, dt)
-        end
+        -- Передаём реальную позицию если есть HRP, иначе nil (используется кеш в DrawPickupCircle)
+        local pos   = HumanoidRootPart and HumanoidRootPart.Position or nil
+        local feetY = HumanoidRootPart and GetFeetY() or _pcLastFootY
+        DrawPickupCircle(pos, feetY, AutoPickupDist, dt)
     end)
 end
 AutoPickup.Stop = function()
@@ -1668,8 +1684,9 @@ AutoPickup.Stop = function()
         AutoPickupStatus.RenderConnection = nil
         -- Запускаем fade-out: один финальный RenderStepped тикает пока круг не исчезнет
         local fadeConn; fadeConn = RunService.RenderStepped:Connect(function(dt)
-            DrawPickupCircle(nil, 0, AutoPickupDist, dt)
-            if _pcAlpha > 0.97 then fadeConn:Disconnect() end
+            -- При Indicate: круг становится красным (не исчезает), nil позиция → используем кеш
+            DrawPickupCircle(nil, _pcLastFootY, AutoPickupDist, dt)
+            if not PickupCircleIndicate and _pcAlpha > 0.97 then fadeConn:Disconnect() end
         end)
     end
     AutoPickupStatus.Running = false
