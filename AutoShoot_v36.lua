@@ -1,4 +1,4 @@
--- [v46.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
+-- [v47.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
 local Players = game:GetService("Players")
 print('2')
 local RunService = game:GetService("RunService")
@@ -1454,27 +1454,31 @@ local function EnableHook()
         return hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local method = getnamecallmethod()
             if method == "FireServer" and self == Shooter then
-                -- a1=dir(V3), a2=CFrame, a3=power, a4=vel(V3), a5=isMobile, a6=flag, a7=spin, a8, a9
                 local a1, a2, a3, a4, a5, a6, a7, a8, a9 = ...
+                if HookDebugMode then
+                    -- Логируем типы аргументов без подмены для диагностики
+                    local s = ""
+                    local args = {a1, a2, a3, a4, a5, a6, a7, a8, a9}
+                    for i, v in ipairs(args) do
+                        s = s .. i .. "=" .. type(v) .. " "
+                    end
+                    warn("[HookDebug]", s)
+                    return HookState._orig(self, ...)
+                end
                 local hookDist = GoalCFrame and (GetBallStartPos() - GoalCFrame.Position).Magnitude or 999
                 if ShootDir and AutoShootEnabled and hookDist <= AutoShootMaxDistance then
                     local power = (AutoShootSpoofPowerEnabled and GetSpoofPower()) or CurrentPower
-                    local ok2, err2 = pcall(function()
+                    -- Автодетект формата игры по типу первого аргумента:
+                    -- Если a1 = string (тип удара) → новый формат игры: (string, dir, cframe, power, vel, isMobile, flag, spin)
+                    -- Если a1 = Vector3 (dir) → старый формат: (dir, cframe, power, vel, isMobile, flag, spin)
+                    if type(a1) == "string" then
+                        return HookState._orig(self, a1, ShootDir, a3, power, ShootVel, false, a7, CurrentSpin, a9)
+                    else
                         return HookState._orig(self, ShootDir, a2, power, ShootVel, false, a6, CurrentSpin, a8, a9)
-                    end)
-                    if not ok2 then
-                        -- Если _orig не принял аргументы — fallback: пробуем с именем метода
-                        local ok3, err3 = pcall(function()
-                            return HookState._orig(self, "FireServer", ShootDir, a2, power, ShootVel, false, a6, CurrentSpin, a8, a9)
-                        end)
-                        if not ok3 then
-                            warn("[Hook] Both call conventions failed:", err2, "|", err3)
-                        end
                     end
-                    return
                 end
-                -- Пассфрут: точно те же аргументы что получили
-                return HookState._orig(self, a1, a2, a3, a4, a5, a6, a7, a8, a9)
+                -- Пассфрут — оригинальные аргументы без изменений
+                return HookState._orig(self, ...)
             end
             return HookState._orig(self, ...)
         end))
