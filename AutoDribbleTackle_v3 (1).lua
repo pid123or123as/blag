@@ -443,18 +443,39 @@ end
 
 local function UpdateServerPosBox()
     if not Gui or not Gui.ServerPosBoxLines then return end
-    if not AutoDribbleConfig.Enabled or not AutoDribbleConfig.ShowServerPos or not DebugConfig.Enabled then
+
+    if not AutoDribbleConfig.Enabled or not AutoDribbleConfig.ShowServerPos then
         HideBoxLines(Gui.ServerPosBoxLines)
         if Gui.ServerPosLabel then Gui.ServerPosLabel.Text = "ServerPos: -" end
         return
     end
-    local serverCF  = GetMyServerCFrame()
+
+    local serverCF = GetMyServerCFrame()
     local serverPos = serverCF.Position
-    UpdateBoxLines(Gui.ServerPosBoxLines, serverCF, -BOX_H/2 + 3, Color3.fromRGB(0, 200, 255))
+    UpdateBoxLines(Gui.ServerPosBoxLines, serverCF, -BOXH/2 + 3, Color3.fromRGB(0, 200, 255))
+
     if Gui.ServerPosLabel then
-        local delay = math.round(AutoTackleStatus.Ping * 1.5 * 1000)
-        local dist  = (serverPos - HumanoidRootPart.Position).Magnitude
-        Gui.ServerPosLabel.Text = string.format("ServerPos: %dms delay | %.1f studs", delay, dist)
+        local delay = math.round((AutoTackleStatus.Ping + 1.5) * 1000)
+        local dist = (serverPos - HumanoidRootPart.Position).Magnitude
+        Gui.ServerPosLabel.Text = string.format("ServerPos: %dms (delay: %.1f studs)", delay, dist)
+    end
+end
+
+local function UpdatePredictionBox()
+    if not Gui or not Gui.PredictionBoxLines then return end
+
+    if not AutoTackleConfig.Enabled or not AutoTackleConfig.ShowPredictionBox or not CurrentTargetOwner then
+        HideBoxLines(Gui.PredictionBoxLines)
+        return
+    end
+
+    local targetRoot = CurrentTargetOwner.Character and CurrentTargetOwner.Character:FindFirstChild("HumanoidRootPart")
+    if targetRoot then
+        local predPos = PredictTargetPosition(targetRoot, CurrentTargetOwner)
+        local cf = CFrame.new(predPos) * (targetRoot.CFrame - targetRoot.CFrame.Position)
+        UpdateBoxLines(Gui.PredictionBoxLines, cf, -BOXH/2 + 3, Color3.fromRGB(255, 0, 0))
+    else
+        HideBoxLines(Gui.PredictionBoxLines)
     end
 end
 
@@ -469,6 +490,7 @@ local function UpdateDebugVisibility()
     end
     if not AutoDribbleConfig.Enabled or not AutoDribbleConfig.ShowServerPos then
         if Gui.ServerPosBoxLines then HideBoxLines(Gui.ServerPosBoxLines) end
+        if Gui.PredictionBoxLines then HideBoxLines(Gui.PredictionBoxLines) end
     end
 end
 
@@ -491,6 +513,7 @@ local function CleanupDebugText()
         Gui.DribbleTacklingLabel.Text = "Nearest: None"
         Gui.AutoDribbleLabel.Text     = "AutoDribble: Idle"
         if Gui.ServerPosBoxLines then HideBoxLines(Gui.ServerPosBoxLines) end
+        if Gui.PredictionBoxLines then HideBoxLines(Gui.PredictionBoxLines) end
     end
 end
 
@@ -1177,13 +1200,25 @@ AutoDribble.Start = function()
     if AutoDribbleStatus.Running then return end
     AutoDribbleStatus.Running = true
 
-    AutoDribbleStatus.HeartbeatConnection = RunService.Heartbeat:Connect(function()
+        AutoDribbleStatus.HeartbeatConnection = RunService.Heartbeat:Connect(function()
         if not AutoDribbleConfig.Enabled then return end
-        pcall(function()
-            UpdatePing()
+
+        local function DoComputations()
             UpdateDribbleStates()
             PrecomputePlayers()
             UpdateTargetCircles()
+        end
+
+        if AutoDribbleConfig.FastCycle then
+            local success = pcall(function() task.desynchronize() end)
+            DoComputations()
+            if success then pcall(function() task.synchronize() end) end
+        else
+            DoComputations()
+        end
+
+        pcall(function()
+            UpdatePing()
             RecordMyPosition()
             IsTypingInChat = CheckIfTypingInChat()
             UpdateServerPosBox()
