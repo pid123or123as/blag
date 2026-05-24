@@ -915,7 +915,7 @@ local function GetTarget(dist, gkX, gkY, isAggressive, gkHrp, gkVel, gkIsNPC, gk
                 score = score + pgkDist2D * 1.55 + math.abs(localX) * 0.45
                 if isTopCorner then score = score + 0.7 end
                 if isCorner then score = score + 1.3 end
-                score = score - hFrac * math.clamp((dist - 110) / 55, 0, 1) * 3.0
+                score = score - hFrac * math.clamp((dist - 110) / 55, 0, 1) * 5.5
                 score = score - midNoSpinHighPenalty * 1.2
             else
                 score = score - midNoSpinHighPenalty
@@ -1047,10 +1047,9 @@ local function GetTarget(dist, gkX, gkY, isAggressive, gkHrp, gkVel, gkIsNPC, gk
                 shootLocalY = math.max(Y_BOT_INSET, localY - spinDrop)
             else
                 local midBand = math.clamp((dist - 95) / 40, 0, 1) * math.clamp((160 - dist) / 60, 0, 1)
-                local npcBand = gkIsNPC and 1 or 0
                 -- No-spin мяч физически летит выше spin-мяча (сервер применяет Magnus-lift).
-                -- Компенсируем: целимся ниже на ~35% больше чем раньше.
-                local noSpinDrop = (0.12 + 0.18 * hFrac) * midBand * (1.35 + 0.45 * npcBand)
+                -- Компенсируем: целимся ниже (одинаково для NPC и игрока).
+                local noSpinDrop = (0.12 + 0.18 * hFrac) * midBand * 1.35
                 local extraFlatDrop = (0.07 + 0.06 * math.clamp(1 - hFrac, 0, 1)) * midBand
                 shootLocalY = math.max(Y_BOT_INSET, localY - noSpinDrop - extraFlatDrop)
             end
