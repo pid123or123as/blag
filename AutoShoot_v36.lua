@@ -76,6 +76,7 @@ local VIS_FALL_EARLY_BIAS    = 0.92                 -- падение начин
 -- ============================================================
 -- STATUS
 -- ============================================================
+local Core = nil  -- ссылка на Core лоадера; устанавливается через Init
 local AutoShootStatus = {
     Running = false, Connection = nil, RenderConnection = nil,
     InputConnection = nil
@@ -113,7 +114,7 @@ local StartCircleAlpha    = 0.85
 -- AUTOPICKUP RADIUS CIRCLE (always visible, foot-level, animated)
 -- ============================================================
 local PickupCircle           = {}
-local PICKUP_CIRCLE_SEGMENTS = 64
+local PICKUP_CIRCLE_SEGMENTS = 28
 
 -- Состояние анимации круга
 -- Drawing.Transparency: 0 = полностью непрозрачный, 1 = полностью невидимый
@@ -1042,15 +1043,15 @@ local function GetTarget(dist, gkX, gkY, isAggressive, gkHrp, gkVel, gkIsNPC, gk
             -- Закрученные удары в игре приходят чуть ВЫШЕ ожидаемого, поэтому физически целимся немного ниже.
             if spinDir ~= "None" then
                 local hFrac = localY / math.max(GoalHeight, 1)
-                local spinDrop = 0.20 + 0.35 * hFrac
+                local spinDrop = 0.10 + 0.18 * hFrac
                 shootLocalY = math.max(Y_BOT_INSET, localY - spinDrop)
             else
                 local midBand = math.clamp((dist - 95) / 40, 0, 1) * math.clamp((160 - dist) / 60, 0, 1)
                 local npcBand = gkIsNPC and 1 or 0
                 -- No-spin мяч физически летит выше spin-мяча (сервер применяет Magnus-lift).
                 -- Компенсируем: целимся ниже на ~35% больше чем раньше.
-                local noSpinDrop = (0.21 + 0.30 * hFrac) * midBand * (1.35 + 0.45 * npcBand)
-                local extraFlatDrop = (0.13 + 0.11 * math.clamp(1 - hFrac, 0, 1)) * midBand
+                local noSpinDrop = (0.12 + 0.18 * hFrac) * midBand * (1.35 + 0.45 * npcBand)
+                local extraFlatDrop = (0.07 + 0.06 * math.clamp(1 - hFrac, 0, 1)) * midBand
                 shootLocalY = math.max(Y_BOT_INSET, localY - noSpinDrop - extraFlatDrop)
             end
 
@@ -1547,10 +1548,22 @@ AutoShoot.Start = function()
                 Gui.Status.Text  = AutoShootManualShot and ("Ready [" .. GetKeyName(AutoShootShootKey) .. "]") or "Aiming..."
                 Gui.Status.Color = Color3.fromRGB(0,255,0)
             end
+            -- [Core] AutoShoot готов: true
+            if Core and Core.RealisticSoccer then
+                Core.RealisticSoccer.AutoShootReady = true
+            end
         elseif hasBall then
             if Gui then Gui.Status.Text = dist > AutoShootMaxDistance and "Too Far" or "No Target"; Gui.Status.Color = Color3.fromRGB(255,100,0) end
+            -- [Core] не готов
+            if Core and Core.RealisticSoccer then
+                Core.RealisticSoccer.AutoShootReady = false
+            end
         else
             if Gui then Gui.Status.Text = "No Ball"; Gui.Status.Color = Color3.fromRGB(255,165,0) end
+            -- [Core] не готов
+            if Core and Core.RealisticSoccer then
+                Core.RealisticSoccer.AutoShootReady = false
+            end
         end
 
         if AutoShootMode == "Packet" and hasBall and TargetPoint and dist <= AutoShootMaxDistance and not AutoShootManualShot and tick() - LastShoot >= 0.3 then
@@ -1631,6 +1644,10 @@ AutoShoot.Stop = function()
     if AutoShootStatus.RenderConnection then AutoShootStatus.RenderConnection:Disconnect(); AutoShootStatus.RenderConnection = nil end
     if AutoShootStatus.InputConnection  then AutoShootStatus.InputConnection:Disconnect();  AutoShootStatus.InputConnection  = nil end
     AutoShootStatus.Running = false
+    -- [Core] сброс при остановке
+    if Core and Core.RealisticSoccer then
+        Core.RealisticSoccer.AutoShootReady = false
+    end
     if Gui then for _, v in pairs(Gui) do if v.Remove then v:Remove() end end; Gui = nil end
     for i = 1, 12 do
         if TargetCube[i] and TargetCube[i].Remove then TargetCube[i]:Remove() end
@@ -1987,6 +2004,7 @@ local AutoShootModule = {}
 function AutoShootModule.Init(UI, coreParam, notifyFunc)
     local notify = notifyFunc or function(t,m) print("["..t.."]: "..m) end
     Notify = notify
+    Core = coreParam  -- сохраняем Core для AutoShootReady
     SetupUI(UI)
 
     if AutoPickupEnabled then AutoPickup.Start() end
