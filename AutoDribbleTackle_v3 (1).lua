@@ -1,22 +1,12 @@
--- [v3.6] AUTO DRIBBLE + AUTO TACKLE
--- Changelog v3.6:
--- - AutoDribble: дек ТОЛЬКО при IsTackling == true, весь fallback убран
--- - AutoDribble: кэш результата ShouldDribbleNow (dirty-flag), пересчёт
---   только при смене таклера/позиции/IsTackling — 0 лишних вычислений
--- - PrecomputePlayers: RecordTargetPosition только в зоне DribbleActivation*1.5
--- - Убраны task.desynchronize/synchronize (несовместимы без Actor)
--- Changelog v3.5 (предыдущий):
---   - Manual Button полностью удалён (кнопка, настройки, Toggle, Slider)
---   - AutoTackle.ManualButton, ButtonScale, SetupManualTackleButton,
---     ToggleManualTackleButton, SetTackleButtonScale — удалены полностью
---   - Мобильное нажатие: ManualTackleKeybind теперь работает через MacLib Keybind
---     (onBinded callback), а InputBegan оставлен только как ПК fallback
---   - AutoDribble: улучшена точность — добавлена прогнозная позиция таклера
---     через GetPositionBasedVelocity (история позиций) для более ранней реакции
---   - AutoDribble: добавлена проверка IsTackling перед ShouldDribbleNow —
---     если анимация такла ещё не началась, но враг летит вплотную — всё равно дек
---   - PrecomputePlayers: velocity берётся из PositionHistory если ALV слишком мала
---   - UpdateDebugVisibility: убраны ссылки на ButtonGui/ManualButton
+-- [v3.7] AUTO DRIBBLE + AUTO TACKLE
+-- Changelog v3.7:
+-- - AutoTackle: новый RotationMethod "Legit" — снап + удержание ротации на всё время такла
+-- - ShowServerPos: работает без DebugConfig.Enabled
+-- - AutoTackle: новый ShowPredictionBox — показывает prediction box без дебага
+-- - BOX_W/BOX_D расширены до 3.6 (R15 с учётом ног), offsetY скорректирован
+-- - AutoDribble: режимы Strict / Free (Mode = "Strict" | "Free")
+-- - AutoDribble: toggle FastCycle (task.desynchronize) с pcall-защитой
+-- - Changelog v3.6 см. выше
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -64,13 +54,14 @@ local AutoTackleConfig = {
     TackleDistance = 0,
     TackleSpeed = 60,
     OnlyPlayer = true,
-    RotationMethod = "Snap",
+    RotationMethod = "Snap",  -- "Snap" | "Legit" | "Always" | "None"
     DribbleDelayTime = 0,
     EagleEyeMinDelay = 0.2,
     EagleEyeMaxDelay = 0.6,
     ManualTackleEnabled = true,
     ManualTackleKeybind = Enum.KeyCode.Q,
     ManualTackleCooldown = 0.5,
+    ShowPredictionBox = false,  -- NEW v3.7: показывать prediction box без дебага
 }
 
 local AutoDribbleConfig = {
@@ -79,6 +70,8 @@ local AutoDribbleConfig = {
     DribbleActivationDistance = 17,
     MinAngleForDribble = 32,
     ShowServerPos = false,
+    DribbleMode = "Free",   -- NEW v3.7: "Strict" | "Free"
+    FastCycle = false,      -- NEW v3.7: task.desynchronize (pcall-защита)
 }
 
 local DebugConfig = {
@@ -274,9 +267,11 @@ local function GetMyServerCFrame()
 end
 
 -- ============================================================
--- === 3D BOX СЕРВЕРНОЙ ПОЗИЦИИ
+-- === 3D BOX
+-- v3.7: BOX_W/BOX_D расширены до 3.6 — учитываем ширину R15 с ногами
+-- offsetY для ServerPosBox: -BOX_H/2 + 0 (ноги на уровне пола)
 -- ============================================================
-local BOX_W, BOX_H, BOX_D = 2.2, 5.5, 2.2
+local BOX_W, BOX_H, BOX_D = 3.6, 5.5, 3.6   -- v3.7: шире (R15 с ногами)
 local BOX_EDGES = {
     {1,2},{2,3},{3,4},{4,1},
     {5,6},{6,7},{7,8},{8,5},
@@ -361,11 +356,13 @@ local function SetupGUI()
         ServerPosLabel       = Drawing.new("Text"),
         TargetRingLines      = {},
         ServerPosBoxLines    = nil,
+        PredictionBoxLines   = nil,   -- v3.7: prediction box для AutoTackle
         TackleDebugLabels    = {},
         DribbleDebugLabels   = {}
     }
 
-    Gui.ServerPosBoxLines = CreateBoxLines(Color3.fromRGB(0, 200, 255), 1.5)
+    Gui.ServerPosBoxLines  = CreateBoxLines(Color3.fromRGB(0, 200, 255), 1.5)
+    Gui.PredictionBoxLines = CreateBoxLines(Color3.fromRGB(255, 165, 0), 1.5)  -- v3.7: оранжевый
 
     local screenSize     = Camera.ViewportSize
     local centerX        = screenSize.X / 2
@@ -388,6 +385,7 @@ local function SetupGUI()
 
     Gui.TackleWaitLabel.Color  = Color3.fromRGB(255, 165, 0)
     Gui.ServerPosLabel.Color   = Color3.fromRGB(0, 200, 255)
+
     Gui.TackleWaitLabel.Position      = Vector2.new(centerX, offsetTackleY); offsetTackleY += 15
     Gui.TackleTargetLabel.Position    = Vector2.new(centerX, offsetTackleY); offsetTackleY += 15
     Gui.TackleDribblingLabel.Position = Vector2.new(centerX, offsetTackleY); offsetTackleY += 15
@@ -441,42 +439,46 @@ local function SetupGUI()
     end
 end
 
+-- ============================================================
+-- v3.7: UpdateServerPosBox — работает без DebugConfig.Enabled
+-- ============================================================
 local function UpdateServerPosBox()
     if not Gui or not Gui.ServerPosBoxLines then return end
-
+    -- v3.7: убрана зависимость от DebugConfig.Enabled
     if not AutoDribbleConfig.Enabled or not AutoDribbleConfig.ShowServerPos then
         HideBoxLines(Gui.ServerPosBoxLines)
         if Gui.ServerPosLabel then Gui.ServerPosLabel.Text = "ServerPos: -" end
         return
     end
-
-    local serverCF = GetMyServerCFrame()
+    local serverCF  = GetMyServerCFrame()
     local serverPos = serverCF.Position
-    UpdateBoxLines(Gui.ServerPosBoxLines, serverCF, -BOXH/2 + 3, Color3.fromRGB(0, 200, 255))
-
-    if Gui.ServerPosLabel then
-        local delay = math.round((AutoTackleStatus.Ping + 1.5) * 1000)
-        local dist = (serverPos - HumanoidRootPart.Position).Magnitude
-        Gui.ServerPosLabel.Text = string.format("ServerPos: %dms (delay: %.1f studs)", delay, dist)
+    -- v3.7: offsetY = 0 — центр HRP, box охватывает от ног до головы по BOX_H
+    UpdateBoxLines(Gui.ServerPosBoxLines, serverCF, 0, Color3.fromRGB(0, 200, 255))
+    if Gui.ServerPosLabel and DebugConfig.Enabled then
+        local delay = math.round(AutoTackleStatus.Ping * 1.5 * 1000)
+        local dist  = (serverPos - HumanoidRootPart.Position).Magnitude
+        Gui.ServerPosLabel.Text = string.format("ServerPos: %dms delay | %.1f studs", delay, dist)
     end
 end
 
-local function UpdatePredictionBox()
+-- ============================================================
+-- v3.7: UpdatePredictionBox — prediction box для AutoTackle без дебага
+-- ============================================================
+local function UpdatePredictionBox(ownerRoot, player)
     if not Gui or not Gui.PredictionBoxLines then return end
-
-    if not AutoTackleConfig.Enabled or not AutoTackleConfig.ShowPredictionBox or not CurrentTargetOwner then
+    -- v3.7: независим от DebugConfig
+    if not AutoTackleConfig.Enabled or not AutoTackleConfig.ShowPredictionBox then
         HideBoxLines(Gui.PredictionBoxLines)
         return
     end
-
-    local targetRoot = CurrentTargetOwner.Character and CurrentTargetOwner.Character:FindFirstChild("HumanoidRootPart")
-    if targetRoot then
-        local predPos = PredictTargetPosition(targetRoot, CurrentTargetOwner)
-        local cf = CFrame.new(predPos) * (targetRoot.CFrame - targetRoot.CFrame.Position)
-        UpdateBoxLines(Gui.PredictionBoxLines, cf, -BOXH/2 + 3, Color3.fromRGB(255, 0, 0))
-    else
+    if not ownerRoot or not player then
         HideBoxLines(Gui.PredictionBoxLines)
+        return
     end
+    local predictedPos = PredictTargetPosition(ownerRoot, player)
+    local predictedCF  = CFrame.new(predictedPos)
+    -- v3.7: offsetY = 0 по центру HRP
+    UpdateBoxLines(Gui.PredictionBoxLines, predictedCF, 0, Color3.fromRGB(255, 165, 0))
 end
 
 local function UpdateDebugVisibility()
@@ -487,9 +489,12 @@ local function UpdateDebugVisibility()
     for _, label in ipairs(Gui.DribbleDebugLabels) do label.Visible = dribbleVisible end
     if not AutoTackleConfig.Enabled then
         for _, line in ipairs(Gui.TargetRingLines) do line.Visible = false end
+        if Gui.PredictionBoxLines then HideBoxLines(Gui.PredictionBoxLines) end
     end
     if not AutoDribbleConfig.Enabled or not AutoDribbleConfig.ShowServerPos then
         if Gui.ServerPosBoxLines then HideBoxLines(Gui.ServerPosBoxLines) end
+    end
+    if not AutoTackleConfig.Enabled or not AutoTackleConfig.ShowPredictionBox then
         if Gui.PredictionBoxLines then HideBoxLines(Gui.PredictionBoxLines) end
     end
 end
@@ -513,7 +518,6 @@ local function CleanupDebugText()
         Gui.DribbleTacklingLabel.Text = "Nearest: None"
         Gui.AutoDribbleLabel.Text     = "AutoDribble: Idle"
         if Gui.ServerPosBoxLines then HideBoxLines(Gui.ServerPosBoxLines) end
-        if Gui.PredictionBoxLines then HideBoxLines(Gui.PredictionBoxLines) end
     end
 end
 
@@ -711,7 +715,6 @@ local function UpdateDribbleStates()
 end
 
 -- === PRECOMPUTE PLAYERS ===
--- v3.5: velocity берётся как max(ALV, positionHistory) для ранней детекции разгона
 local function PrecomputePlayers()
     PrecomputedPlayers = {}
     HasBall = false; CanDribbleNow = false
@@ -719,8 +722,6 @@ local function PrecomputePlayers()
     if ball and ball:FindFirstChild("playerWeld") and ball:FindFirstChild("creator") then
         HasBall = ball.creator.Value == LocalPlayer
     end
-    -- v3.6: если мяч у нас — нет смысла считать дальше для AutoTackle
-    -- (AutoDribble всё равно нуждается в PrecomputedPlayers, поэтому идём дальше)
     local bools = Workspace:FindFirstChild(LocalPlayer.Name) and Workspace[LocalPlayer.Name]:FindFirstChild("Bools")
     if bools then
         CanDribbleNow = not bools.dribbleDebounce.Value
@@ -741,12 +742,9 @@ local function PrecomputePlayers()
         TackleStates[player].IsTackling = IsSpecificTackle(player)
         local distance = (targetRoot.Position - HumanoidRootPart.Position).Magnitude
         if distance > AutoDribbleConfig.MaxDribbleDistance then continue end
-
-        -- v3.5: берём лучшую velocity из двух источников
         local alv = targetRoot.AssemblyLinearVelocity
         local posVel = GetPositionBasedVelocity(player)
         local velocity = alv.Magnitude >= posVel.Magnitude and alv or posVel
-
         PrecomputedPlayers[player] = {
             Distance   = distance,
             IsValid    = true,
@@ -754,14 +752,18 @@ local function PrecomputePlayers()
             RootPart   = targetRoot,
             Velocity   = velocity
         }
-        -- v3.6: историю позиций пишем только для игроков в зоне активации
-    if distance <= AutoDribbleConfig.DribbleActivationDistance * 1.5 then
-        RecordTargetPosition(targetRoot, player)
-    end
+        if distance <= AutoDribbleConfig.DribbleActivationDistance * 1.5 then
+            RecordTargetPosition(targetRoot, player)
+        end
     end
 end
 
--- === РОТАЦИЯ ===
+-- ============================================================
+-- === РОТАЦИЯ v3.7
+-- "Legit": снап 1 раз (как Snap), затем Heartbeat удерживает
+--          ротацию на всё время tackleDuration — изменения
+--          направления игрока не видны серверу/другим
+-- ============================================================
 local function RotateToTarget(targetPos)
     if AutoTackleConfig.RotationMethod == "None" then return end
     local myPos = HumanoidRootPart.Position
@@ -809,6 +811,12 @@ local function PerformTackle(ball, owner)
         predictedPos = ball.Position
     end
     RotateToTarget(predictedPos)
+
+    -- v3.7: обновляем prediction box при такле
+    if ownerRoot and owner then
+        UpdatePredictionBox(ownerRoot, owner)
+    end
+
     if ownerRoot then
         local ftiDist = (HumanoidRootPart.Position - ownerRoot.Position).Magnitude
         if ftiDist <= 10 then
@@ -824,7 +832,10 @@ local function PerformTackle(ball, owner)
     local tackleStartTime = tick()
     local tackleDuration  = 0.65
     local rotateConnection
-    if AutoTackleConfig.RotationMethod == "Always" and ownerRoot and owner then
+
+    local method = AutoTackleConfig.RotationMethod
+    if method == "Always" and ownerRoot and owner then
+        -- Always: обновляет ротацию каждый кадр
         rotateConnection = RunService.Heartbeat:Connect(function()
             if tick() - tackleStartTime < tackleDuration then
                 RotateToTarget(PredictTargetPosition(ownerRoot, owner))
@@ -832,7 +843,21 @@ local function PerformTackle(ball, owner)
                 rotateConnection:Disconnect()
             end
         end)
+    elseif method == "Legit" and ownerRoot and owner then
+        -- v3.7: Legit — фиксируем направление 1 раз и удерживаем его всё время такла
+        -- Берём направление в момент удара и блокируем изменения
+        local lockedCFrame = HumanoidRootPart.CFrame
+        rotateConnection = RunService.Heartbeat:Connect(function()
+            if tick() - tackleStartTime < tackleDuration then
+                -- Удерживаем зафиксированный CFrame (только позицию обновляем)
+                local currentPos = HumanoidRootPart.Position
+                HumanoidRootPart.CFrame = CFrame.new(currentPos) * (lockedCFrame - lockedCFrame.Position)
+            else
+                rotateConnection:Disconnect()
+            end
+        end)
     end
+
     Debris:AddItem(bodyVelocity, tackleDuration)
     task.delay(tackleDuration, function()
         if rotateConnection then rotateConnection:Disconnect() end
@@ -888,8 +913,6 @@ AutoTackle.Start = function()
         IsTypingInChat = CheckIfTypingInChat()
     end)
 
-    -- ПК fallback: InputBegan ловит клавиатуру
-    -- Мобиль: MacLib Keybind вызывает ManualTackleAction через onBinded/Callback
     AutoTackleStatus.InputConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
         if gameProcessed or not AutoTackleConfig.Enabled or not AutoTackleConfig.ManualTackleEnabled then return end
         if IsTypingInChat then return end
@@ -912,6 +935,8 @@ AutoTackle.Start = function()
                         Gui.ManualTackleLabel.Color = Color3.fromRGB(255, 0, 0)
                     end
                 end
+                -- v3.7: скрываем prediction box если нет цели
+                if Gui and Gui.PredictionBoxLines then HideBoxLines(Gui.PredictionBoxLines) end
                 CurrentTargetOwner = nil
                 return
             end
@@ -924,6 +949,8 @@ AutoTackle.Start = function()
             if owner then
                 local ownerRootLive = owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
                 UpdatePredictionLabel(ownerRootLive, owner)
+                -- v3.7: обновляем prediction box каждый кадр
+                UpdatePredictionBox(ownerRootLive, owner)
             end
             if distance <= AutoTackleConfig.TackleDistance then
                 PerformTackle(ball, owner)
@@ -1030,7 +1057,7 @@ AutoTackle.Stop = function()
 end
 
 -- ==========================================================
--- === AUTODRIBBLE MODULE — v3.5
+-- === AUTODRIBBLE MODULE — v3.7
 -- ==========================================================
 local _cachedAngleDeg   = -1
 local _cachedCosThresh  = 0
@@ -1043,19 +1070,9 @@ local function GetCosThreshold()
 end
 
 -- ============================================================
--- ShouldDribbleNow v3.5 — улучшения точности:
---
--- [НОВОЕ] Прогнозная позиция таклера через GetPositionBasedVelocity:
---   На расстоянии 4-DribbleActivationDistance теперь смотрим куда
---   таклер ПРИДЁТ через ping*1.5 мс, а не где он сейчас.
---   Это значительно снижает пропуски при высоком пинге.
---
--- [НОВОЕ] Fallback без IsTackling на дистанции < DribbleActivationDistance:
---   Если враг вплотную и летит в нашу сторону (dot > 0.6), но анимация
---   такла ещё не началась — всё равно дек. Раньше в этом случае скрипт
---   ждал IsTackling и пропускал момент.
---
--- [СОХРАНЕНО] Все оригинальные стадии 0/1/2 из v3.4.
+-- ShouldDribbleNow v3.7
+-- Режим Strict: жёсткая проверка угла; пропускает угол если враг < 8 studs
+-- Режим Free: оригинальное поведение с погрешностями
 -- ============================================================
 local function ShouldDribbleNow(specificTarget, tacklerData)
     if not specificTarget or not tacklerData then return false end
@@ -1066,7 +1083,6 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
     local serverCF     = GetMyServerCFrame()
     local myServerPos  = Vector3.new(serverCF.Position.X, 0, serverCF.Position.Z)
 
-    -- v3.5: используем прогнозную позицию таклера (ping-компенсация)
     local histVel      = GetPositionBasedVelocity(specificTarget)
     local flatHistVel  = Vector3.new(histVel.X, 0, histVel.Z)
     local predictedTacklerPos = Vector3.new(
@@ -1075,8 +1091,8 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
         tacklerRoot.Position.Z + flatHistVel.Z * AutoTackleStatus.Ping * 1.5
     )
 
-    local toMe         = myServerPos - predictedTacklerPos
-    local distFlat     = toMe.Magnitude
+    local toMe     = myServerPos - predictedTacklerPos
+    local distFlat = toMe.Magnitude
 
     if distFlat > AutoDribbleConfig.MaxDribbleDistance then
         if Gui and AutoDribbleConfig.Enabled then
@@ -1085,7 +1101,7 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
         return false
     end
 
-    -- [СТАДИЯ 0] Вплотную
+    -- [СТАДИЯ 0] Вплотную — в обоих режимах
     if distFlat < 4 then
         if Gui and AutoDribbleConfig.Enabled then
             Gui.AngleLabel.Text = string.format("⚡ POINT BLANK d=%.1f", distFlat)
@@ -1093,7 +1109,7 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
         return true
     end
 
-    -- [СТАДИЯ 1] Зона активации — ТОЛЬКО если враг активно таклует (v3.6)
+    -- [СТАДИЯ 1] Зона активации
     if distFlat <= AutoDribbleConfig.DribbleActivationDistance then
         if not tacklerData.IsTackling then
             if Gui and AutoDribbleConfig.Enabled then
@@ -1101,6 +1117,25 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
             end
             return false
         end
+
+        -- v3.7 Strict: если < 8 studs — угол не проверяем (враг вплотную, неважно)
+        if AutoDribbleConfig.DribbleMode == "Strict" and distFlat >= 8 then
+            local tacklerVelS = tacklerData.Velocity
+            local flatVelS    = Vector3.new(tacklerVelS.X, 0, tacklerVelS.Z)
+            local tacklerSpeedS = flatVelS.Magnitude
+            if tacklerSpeedS >= 1.5 then
+                local tacklerDirS = flatVelS.Unit
+                local dirToMeS    = toMe.Magnitude > 0 and toMe.Unit or Vector3.zero
+                local dotS        = tacklerDirS:Dot(dirToMeS)
+                local cosThreshS  = GetCosThreshold()
+                if Gui and AutoDribbleConfig.Enabled then
+                    local angleDegS = math.deg(math.acos(math.clamp(dotS, -1, 1)))
+                    Gui.AngleLabel.Text = string.format("[S] A=%.0f° d=%.1f", angleDegS, distFlat)
+                end
+                if dotS < cosThreshS then return false end
+            end
+        end
+
         if Gui and AutoDribbleConfig.Enabled then
             Gui.AngleLabel.Text = string.format("⚡ TACKLE CLOSE d=%.1f", distFlat)
         end
@@ -1119,19 +1154,37 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
         return false
     end
 
-    local tacklerDir  = flatVel.Unit
-    local dirToMe     = toMe.Unit
-    local dot         = tacklerDir:Dot(dirToMe)
-    local cosThresh   = GetCosThreshold()
+    local tacklerDir = flatVel.Unit
+    local dirToMe    = toMe.Unit
+    local dot        = tacklerDir:Dot(dirToMe)
+    local cosThresh  = GetCosThreshold()
 
     if Gui and AutoDribbleConfig.Enabled then
         local angleDeg = math.deg(math.acos(math.clamp(dot, -1, 1)))
         Gui.AngleLabel.Text = string.format("A=%.0f° v=%.1f d=%.1f", angleDeg, tacklerSpeed, distFlat)
     end
 
-    if dot < cosThresh then
-        return false
+    -- v3.7 Strict: строгая проверка угла — без погрешностей
+    if AutoDribbleConfig.DribbleMode == "Strict" then
+        if dot < cosThresh then
+            return false
+        end
+        -- Strict: проверяем время до столкновения строже (0.3 вместо 0.4)
+        local myFlatVelS   = GetMyVelocityFromHistory()
+        local myFlatSpeedS = Vector3.new(myFlatVelS.X, 0, myFlatVelS.Z).Magnitude
+        local myDirToTacklerS = -dirToMe
+        local myVelUnitS  = myFlatSpeedS > 0.1 and Vector3.new(myFlatVelS.X, 0, myFlatVelS.Z).Unit or Vector3.zero
+        local myApproachS = myVelUnitS:Dot(myDirToTacklerS)
+        local relSpeedS   = tacklerSpeed + myFlatSpeedS * math.max(myApproachS, 0)
+        local ttcS        = distFlat / math.max(relSpeedS, 1)
+        if Gui and AutoDribbleConfig.Enabled then
+            Gui.AngleLabel.Text = Gui.AngleLabel.Text .. string.format(" [S] t=%.2f", ttcS)
+        end
+        return ttcS < 0.3
     end
+
+    -- Free (оригинальный алгоритм)
+    if dot < cosThresh then return false end
 
     local myFlatVel   = GetMyVelocityFromHistory()
     local myFlatSpeed = Vector3.new(myFlatVel.X, 0, myFlatVel.Z).Magnitude
@@ -1139,7 +1192,6 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
     local myVelUnit  = myFlatSpeed > 0.1 and Vector3.new(myFlatVel.X, 0, myFlatVel.Z).Unit or Vector3.zero
     local myApproach = myVelUnit:Dot(myDirToTackler)
     local relSpeed   = tacklerSpeed + myFlatSpeed * math.max(myApproach, 0)
-
     local timeToCollision = distFlat / math.max(relSpeed, 1)
 
     if timeToCollision < 0.4 then
@@ -1168,7 +1220,6 @@ end
 
 local AutoDribble = {}
 
--- v3.6: кэш результата ShouldDribbleNow — пересчёт только при изменении входных данных
 local _dribbleCache = {
     result = false,
     lastTacklerPlayer = nil,
@@ -1176,49 +1227,78 @@ local _dribbleCache = {
     lastMyPos = Vector3.zero,
     lastIsTackling = false,
     lastCalcTime = 0,
-    RECALC_INTERVAL = 0.016, -- ~1 кадр при 60fps, пересчёт только если нужно
+    RECALC_INTERVAL = 0.016,
 }
 
 local function IsDribbleCacheDirty(specificTarget, tacklerData)
     if not specificTarget or not tacklerData then return true end
     local now = tick()
-    -- принудительный пересчёт каждые 16мс (1 кадр)
     if now - _dribbleCache.lastCalcTime > _dribbleCache.RECALC_INTERVAL then return true end
-    -- пересчёт если таклер поменялся
     if _dribbleCache.lastTacklerPlayer ~= specificTarget then return true end
-    -- пересчёт если IsTackling изменился
     if _dribbleCache.lastIsTackling ~= tacklerData.IsTackling then return true end
-    -- пересчёт если таклер переместился больше чем на 0.3 студа
     local root = tacklerData.RootPart
     if root and (_dribbleCache.lastTacklerPos - root.Position).Magnitude > 0.3 then return true end
-    -- пересчёт если мы переместились больше чем на 0.3 студа
     if (_dribbleCache.lastMyPos - HumanoidRootPart.Position).Magnitude > 0.3 then return true end
     return false
+end
+
+-- ============================================================
+-- v3.7: FastCycle — запускает дополнительный цикл через
+-- task.desynchronize для параллельной VM Roblox.
+-- Защита: pcall + флаг _fastCycleSupported
+-- Если эксплоит не поддерживает desync — молча фоллбэчимся
+-- ============================================================
+local _fastCycleSupported = true
+local _fastCycleConnection = nil
+
+local function TryStartFastCycle(callback)
+    if not AutoDribbleConfig.FastCycle then return end
+    if not _fastCycleSupported then return end
+    if _fastCycleConnection then return end
+
+    local ok = pcall(function()
+        _fastCycleConnection = RunService.Heartbeat:Connect(function()
+            local success, err = pcall(function()
+                task.desynchronize()
+                callback()
+                task.synchronize()
+            end)
+            if not success then
+                -- Если ошибка связана с Actor — отключаем FastCycle навсегда
+                if err and (err:find("Actor") or err:find("desync") or err:find("synchronized")) then
+                    _fastCycleSupported = false
+                    if _fastCycleConnection then
+                        _fastCycleConnection:Disconnect()
+                        _fastCycleConnection = nil
+                    end
+                end
+            end
+        end)
+    end)
+
+    if not ok then
+        _fastCycleSupported = false
+    end
+end
+
+local function StopFastCycle()
+    if _fastCycleConnection then
+        _fastCycleConnection:Disconnect()
+        _fastCycleConnection = nil
+    end
 end
 
 AutoDribble.Start = function()
     if AutoDribbleStatus.Running then return end
     AutoDribbleStatus.Running = true
 
-        AutoDribbleStatus.HeartbeatConnection = RunService.Heartbeat:Connect(function()
+    AutoDribbleStatus.HeartbeatConnection = RunService.Heartbeat:Connect(function()
         if not AutoDribbleConfig.Enabled then return end
-
-        local function DoComputations()
+        pcall(function()
+            UpdatePing()
             UpdateDribbleStates()
             PrecomputePlayers()
             UpdateTargetCircles()
-        end
-
-        if AutoDribbleConfig.FastCycle then
-            local success = pcall(function() task.desynchronize() end)
-            DoComputations()
-            if success then pcall(function() task.synchronize() end) end
-        else
-            DoComputations()
-        end
-
-        pcall(function()
-            UpdatePing()
             RecordMyPosition()
             IsTypingInChat = CheckIfTypingInChat()
             UpdateServerPosBox()
@@ -1227,7 +1307,8 @@ AutoDribble.Start = function()
 
     if not Gui then SetupGUI() end
 
-    AutoDribbleStatus.Connection = RunService.Heartbeat:Connect(function()
+    -- Основной цикл AutoDribble
+    local function DribbleLoop()
         if not AutoDribbleConfig.Enabled then CleanupDebugText(); UpdateDebugVisibility(); return end
 
         if not HasBall or not CanDribbleNow then
@@ -1247,8 +1328,6 @@ AutoDribble.Start = function()
             end
         end
 
-        -- v3.6: fallback без IsTackling удалён — дек только при активном такле
-
         if Gui then
             Gui.DribbleTargetLabel.Text  = "Targets: " .. targetCount
             Gui.DribbleTacklingLabel.Text = specificTarget
@@ -1261,11 +1340,9 @@ AutoDribble.Start = function()
             return
         end
 
-        -- v3.6: кэшируем результат ShouldDribbleNow, пересчитываем только при dirty
         local dribbleShouldFire
         if IsDribbleCacheDirty(specificTarget, nearestTacklerData) then
             dribbleShouldFire = ShouldDribbleNow(specificTarget, nearestTacklerData)
-            -- обновляем кэш
             _dribbleCache.result = dribbleShouldFire
             _dribbleCache.lastCalcTime = tick()
             _dribbleCache.lastTacklerPlayer = specificTarget
@@ -1277,12 +1354,22 @@ AutoDribble.Start = function()
         else
             dribbleShouldFire = _dribbleCache.result
         end
+
         if dribbleShouldFire then
             PerformDribble()
         else
             if Gui then Gui.AutoDribbleLabel.Text = "AutoDribble: Waiting" end
         end
+    end
+
+    AutoDribbleStatus.Connection = RunService.Heartbeat:Connect(function()
+        pcall(DribbleLoop)
     end)
+
+    -- v3.7: FastCycle — параллельный цикл если поддерживается
+    if AutoDribbleConfig.FastCycle then
+        TryStartFastCycle(DribbleLoop)
+    end
 
     UpdateDebugVisibility()
     if notify then notify("AutoDribble", "Started", true) end
@@ -1291,8 +1378,10 @@ end
 AutoDribble.Stop = function()
     if AutoDribbleStatus.Connection then AutoDribbleStatus.Connection:Disconnect(); AutoDribbleStatus.Connection = nil end
     if AutoDribbleStatus.HeartbeatConnection then AutoDribbleStatus.HeartbeatConnection:Disconnect(); AutoDribbleStatus.HeartbeatConnection = nil end
+    StopFastCycle()
     AutoDribbleStatus.Running = false
     if Gui and Gui.ServerPosBoxLines then HideBoxLines(Gui.ServerPosBoxLines) end
+    if Gui and Gui.PredictionBoxLines then HideBoxLines(Gui.PredictionBoxLines) end
     CleanupDebugText(); UpdateDebugVisibility()
     if notify then notify("AutoDribble", "Stopped", true) end
 end
@@ -1342,11 +1431,23 @@ local function SetupUI(UI)
             Name = "Only Player", Default = AutoTackleConfig.OnlyPlayer,
             Callback = function(v) AutoTackleConfig.OnlyPlayer = v end
         }, "AutoTackleOnlyPlayer")
+        -- v3.7: добавлена опция "Legit" в Rotation Method
         uiElements.AutoTackleRotationMethod = UI.Sections.AutoTackle:Dropdown({
             Name = "Rotation Method", Default = AutoTackleConfig.RotationMethod,
-            Options = {"Snap", "Always", "None"},
+            Options = {"Snap", "Legit", "Always", "None"},
             Callback = function(v) AutoTackleConfig.RotationMethod = v end
         }, "AutoTackleRotationMethod")
+        -- v3.7: Show Prediction Box (без дебага)
+        uiElements.AutoTackleShowPredictionBox = UI.Sections.AutoTackle:Toggle({
+            Name = "Show Prediction Box", Default = AutoTackleConfig.ShowPredictionBox,
+            Callback = function(v)
+                AutoTackleConfig.ShowPredictionBox = v
+                if not v and Gui and Gui.PredictionBoxLines then
+                    HideBoxLines(Gui.PredictionBoxLines)
+                end
+                UpdateDebugVisibility()
+            end
+        }, "AutoTackleShowPredictionBox")
         UI.Sections.AutoTackle:Divider()
         uiElements.AutoTackleDribbleDelay = UI.Sections.AutoTackle:Slider({
             Name = "Dribble Delay", Minimum = 0.0, Maximum = 2.0,
@@ -1368,18 +1469,14 @@ local function SetupUI(UI)
             Name = "Manual Tackle Enabled", Default = AutoTackleConfig.ManualTackleEnabled,
             Callback = function(v) AutoTackleConfig.ManualTackleEnabled = v end
         }, "AutoTackleManualTackleEnabled")
-        -- MacLib Keybind: на ПК ловит клавишу через InputBegan (выше),
-        -- на мобиле — сама библиотека рисует FAB-кнопку и вызывает Callback/onBinded
         uiElements.AutoTackleManualTackleKeybind = UI.Sections.AutoTackle:Keybind({
             Name = "Manual Tackle Key",
             Default = AutoTackleConfig.ManualTackleKeybind,
             Callback = function(v)
-                -- Мобиль: MacLib вызывает Callback при нажатии своей FAB-кнопки
                 if not AutoTackleConfig.Enabled or not AutoTackleConfig.ManualTackleEnabled then return end
                 ManualTackleAction()
             end,
             onBinded = function(v)
-                -- Смена биндинга (ПК/геймпад)
                 AutoTackleConfig.ManualTackleKeybind = v
             end
         }, "AutoTackleManualTackleKeybind")
@@ -1415,6 +1512,52 @@ local function SetupUI(UI)
                 _cachedAngleDeg = -1
             end
         }, "AutoDribbleMinAngle")
+        -- v3.7: режим дриббла
+        uiElements.AutoDribbleMode = UI.Sections.AutoDribble:Dropdown({
+            Name = "Dribble Mode", Default = AutoDribbleConfig.DribbleMode,
+            Options = {"Free", "Strict"},
+            Callback = function(v)
+                AutoDribbleConfig.DribbleMode = v
+                _cachedAngleDeg = -1
+            end
+        }, "AutoDribbleMode")
+        -- v3.7: FastCycle
+        uiElements.AutoDribbleFastCycle = UI.Sections.AutoDribble:Toggle({
+            Name = "Fast Cycle (task.desync)", Default = AutoDribbleConfig.FastCycle,
+            Callback = function(v)
+                AutoDribbleConfig.FastCycle = v
+                if v and AutoDribbleStatus.Running and _fastCycleSupported then
+                    TryStartFastCycle(function()
+                        -- inline callback для FastCycle (без замыкания на DribbleLoop)
+                        if not AutoDribbleConfig.Enabled then return end
+                        if not HasBall or not CanDribbleNow then return end
+                        local st, md, nearestD = nil, math.huge, nil
+                        for player, data in pairs(PrecomputedPlayers) do
+                            if data.IsValid and TackleStates[player] and TackleStates[player].IsTackling then
+                                if data.Distance < md then
+                                    md = data.Distance; st = player; nearestD = data
+                                end
+                            end
+                        end
+                        if not st or not nearestD then return end
+                        if IsDribbleCacheDirty(st, nearestD) then
+                            local res = ShouldDribbleNow(st, nearestD)
+                            _dribbleCache.result = res
+                            _dribbleCache.lastCalcTime = tick()
+                            _dribbleCache.lastTacklerPlayer = st
+                            _dribbleCache.lastIsTackling = nearestD.IsTackling or false
+                            if nearestD.RootPart then _dribbleCache.lastTacklerPos = nearestD.RootPart.Position end
+                            _dribbleCache.lastMyPos = HumanoidRootPart.Position
+                            if res then PerformDribble() end
+                        elseif _dribbleCache.result then
+                            PerformDribble()
+                        end
+                    end)
+                else
+                    StopFastCycle()
+                end
+            end
+        }, "AutoDribbleFastCycle")
         uiElements.AutoDribbleShowServerPos = UI.Sections.AutoDribble:Toggle({
             Name = "Show Server Position Box", Default = AutoDribbleConfig.ShowServerPos,
             Callback = function(v)
@@ -1498,6 +1641,8 @@ function AutoDribbleTackleModule.Init(UI, coreParam, notifyFunc)
         MyPositionHistory  = {}
         _cachedAngleDeg    = -1
         CurrentTargetOwner = nil
+        _fastCycleSupported = true  -- сброс флага при рестарте персонажа
+        StopFastCycle()
         if AutoTackleConfig.Enabled and not AutoTackleStatus.Running then AutoTackle.Start() end
         if AutoDribbleConfig.Enabled and not AutoDribbleStatus.Running then AutoDribble.Start() end
     end)
@@ -1508,6 +1653,7 @@ function AutoDribbleTackleModule:Destroy()
     AutoDribble.Stop()
     if Gui then
         if Gui.ServerPosBoxLines then RemoveBoxLines(Gui.ServerPosBoxLines) end
+        if Gui.PredictionBoxLines then RemoveBoxLines(Gui.PredictionBoxLines) end
     end
 end
 
