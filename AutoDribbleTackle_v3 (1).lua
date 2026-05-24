@@ -388,7 +388,6 @@ local function SetupGUI()
 
     Gui.TackleWaitLabel.Color  = Color3.fromRGB(255, 165, 0)
     Gui.ServerPosLabel.Color   = Color3.fromRGB(0, 200, 255)
-
     Gui.TackleWaitLabel.Position      = Vector2.new(centerX, offsetTackleY); offsetTackleY += 15
     Gui.TackleTargetLabel.Position    = Vector2.new(centerX, offsetTackleY); offsetTackleY += 15
     Gui.TackleDribblingLabel.Position = Vector2.new(centerX, offsetTackleY); offsetTackleY += 15
@@ -734,10 +733,7 @@ local function PrecomputePlayers()
         }
         -- v3.6: историю позиций пишем только для игроков в зоне активации
     if distance <= AutoDribbleConfig.DribbleActivationDistance * 1.5 then
-        -- v3.6: историю позиций пишем только для игроков в зоне активации
-    if distance <= AutoDribbleConfig.DribbleActivationDistance * 1.5 then
         RecordTargetPosition(targetRoot, player)
-    end
     end
     end
 end
@@ -1176,6 +1172,7 @@ local function IsDribbleCacheDirty(specificTarget, tacklerData)
     if (_dribbleCache.lastMyPos - HumanoidRootPart.Position).Magnitude > 0.3 then return true end
     return false
 end
+
 AutoDribble.Start = function()
     if AutoDribbleStatus.Running then return end
     AutoDribbleStatus.Running = true
