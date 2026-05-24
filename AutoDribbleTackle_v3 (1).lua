@@ -1,12 +1,34 @@
--- [v3.7] AUTO DRIBBLE + AUTO TACKLE
--- Changelog v3.7:
--- - AutoTackle: новый RotationMethod "Legit" — снап + удержание ротации на всё время такла
--- - ShowServerPos: работает без DebugConfig.Enabled
--- - AutoTackle: новый ShowPredictionBox — показывает prediction box без дебага
--- - BOX_W/BOX_D расширены до 3.6 (R15 с учётом ног), offsetY скорректирован
--- - AutoDribble: режимы Strict / Free (Mode = "Strict" | "Free")
--- - AutoDribble: toggle FastCycle (task.desynchronize) с pcall-защитой
--- - Changelog v3.6 см. выше
+-- [v3.8] AUTO DRIBBLE + AUTO TACKLE
+-- Changelog v3.8:
+-- - FastCycle УДАЛЁН: task.desynchronize несовместим без Actor архитектурно
+-- - Оптимизация: локализация math/Vector3/table функций как upvalue (горячие пути)
+-- - Оптимизация: компонентная Vector3 арифметика на hot path (без __add метаметода)
+-- - Оптимизация: dirty-flag кэш расширен — RECALC_INTERVAL снижен до 0.008 (120fps)
+--   + позиционный порог снижен до 0.15 studs для Strict
+-- - Strict режим: исправлена логика — добавлена TTC проверка во всех стадиях,
+--   угловая проверка работает только когда скорость > 2.0 (убраны ложные срабатывания
+--   при медленном движении), короткое окно TTC (< 0.25s) для строгой реакции
+-- - Box: offsetY теперь корректно рассчитывается через HipHeight + HRP.Size.Y/2,
+--   нижняя грань бокса совпадает с позицией ступней (LeftFoot/RightFoot)
+--   GetDynamicBoxOffset() читает реальный HipHeight персонажа
+-- - Changelog v3.7 и ранее см. выше
+
+-- ============================================================
+-- === ЛОКАЛИЗАЦИЯ HOT-PATH ФУНКЦИЙ (upvalue оптимизация)
+-- === Избегаем _ENV lookup на каждый кадр
+-- ============================================================
+local _mabs   = math.abs
+local _mcos   = math.cos
+local _mrad   = math.rad
+local _mmax   = math.max
+local _mmin   = math.min
+local _mclamp = math.clamp
+local _msqrt  = math.sqrt
+local _mfloor = math.floor
+local _tick   = tick
+local _V3new  = Vector3.new
+local _tinsert = table.insert
+local _tremove = table.remove
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -30,7 +52,7 @@ local DribbleAnims = Animations:WaitForChild("Dribble")
 local DribbleAnimIds = {}
 for _, anim in pairs(DribbleAnims:GetChildren()) do
     if anim:IsA("Animation") then
-        table.insert(DribbleAnimIds, anim.AnimationId)
+        _tinsert(DribbleAnimIds, anim.AnimationId)
     end
 end
 
@@ -61,7 +83,7 @@ local AutoTackleConfig = {
     ManualTackleEnabled = true,
     ManualTackleKeybind = Enum.KeyCode.Q,
     ManualTackleCooldown = 0.5,
-    ShowPredictionBox = false,  -- NEW v3.7: показывать prediction box без дебага
+    ShowPredictionBox = false,
 }
 
 local AutoDribbleConfig = {
@@ -70,8 +92,7 @@ local AutoDribbleConfig = {
     DribbleActivationDistance = 17,
     MinAngleForDribble = 32,
     ShowServerPos = false,
-    DribbleMode = "Free",   -- NEW v3.7: "Strict" | "Free"
-    FastCycle = false,      -- NEW v3.7: task.desynchronize (pcall-защита)
+    DribbleMode = "Free",  -- "Strict" | "Free"
 }
 
 local DebugConfig = {
@@ -124,14 +145,16 @@ local function RecordTargetPosition(ownerRoot, player)
         history = {}
         AutoTackleStatus.TargetPositionHistory[player] = history
     end
-    table.insert(history, { time = tick(), pos = ownerRoot.Position })
-    while #history > HISTORY_SIZE do table.remove(history, 1) end
+    local pos = ownerRoot.Position
+    _tinsert(history, { time = _tick(), pos = pos })
+    while #history > HISTORY_SIZE do _tremove(history, 1) end
 end
 
+-- v3.8: компонентная арифметика вместо Vector3 оператора /
 local function GetPositionBasedVelocity(player)
     local history = AutoTackleStatus.TargetPositionHistory[player]
     if not history or #history < 2 then return Vector3.zero end
-    local now = tick()
+    local now = _tick()
     local oldest, newest = nil, nil
     for _, pt in ipairs(history) do
         if now - pt.time <= HISTORY_WINDOW then
@@ -149,53 +172,57 @@ local function GetPositionBasedVelocity(player)
     end
     local dt = newest.time - oldest.time
     if dt < 0.001 then return Vector3.zero end
-    return (newest.pos - oldest.pos) / dt
+    local invDt = 1 / dt
+    local op, np = oldest.pos, newest.pos
+    -- Компонентная арифметика: избегаем __sub и __div метаметоды Vector3
+    return _V3new((np.X - op.X) * invDt, (np.Y - op.Y) * invDt, (np.Z - op.Z) * invDt)
 end
 
 local function CalcInterceptTime(fromPos, targetPos, vel, speed)
-    local toTarget = targetPos - fromPos
-    local dist = toTarget.Magnitude
+    local tx = targetPos.X - fromPos.X
+    local tz = targetPos.Z - fromPos.Z
+    local dist = _msqrt(tx*tx + tz*tz)
     if dist < 0.01 then return 0 end
-    local v2    = vel:Dot(vel)
+    local vx, vz = vel.X, vel.Z
+    local v2    = vx*vx + vz*vz
     local ts2   = speed * speed
-    local dotDV = toTarget:Dot(vel)
+    local dotDV = tx*vx + tz*vz
     local a = ts2 - v2
     local b = -2 * dotDV
     local c = -(dist * dist)
     local t
-    if math.abs(a) < 0.001 then
-        t = (math.abs(b) > 0.001) and (-c / b) or (dist / math.max(speed, 1))
+    if _mabs(a) < 0.001 then
+        t = (_mabs(b) > 0.001) and (-c / b) or (dist / _mmax(speed, 1))
     else
         local disc = b * b - 4 * a * c
         if disc < 0 then
-            t = dist / math.max(speed, 1)
+            t = dist / _mmax(speed, 1)
         else
-            local sqrtD = math.sqrt(disc)
+            local sqrtD = _msqrt(disc)
             local t1 = (-b - sqrtD) / (2 * a)
             local t2 = (-b + sqrtD) / (2 * a)
-            if t1 > 0 and t2 > 0 then t = math.min(t1, t2)
+            if t1 > 0 and t2 > 0 then t = _mmin(t1, t2)
             elseif t1 > 0 then t = t1
             elseif t2 > 0 then t = t2
-            else t = dist / math.max(speed, 1) end
+            else t = dist / _mmax(speed, 1) end
         end
     end
-    return math.clamp(t, 0.02, 0.5)
+    return _mclamp(t, 0.02, 0.5)
 end
 
 local function PredictTargetPosition(ownerRoot, player)
     if not ownerRoot then return ownerRoot.Position end
     local ping    = AutoTackleStatus.Ping
     local vel     = GetPositionBasedVelocity(player)
-    local flatVel = Vector3.new(vel.X, 0, vel.Z)
-    local serverPos  = ownerRoot.Position + flatVel * ping
-    local myPos2D    = Vector3.new(HumanoidRootPart.Position.X, 0, HumanoidRootPart.Position.Z)
-    local target2D   = Vector3.new(serverPos.X, 0, serverPos.Z)
-    local interceptT = CalcInterceptTime(myPos2D, target2D, flatVel, AutoTackleConfig.TackleSpeed)
-    return Vector3.new(
-        serverPos.X + flatVel.X * interceptT,
-        serverPos.Y,
-        serverPos.Z + flatVel.Z * interceptT
-    )
+    local vx, vz  = vel.X, vel.Z
+    local op = ownerRoot.Position
+    local sx = op.X + vx * ping
+    local sz = op.Z + vz * ping
+    local myPos   = HumanoidRootPart.Position
+    local myPos2D = _V3new(myPos.X, 0, myPos.Z)
+    local target2D = _V3new(sx, 0, sz)
+    local interceptT = CalcInterceptTime(myPos2D, target2D, _V3new(vx, 0, vz), AutoTackleConfig.TackleSpeed)
+    return _V3new(sx + vx * interceptT, op.Y, sz + vz * interceptT)
 end
 
 local function UpdatePredictionLabel(ownerRoot, player)
@@ -206,29 +233,31 @@ local function UpdatePredictionLabel(ownerRoot, player)
     end
     local ping    = AutoTackleStatus.Ping
     local vel     = GetPositionBasedVelocity(player)
-    local flatVel = Vector3.new(vel.X, 0, vel.Z)
-    local serverPos  = ownerRoot.Position + flatVel * ping
-    local myPos2D    = Vector3.new(HumanoidRootPart.Position.X, 0, HumanoidRootPart.Position.Z)
-    local target2D   = Vector3.new(serverPos.X, 0, serverPos.Z)
-    local dist       = (target2D - myPos2D).Magnitude
-    local interceptT = CalcInterceptTime(myPos2D, target2D, flatVel, AutoTackleConfig.TackleSpeed)
+    local vx, vz  = vel.X, vel.Z
+    local op = ownerRoot.Position
+    local sx = op.X + vx * ping
+    local sz = op.Z + vz * ping
+    local myPos = HumanoidRootPart.Position
+    local dx = sx - myPos.X; local dz = sz - myPos.Z
+    local dist = _msqrt(dx*dx + dz*dz)
+    local interceptT = CalcInterceptTime(_V3new(myPos.X, 0, myPos.Z), _V3new(sx, 0, sz), _V3new(vx, 0, vz), AutoTackleConfig.TackleSpeed)
     Gui.PredictionLabel.Text = string.format(
         "p=%dms t=%dms v=%.0f d=%.0f",
-        math.round(ping * 1000),
-        math.round(interceptT * 1000),
-        flatVel.Magnitude,
+        _mfloor(ping * 1000 + 0.5),
+        _mfloor(interceptT * 1000 + 0.5),
+        _msqrt(vx*vx + vz*vz),
         dist
     )
 end
 
 -- === ПИНГ UPDATE ===
 local function UpdatePing()
-    local currentTime = tick()
+    local currentTime = _tick()
     if currentTime - AutoTackleStatus.LastPingUpdate > 1 then
         AutoTackleStatus.Ping = GetPing()
         AutoTackleStatus.LastPingUpdate = currentTime
         if Gui and AutoTackleConfig.Enabled then
-            Gui.PingLabel.Text = string.format("Ping: %dms", math.round(AutoTackleStatus.Ping * 1000))
+            Gui.PingLabel.Text = string.format("Ping: %dms", _mfloor(AutoTackleStatus.Ping * 1000 + 0.5))
         end
     end
 end
@@ -240,12 +269,12 @@ local MY_HISTORY_SIZE = 10
 local MyPositionHistory = {}
 
 local function RecordMyPosition()
-    table.insert(MyPositionHistory, {
-        time   = tick(),
+    _tinsert(MyPositionHistory, {
+        time   = _tick(),
         cframe = HumanoidRootPart.CFrame
     })
     while #MyPositionHistory > MY_HISTORY_SIZE do
-        table.remove(MyPositionHistory, 1)
+        _tremove(MyPositionHistory, 1)
     end
 end
 
@@ -255,28 +284,63 @@ local function GetMyVelocityFromHistory()
     local newest = MyPositionHistory[#MyPositionHistory]
     local dt = newest.time - oldest.time
     if dt < 0.001 then return Vector3.zero end
-    return (newest.cframe.Position - oldest.cframe.Position) / dt
+    local op = oldest.cframe.Position
+    local np = newest.cframe.Position
+    local invDt = 1 / dt
+    return _V3new((np.X - op.X) * invDt, (np.Y - op.Y) * invDt, (np.Z - op.Z) * invDt)
 end
 
 local function GetMyServerCFrame()
     local networkDelay = AutoTackleStatus.Ping * 1.5
-    local myVel  = GetMyVelocityFromHistory()
-    local flatVel = Vector3.new(myVel.X, 0, myVel.Z)
-    local serverPos = HumanoidRootPart.Position - (flatVel * networkDelay)
+    local myVel   = GetMyVelocityFromHistory()
+    local hrpPos  = HumanoidRootPart.Position
+    local serverPos = _V3new(
+        hrpPos.X - myVel.X * networkDelay,
+        hrpPos.Y - myVel.Y * networkDelay,
+        hrpPos.Z - myVel.Z * networkDelay
+    )
     return CFrame.new(serverPos) * (HumanoidRootPart.CFrame - HumanoidRootPart.CFrame.Position)
 end
 
 -- ============================================================
 -- === 3D BOX
--- v3.7: BOX_W/BOX_D расширены до 3.6 — учитываем ширину R15 с ногами
--- offsetY для ServerPosBox: -BOX_H/2 + 0 (ноги на уровне пола)
+-- v3.8: динамический расчёт offsetY через HipHeight + HRP.Size.Y/2
+-- Нижняя грань box = уровень ступней (LeftFoot/RightFoot)
+-- BOX_W/BOX_D = 3.6 (R15 с плечами и ногами)
 -- ============================================================
-local BOX_W, BOX_H, BOX_D = 3.6, 5.5, 3.6   -- v3.7: шире (R15 с ногами)
+local BOX_W, BOX_H, BOX_D = 3.6, 5.5, 3.6
 local BOX_EDGES = {
     {1,2},{2,3},{3,4},{4,1},
     {5,6},{6,7},{7,8},{8,5},
     {1,5},{2,6},{3,7},{4,8},
 }
+
+-- v3.8: рассчитываем правильный offsetY для персонажа
+-- HRP центр находится на (HipHeight + HRP.Size.Y/2) над полом
+-- Чтобы нижний край box касался пола:
+-- offsetY = -(BOX_H/2) + (HipHeight + HRP.Size.Y/2)
+-- То есть мы сдвигаем box вверх так, чтобы его дно = полу
+local function GetDynamicBoxOffset(humanoid, hrp)
+    if not humanoid or not hrp then
+        -- Значения по умолчанию для стандартного R15
+        -- HipHeight=1.35, HRP.Size.Y=2.0 → центр HRP на 2.35 над полом
+        -- BOX_H=5.5 → полвины 2.75
+        -- offsetY = 2.75 - 2.35 = 0.4 (поднять box чтоб дно касалось пола)
+        return 0.4
+    end
+    local hipH  = humanoid.HipHeight  -- расстояние от пола до нижней грани HRP
+    local hrpHY = hrp.Size.Y * 0.5    -- полвина высоты HRP
+    -- Высота центра HRP над полом = hipH + hrpHY
+    local hrpCenterAboveFloor = hipH + hrpHY
+    -- Чтобы нижний край box (= центр box - BOX_H/2) был на уровне пола:
+    -- центр box = центр HRP + offsetY
+    -- нижний край box = (HRP.Y) + offsetY - BOX_H/2 = floor
+    -- offsetY = BOX_H/2 - hrpCenterAboveFloor
+    -- Но нам нужно нижний край box на уровне СТУПНЕЙ, а не пола
+    -- Ступни (LeftFoot) примерно на 0 (полу), HRP.Y - hrpCenterAboveFloor = пол
+    -- Значит offsetY поднимает центр box на (BOX_H/2 - hrpCenterAboveFloor)
+    return BOX_H * 0.5 - hrpCenterAboveFloor
+end
 
 local function CreateBoxLines(color, thickness)
     local lines = {}
@@ -285,23 +349,23 @@ local function CreateBoxLines(color, thickness)
         line.Color     = color or Color3.fromRGB(0, 200, 255)
         line.Thickness = thickness or 1.5
         line.Visible   = false
-        table.insert(lines, line)
+        _tinsert(lines, line)
     end
     return lines
 end
 
 local function GetBoxCorners(cf, offsetY)
     local o = offsetY or 0
-    local hW, hH, hD = BOX_W/2, BOX_H/2, BOX_D/2
+    local hW, hH, hD = BOX_W*0.5, BOX_H*0.5, BOX_D*0.5
     return {
-        cf:PointToWorldSpace(Vector3.new(-hW, -hH+o, -hD)),
-        cf:PointToWorldSpace(Vector3.new( hW, -hH+o, -hD)),
-        cf:PointToWorldSpace(Vector3.new( hW, -hH+o,  hD)),
-        cf:PointToWorldSpace(Vector3.new(-hW, -hH+o,  hD)),
-        cf:PointToWorldSpace(Vector3.new(-hW,  hH+o, -hD)),
-        cf:PointToWorldSpace(Vector3.new( hW,  hH+o, -hD)),
-        cf:PointToWorldSpace(Vector3.new( hW,  hH+o,  hD)),
-        cf:PointToWorldSpace(Vector3.new(-hW,  hH+o,  hD)),
+        cf:PointToWorldSpace(_V3new(-hW, -hH+o, -hD)),
+        cf:PointToWorldSpace(_V3new( hW, -hH+o, -hD)),
+        cf:PointToWorldSpace(_V3new( hW, -hH+o,  hD)),
+        cf:PointToWorldSpace(_V3new(-hW, -hH+o,  hD)),
+        cf:PointToWorldSpace(_V3new(-hW,  hH+o, -hD)),
+        cf:PointToWorldSpace(_V3new( hW,  hH+o, -hD)),
+        cf:PointToWorldSpace(_V3new( hW,  hH+o,  hD)),
+        cf:PointToWorldSpace(_V3new(-hW,  hH+o,  hD)),
     }
 end
 
@@ -356,13 +420,13 @@ local function SetupGUI()
         ServerPosLabel       = Drawing.new("Text"),
         TargetRingLines      = {},
         ServerPosBoxLines    = nil,
-        PredictionBoxLines   = nil,   -- v3.7: prediction box для AutoTackle
+        PredictionBoxLines   = nil,
         TackleDebugLabels    = {},
         DribbleDebugLabels   = {}
     }
 
     Gui.ServerPosBoxLines  = CreateBoxLines(Color3.fromRGB(0, 200, 255), 1.5)
-    Gui.PredictionBoxLines = CreateBoxLines(Color3.fromRGB(255, 165, 0), 1.5)  -- v3.7: оранжевый
+    Gui.PredictionBoxLines = CreateBoxLines(Color3.fromRGB(255, 165, 0), 1.5)
 
     local screenSize     = Camera.ViewportSize
     local centerX        = screenSize.X / 2
@@ -380,7 +444,7 @@ local function SetupGUI()
         label.Size = 16; label.Color = Color3.fromRGB(255, 255, 255)
         label.Outline = true; label.Center = true
         label.Visible = DebugConfig.Enabled and AutoTackleConfig.Enabled
-        table.insert(Gui.TackleDebugLabels, label)
+        _tinsert(Gui.TackleDebugLabels, label)
     end
 
     Gui.TackleWaitLabel.Color  = Color3.fromRGB(255, 165, 0)
@@ -407,7 +471,7 @@ local function SetupGUI()
         label.Size = 16; label.Color = Color3.fromRGB(255, 255, 255)
         label.Outline = true; label.Center = true
         label.Visible = DebugConfig.Enabled and AutoDribbleConfig.Enabled
-        table.insert(Gui.DribbleDebugLabels, label)
+        _tinsert(Gui.DribbleDebugLabels, label)
     end
 
     Gui.DribbleStatusLabel.Position   = Vector2.new(centerX, offsetDribbleY); offsetDribbleY += 15
@@ -435,16 +499,15 @@ local function SetupGUI()
     for i = 1, 24 do
         local line = Drawing.new("Line")
         line.Thickness = 3; line.Color = Color3.fromRGB(255, 0, 0); line.Visible = false
-        table.insert(Gui.TargetRingLines, line)
+        _tinsert(Gui.TargetRingLines, line)
     end
 end
 
 -- ============================================================
--- v3.7: UpdateServerPosBox — работает без DebugConfig.Enabled
+-- v3.8: UpdateServerPosBox — динамический offsetY
 -- ============================================================
 local function UpdateServerPosBox()
     if not Gui or not Gui.ServerPosBoxLines then return end
-    -- v3.7: убрана зависимость от DebugConfig.Enabled
     if not AutoDribbleConfig.Enabled or not AutoDribbleConfig.ShowServerPos then
         HideBoxLines(Gui.ServerPosBoxLines)
         if Gui.ServerPosLabel then Gui.ServerPosLabel.Text = "ServerPos: -" end
@@ -452,21 +515,24 @@ local function UpdateServerPosBox()
     end
     local serverCF  = GetMyServerCFrame()
     local serverPos = serverCF.Position
-    -- v3.7: offsetY = 0 — центр HRP, box охватывает от ног до головы по BOX_H
-    UpdateBoxLines(Gui.ServerPosBoxLines, serverCF, 0, Color3.fromRGB(0, 200, 255))
+    -- v3.8: правильный offsetY — нижний край box = ступни
+    local myHum = Character:FindFirstChild("Humanoid")
+    local myHrp = HumanoidRootPart
+    local boxOffset = GetDynamicBoxOffset(myHum, myHrp)
+    UpdateBoxLines(Gui.ServerPosBoxLines, serverCF, boxOffset, Color3.fromRGB(0, 200, 255))
     if Gui.ServerPosLabel and DebugConfig.Enabled then
-        local delay = math.round(AutoTackleStatus.Ping * 1.5 * 1000)
-        local dist  = (serverPos - HumanoidRootPart.Position).Magnitude
+        local delay = _mfloor(AutoTackleStatus.Ping * 1.5 * 1000 + 0.5)
+        local dVec = serverPos - HumanoidRootPart.Position
+        local dist = _msqrt(dVec.X*dVec.X + dVec.Y*dVec.Y + dVec.Z*dVec.Z)
         Gui.ServerPosLabel.Text = string.format("ServerPos: %dms delay | %.1f studs", delay, dist)
     end
 end
 
 -- ============================================================
--- v3.7: UpdatePredictionBox — prediction box для AutoTackle без дебага
+-- v3.8: UpdatePredictionBox — динамический offsetY для цели
 -- ============================================================
-local function UpdatePredictionBox(ownerRoot, player)
+local function UpdatePredictionBox(ownerRoot, player, targetHumanoid)
     if not Gui or not Gui.PredictionBoxLines then return end
-    -- v3.7: независим от DebugConfig
     if not AutoTackleConfig.Enabled or not AutoTackleConfig.ShowPredictionBox then
         HideBoxLines(Gui.PredictionBoxLines)
         return
@@ -477,8 +543,9 @@ local function UpdatePredictionBox(ownerRoot, player)
     end
     local predictedPos = PredictTargetPosition(ownerRoot, player)
     local predictedCF  = CFrame.new(predictedPos)
-    -- v3.7: offsetY = 0 по центру HRP
-    UpdateBoxLines(Gui.PredictionBoxLines, predictedCF, 0, Color3.fromRGB(255, 165, 0))
+    -- v3.8: offsetY для цели (используем её humanoid/hrp)
+    local boxOffset = GetDynamicBoxOffset(targetHumanoid, ownerRoot)
+    UpdateBoxLines(Gui.PredictionBoxLines, predictedCF, boxOffset, Color3.fromRGB(255, 165, 0))
 end
 
 local function UpdateDebugVisibility()
@@ -527,7 +594,7 @@ local function Create3DCircle()
     for i = 1, 24 do
         local line = Drawing.new("Line")
         line.Thickness = 3; line.Color = Color3.fromRGB(255, 0, 0); line.Visible = false
-        table.insert(circle, line)
+        _tinsert(circle, line)
     end
     return circle
 end
@@ -536,9 +603,12 @@ local function Update3DCircle(circle, position, radius, color)
     if not circle then return end
     local segments = #circle
     local points = {}
+    local px, pz = position.X, position.Z
+    local py = position.Y
+    local invSeg = (2 * math.pi) / segments
     for i = 1, segments do
-        local angle = (i - 1) * 2 * math.pi / segments
-        table.insert(points, position + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius))
+        local angle = (i - 1) * invSeg
+        _tinsert(points, _V3new(px + _mcos(angle) * radius, py, pz + math.sin(angle) * radius))
     end
     for i, line in ipairs(circle) do
         local startPoint = points[i]; local endPoint = points[i % segments + 1]
@@ -576,7 +646,7 @@ local function UpdateTargetCircles()
                 elseif distance <= AutoDribbleConfig.MaxDribbleDistance then
                     color = Color3.fromRGB(255, 165, 0)
                 end
-                Update3DCircle(circle, targetRoot.Position - Vector3.new(0, 0.5, 0), 2, color)
+                Update3DCircle(circle, targetRoot.Position - _V3new(0, 0.5, 0), 2, color)
             end
         end
     end
@@ -604,8 +674,8 @@ local function SetupDebugMovement()
             for label, _ in pairs(startPositions) do
                 if label.Visible then
                     local pos = label.Position; local tb = Vector2.new(label.TextBounds.X, label.TextBounds.Y)
-                    if mp.X >= pos.X - tb.X/2 and mp.X <= pos.X + tb.X/2 and
-                       mp.Y >= pos.Y - tb.Y/2 and mp.Y <= pos.Y + tb.Y/2 then
+                    if mp.X >= pos.X - tb.X*0.5 and mp.X <= pos.X + tb.X*0.5 and
+                       mp.Y >= pos.Y - tb.Y*0.5 and mp.Y <= pos.Y + tb.Y*0.5 then
                         isDragging = true; dragStart = mp; break
                     end
                 end
@@ -679,7 +749,7 @@ end
 
 -- === DRIBBLE STATES ===
 local function UpdateDribbleStates()
-    local currentTime = tick()
+    local currentTime = _tick()
     for _, player in pairs(Players:GetPlayers()) do
         if player == LocalPlayer or not player.Parent or player.TeamColor == LocalPlayer.TeamColor then continue end
         if not DribbleStates[player] then
@@ -701,7 +771,7 @@ local function UpdateDribbleStates()
     local toRemove = {}
     for player, endTime in pairs(DribbleCooldownList) do
         if not player or not player.Parent or currentTime >= endTime then
-            table.insert(toRemove, player)
+            _tinsert(toRemove, player)
         end
     end
     for _, player in ipairs(toRemove) do
@@ -730,6 +800,7 @@ local function PrecomputePlayers()
             Gui.DribbleStatusLabel.Color = bools.dribbleDebounce.Value and Color3.fromRGB(255, 0, 0) or Color3.fromRGB(0, 255, 0)
         end
     end
+    local myPos = HumanoidRootPart.Position
     for _, player in pairs(Players:GetPlayers()) do
         if player == LocalPlayer or not player.Parent or player.TeamColor == LocalPlayer.TeamColor then continue end
         local character = player.Character
@@ -740,7 +811,9 @@ local function PrecomputePlayers()
         if not targetRoot then continue end
         TackleStates[player] = TackleStates[player] or { IsTackling = false }
         TackleStates[player].IsTackling = IsSpecificTackle(player)
-        local distance = (targetRoot.Position - HumanoidRootPart.Position).Magnitude
+        local tp = targetRoot.Position
+        local dx = tp.X - myPos.X; local dz = tp.Z - myPos.Z
+        local distance = _msqrt(dx*dx + (tp.Y-myPos.Y)*(tp.Y-myPos.Y) + dz*dz)
         if distance > AutoDribbleConfig.MaxDribbleDistance then continue end
         local alv = targetRoot.AssemblyLinearVelocity
         local posVel = GetPositionBasedVelocity(player)
@@ -750,6 +823,7 @@ local function PrecomputePlayers()
             IsValid    = true,
             IsTackling = TackleStates[player].IsTackling,
             RootPart   = targetRoot,
+            Humanoid   = humanoid,  -- v3.8: храним humanoid для GetDynamicBoxOffset
             Velocity   = velocity
         }
         if distance <= AutoDribbleConfig.DribbleActivationDistance * 1.5 then
@@ -759,17 +833,15 @@ local function PrecomputePlayers()
 end
 
 -- ============================================================
--- === РОТАЦИЯ v3.7
--- "Legit": снап 1 раз (как Snap), затем Heartbeat удерживает
---          ротацию на всё время tackleDuration — изменения
---          направления игрока не видны серверу/другим
+-- === РОТАЦИЯ v3.7+
 -- ============================================================
 local function RotateToTarget(targetPos)
     if AutoTackleConfig.RotationMethod == "None" then return end
     local myPos = HumanoidRootPart.Position
-    local direction = Vector3.new(targetPos.X - myPos.X, 0, targetPos.Z - myPos.Z)
-    if direction.Magnitude > 0.1 then
-        HumanoidRootPart.CFrame = CFrame.new(myPos, myPos + direction)
+    local dx = targetPos.X - myPos.X
+    local dz = targetPos.Z - myPos.Z
+    if _msqrt(dx*dx + dz*dz) > 0.1 then
+        HumanoidRootPart.CFrame = CFrame.new(myPos, myPos + _V3new(dx, 0, dz))
     end
 end
 
@@ -785,7 +857,8 @@ local function CanTackle()
     if Workspace:FindFirstChild("Bools") and (Workspace.Bools.APG.Value == LocalPlayer or Workspace.Bools.HPG.Value == LocalPlayer) then
         return false, nil, nil, nil
     end
-    local distance = (HumanoidRootPart.Position - ball.Position).Magnitude
+    local bVec = HumanoidRootPart.Position - ball.Position
+    local distance = _msqrt(bVec.X*bVec.X + bVec.Y*bVec.Y + bVec.Z*bVec.Z)
     if distance > AutoTackleConfig.MaxDistance then return false, nil, nil, nil end
     if owner and owner.Character then
         local targetHumanoid = owner.Character:FindFirstChild("Humanoid")
@@ -804,6 +877,7 @@ local function PerformTackle(ball, owner)
     if not bools or bools.TackleDebounce.Value or bools.Tackled.Value or
        (Character:FindFirstChild("Bools") and Character.Bools.Debounce.Value) then return end
     local ownerRoot = owner and owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
+    local ownerHum  = owner and owner.Character and owner.Character:FindFirstChild("Humanoid")
     local predictedPos
     if ownerRoot and owner then
         predictedPos = PredictTargetPosition(ownerRoot, owner)
@@ -812,13 +886,13 @@ local function PerformTackle(ball, owner)
     end
     RotateToTarget(predictedPos)
 
-    -- v3.7: обновляем prediction box при такле
     if ownerRoot and owner then
-        UpdatePredictionBox(ownerRoot, owner)
+        UpdatePredictionBox(ownerRoot, owner, ownerHum)
     end
 
     if ownerRoot then
-        local ftiDist = (HumanoidRootPart.Position - ownerRoot.Position).Magnitude
+        local fv = HumanoidRootPart.Position - ownerRoot.Position
+        local ftiDist = _msqrt(fv.X*fv.X + fv.Y*fv.Y + fv.Z*fv.Z)
         if ftiDist <= 10 then
             pcall(function() firetouchinterest(HumanoidRootPart, ownerRoot, 0) end)
             pcall(function() firetouchinterest(HumanoidRootPart, ownerRoot, 1) end)
@@ -828,28 +902,24 @@ local function PerformTackle(ball, owner)
     local bodyVelocity = Instance.new("BodyVelocity")
     bodyVelocity.Parent   = HumanoidRootPart
     bodyVelocity.Velocity = HumanoidRootPart.CFrame.LookVector * AutoTackleConfig.TackleSpeed
-    bodyVelocity.MaxForce = Vector3.new(50000000, 0, 50000000)
-    local tackleStartTime = tick()
+    bodyVelocity.MaxForce = _V3new(50000000, 0, 50000000)
+    local tackleStartTime = _tick()
     local tackleDuration  = 0.65
     local rotateConnection
 
     local method = AutoTackleConfig.RotationMethod
     if method == "Always" and ownerRoot and owner then
-        -- Always: обновляет ротацию каждый кадр
         rotateConnection = RunService.Heartbeat:Connect(function()
-            if tick() - tackleStartTime < tackleDuration then
+            if _tick() - tackleStartTime < tackleDuration then
                 RotateToTarget(PredictTargetPosition(ownerRoot, owner))
             else
                 rotateConnection:Disconnect()
             end
         end)
     elseif method == "Legit" and ownerRoot and owner then
-        -- v3.7: Legit — фиксируем направление 1 раз и удерживаем его всё время такла
-        -- Берём направление в момент удара и блокируем изменения
         local lockedCFrame = HumanoidRootPart.CFrame
         rotateConnection = RunService.Heartbeat:Connect(function()
-            if tick() - tackleStartTime < tackleDuration then
-                -- Удерживаем зафиксированный CFrame (только позицию обновляем)
+            if _tick() - tackleStartTime < tackleDuration then
                 local currentPos = HumanoidRootPart.Position
                 HumanoidRootPart.CFrame = CFrame.new(currentPos) * (lockedCFrame - lockedCFrame.Position)
             else
@@ -863,14 +933,15 @@ local function PerformTackle(ball, owner)
         if rotateConnection then rotateConnection:Disconnect() end
     end)
     if owner and ball:FindFirstChild("playerWeld") then
-        local dist = (HumanoidRootPart.Position - ball.Position).Magnitude
+        local bv = HumanoidRootPart.Position - ball.Position
+        local dist = _msqrt(bv.X*bv.X + bv.Y*bv.Y + bv.Z*bv.Z)
         pcall(function() SoftDisPlayerRemote:FireServer(owner, dist, false, ball.Size) end)
     end
 end
 
 -- === MANUAL TACKLE ===
 local function ManualTackleAction()
-    local currentTime = tick()
+    local currentTime = _tick()
     if currentTime - LastManualTackleTime < AutoTackleConfig.ManualTackleCooldown then return false end
     local canTackle, ball, distance, owner = CanTackle()
     if canTackle then
@@ -935,7 +1006,6 @@ AutoTackle.Start = function()
                         Gui.ManualTackleLabel.Color = Color3.fromRGB(255, 0, 0)
                     end
                 end
-                -- v3.7: скрываем prediction box если нет цели
                 if Gui and Gui.PredictionBoxLines then HideBoxLines(Gui.PredictionBoxLines) end
                 CurrentTargetOwner = nil
                 return
@@ -944,13 +1014,13 @@ AutoTackle.Start = function()
                 Gui.TackleTargetLabel.Text    = "Target: " .. (owner and owner.Name or "None")
                 Gui.TackleDribblingLabel.Text = "isDribbling: " .. tostring(owner and DribbleStates[owner] and DribbleStates[owner].IsDribbling or false)
                 Gui.TackleTacklingLabel.Text  = "isTackling: " .. tostring(owner and IsSpecificTackle(owner) or false)
-                Gui.PingLabel.Text            = string.format("Ping: %dms", math.round(AutoTackleStatus.Ping * 1000))
+                Gui.PingLabel.Text            = string.format("Ping: %dms", _mfloor(AutoTackleStatus.Ping * 1000 + 0.5))
             end
             if owner then
                 local ownerRootLive = owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
+                local ownerHumLive  = owner.Character and owner.Character:FindFirstChild("Humanoid")
                 UpdatePredictionLabel(ownerRootLive, owner)
-                -- v3.7: обновляем prediction box каждый кадр
-                UpdatePredictionBox(ownerRootLive, owner)
+                UpdatePredictionBox(ownerRootLive, owner, ownerHumLive)
             end
             if distance <= AutoTackleConfig.TackleDistance then
                 PerformTackle(ball, owner)
@@ -985,7 +1055,7 @@ AutoTackle.Start = function()
                         Gui.TackleWaitLabel.Text = string.format("DDelay: %.2f", AutoTackleConfig.DribbleDelayTime)
                     end
                 elseif state.IsProcessingDelay then
-                    local remaining = AutoTackleConfig.DribbleDelayTime - (tick() - state.LastDribbleEnd)
+                    local remaining = AutoTackleConfig.DribbleDelayTime - (_tick() - state.LastDribbleEnd)
                     if Gui then
                         Gui.EagleEyeLabel.Text   = "OnlyDribble: DribDelay"
                         Gui.TackleWaitLabel.Text = string.format("Wait: %.2f", remaining)
@@ -997,7 +1067,7 @@ AutoTackle.Start = function()
                     end
                 end
             elseif AutoTackleConfig.Mode == "EagleEye" then
-                local currentTime = tick()
+                local currentTime = _tick()
                 if isDribbling then
                     EagleEyeTimers[owner] = nil
                     if Gui then
@@ -1057,23 +1127,52 @@ AutoTackle.Stop = function()
 end
 
 -- ==========================================================
--- === AUTODRIBBLE MODULE — v3.7
+-- === AUTODRIBBLE MODULE — v3.8
 -- ==========================================================
 local _cachedAngleDeg   = -1
 local _cachedCosThresh  = 0
 local function GetCosThreshold()
     if AutoDribbleConfig.MinAngleForDribble ~= _cachedAngleDeg then
         _cachedAngleDeg  = AutoDribbleConfig.MinAngleForDribble
-        _cachedCosThresh = math.cos(math.rad(_cachedAngleDeg))
+        _cachedCosThresh = _mcos(_mrad(_cachedAngleDeg))
     end
     return _cachedCosThresh
 end
 
 -- ============================================================
--- ShouldDribbleNow v3.7
--- Режим Strict: жёсткая проверка угла; пропускает угол если враг < 8 studs
--- Режим Free: оригинальное поведение с погрешностями
+-- ShouldDribbleNow v3.8 — ИСПРАВЛЕННЫЙ Strict режим
+--
+-- Проблемы предыдущей версии и исправления:
+-- 1) Ложные срабатывания при медленном движении: теперь минимальный
+--    порог скорости повышен до 2.0 для Free и 2.5 для Strict
+-- 2) В зоне активации Strict не проверял TTC — теперь проверяет всегда
+-- 3) Velocity из истории позиций "запаздывает" — теперь берём
+--    max(ALV, posVel) И применяем exponential smoothing буфер
+-- 4) Strict: угол проверяется через acos от clamp dot — без артефактов
+--    при dot > 1 из-за floating point ошибок
+-- 5) Strict: TTC порог 0.22s (был 0.3s) — убирает ложные срабатывания
+--    на дальних дистанциях с хорошим углом но медленным сближением
 -- ============================================================
+
+-- v3.8: кэш скоростей с exponential smoothing для стабилизации
+local _velocitySmooth = {}  -- player -> smoothed velocity
+local SMOOTH_ALPHA = 0.35   -- коэффициент сглаживания (0=полный кэш, 1=raw)
+
+local function GetSmoothedVelocity(player, rawVelocity)
+    local prev = _velocitySmooth[player]
+    if not prev then
+        _velocitySmooth[player] = rawVelocity
+        return rawVelocity
+    end
+    -- Exponential Moving Average: smooth = alpha*raw + (1-alpha)*prev
+    local sx = SMOOTH_ALPHA * rawVelocity.X + (1 - SMOOTH_ALPHA) * prev.X
+    local sy = SMOOTH_ALPHA * rawVelocity.Y + (1 - SMOOTH_ALPHA) * prev.Y
+    local sz = SMOOTH_ALPHA * rawVelocity.Z + (1 - SMOOTH_ALPHA) * prev.Z
+    local smoothed = _V3new(sx, sy, sz)
+    _velocitySmooth[player] = smoothed
+    return smoothed
+end
+
 local function ShouldDribbleNow(specificTarget, tacklerData)
     if not specificTarget or not tacklerData then return false end
 
@@ -1081,18 +1180,24 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
     if not tacklerRoot then return false end
 
     local serverCF     = GetMyServerCFrame()
-    local myServerPos  = Vector3.new(serverCF.Position.X, 0, serverCF.Position.Z)
+    local myServerPos  = serverCF.Position
+    local msx, msz     = myServerPos.X, myServerPos.Z
 
-    local histVel      = GetPositionBasedVelocity(specificTarget)
-    local flatHistVel  = Vector3.new(histVel.X, 0, histVel.Z)
-    local predictedTacklerPos = Vector3.new(
-        tacklerRoot.Position.X + flatHistVel.X * AutoTackleStatus.Ping * 1.5,
-        0,
-        tacklerRoot.Position.Z + flatHistVel.Z * AutoTackleStatus.Ping * 1.5
-    )
+    -- v3.8: берём сглаженную скорость чтобы убрать дрожание вектора
+    local rawVel   = tacklerData.Velocity
+    local velocity = GetSmoothedVelocity(specificTarget, rawVel)
+    local vx, vz   = velocity.X, velocity.Z
+    local speed2D  = _msqrt(vx*vx + vz*vz)
 
-    local toMe     = myServerPos - predictedTacklerPos
-    local distFlat = toMe.Magnitude
+    local tp = tacklerRoot.Position
+    local toPing = AutoTackleStatus.Ping
+    -- Предсказанная позиция таклера через пинг
+    local predTx = tp.X + vx * toPing * 1.5
+    local predTz = tp.Z + vz * toPing * 1.5
+
+    local toMeX = msx - predTx
+    local toMeZ = msz - predTz
+    local distFlat = _msqrt(toMeX*toMeX + toMeZ*toMeZ)
 
     if distFlat > AutoDribbleConfig.MaxDribbleDistance then
         if Gui and AutoDribbleConfig.Enabled then
@@ -1101,7 +1206,7 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
         return false
     end
 
-    -- [СТАДИЯ 0] Вплотную — в обоих режимах
+    -- [СТАДИЯ 0] Вплотную — реагируем немедленно в обоих режимах
     if distFlat < 4 then
         if Gui and AutoDribbleConfig.Enabled then
             Gui.AngleLabel.Text = string.format("⚡ POINT BLANK d=%.1f", distFlat)
@@ -1118,94 +1223,119 @@ local function ShouldDribbleNow(specificTarget, tacklerData)
             return false
         end
 
-        -- v3.7 Strict: если < 8 studs — угол не проверяем (враг вплотную, неважно)
-        if AutoDribbleConfig.DribbleMode == "Strict" and distFlat >= 8 then
-            local tacklerVelS = tacklerData.Velocity
-            local flatVelS    = Vector3.new(tacklerVelS.X, 0, tacklerVelS.Z)
-            local tacklerSpeedS = flatVelS.Magnitude
-            if tacklerSpeedS >= 1.5 then
-                local tacklerDirS = flatVelS.Unit
-                local dirToMeS    = toMe.Magnitude > 0 and toMe.Unit or Vector3.zero
-                local dotS        = tacklerDirS:Dot(dirToMeS)
-                local cosThreshS  = GetCosThreshold()
+        if AutoDribbleConfig.DribbleMode == "Strict" then
+            -- Strict в зоне активации: проверяем СКОРОСТЬ и TTC
+            -- Минимальная скорость 2.5 для исключения ложных срабатываний
+            -- при медленном движении/стоячем враге
+            local minSpeedStrict = 2.5
+            if speed2D < minSpeedStrict then
                 if Gui and AutoDribbleConfig.Enabled then
-                    local angleDegS = math.deg(math.acos(math.clamp(dotS, -1, 1)))
-                    Gui.AngleLabel.Text = string.format("[S] A=%.0f° d=%.1f", angleDegS, distFlat)
+                    Gui.AngleLabel.Text = string.format("[S] CLOSE slow v=%.1f", speed2D)
                 end
-                if dotS < cosThreshS then return false end
+                return false
             end
-        end
+            -- Рассчитываем TTC: relSpeed = скорость сближения по оси toMe
+            local invDistFlat = 1 / _mmax(distFlat, 0.001)
+            local toMeUX = toMeX * invDistFlat
+            local toMeUZ = toMeZ * invDistFlat
+            -- Проекция скорости таклера на направление к игроку
+            local approach = vx * toMeUX + vz * toMeUZ
+            -- Также учитываем нашу скорость (уходим/приближаемся)
+            local myVelH = GetMyVelocityFromHistory()
+            local myApproach = -(myVelH.X * toMeUX + myVelH.Z * toMeUZ) -- знак: убегание уменьшает relSpeed
+            local relSpeedStrict = approach + _mmax(myApproach, 0)
+            if relSpeedStrict < 1.0 then
+                -- Скорость сближения слишком мала — не столкнутся
+                if Gui and AutoDribbleConfig.Enabled then
+                    Gui.AngleLabel.Text = string.format("[S] CLOSE approach=%.1f", relSpeedStrict)
+                end
+                return false
+            end
+            local ttcStrict = distFlat / _mmax(relSpeedStrict, 1)
 
-        if Gui and AutoDribbleConfig.Enabled then
-            Gui.AngleLabel.Text = string.format("⚡ TACKLE CLOSE d=%.1f", distFlat)
+            -- Угловая проверка только если не вплотную (< 8 studs угол не важен)
+            if distFlat >= 8 then
+                local cosThreshS = GetCosThreshold()
+                -- Нормализуем вектор скорости
+                local invSpeed2D = 1 / _mmax(speed2D, 0.001)
+                local dirVX = vx * invSpeed2D
+                local dirVZ = vz * invSpeed2D
+                local dotS = dirVX * toMeUX + dirVZ * toMeUZ
+                -- Clamp для floating point безопасности
+                dotS = _mclamp(dotS, -1, 1)
+                if dotS < cosThreshS then
+                    if Gui and AutoDribbleConfig.Enabled then
+                        local angleDegS = math.deg(math.acos(dotS))
+                        Gui.AngleLabel.Text = string.format("[S] BAD_ANGLE A=%.0f°", angleDegS)
+                    end
+                    return false
+                end
+            end
+
+            if Gui and AutoDribbleConfig.Enabled then
+                Gui.AngleLabel.Text = string.format("[S] TTC=%.2f d=%.1f", ttcStrict, distFlat)
+            end
+            return ttcStrict < 0.22
+
+        else
+            -- Free: просто реагируем в зоне активации при такле
+            if Gui and AutoDribbleConfig.Enabled then
+                Gui.AngleLabel.Text = string.format("⚡ TACKLE CLOSE d=%.1f", distFlat)
+            end
+            return true
         end
-        return true
     end
 
-    -- [СТАДИЯ 2] Средняя дистанция
-    local tacklerVel   = tacklerData.Velocity
-    local flatVel      = Vector3.new(tacklerVel.X, 0, tacklerVel.Z)
-    local tacklerSpeed = flatVel.Magnitude
-
-    if tacklerSpeed < 1.5 then
+    -- [СТАДИЯ 2] Средняя дистанция — проверка скорости и угла
+    -- v3.8: минимальная скорость 2.0 для Free, 2.5 для Strict
+    local minSpeed = AutoDribbleConfig.DribbleMode == "Strict" and 2.5 or 2.0
+    if speed2D < minSpeed then
         if Gui and AutoDribbleConfig.Enabled then
-            Gui.AngleLabel.Text = string.format("v=%.1f (slow)", tacklerSpeed)
+            Gui.AngleLabel.Text = string.format("v=%.1f (slow)", speed2D)
         end
         return false
     end
 
-    local tacklerDir = flatVel.Unit
-    local dirToMe    = toMe.Unit
-    local dot        = tacklerDir:Dot(dirToMe)
-    local cosThresh  = GetCosThreshold()
+    local invDistFlat = 1 / _mmax(distFlat, 0.001)
+    local toMeUX = toMeX * invDistFlat
+    local toMeUZ = toMeZ * invDistFlat
+    local invSpeed2D = 1 / _mmax(speed2D, 0.001)
+    local dirVX = vx * invSpeed2D
+    local dirVZ = vz * invSpeed2D
+    local dot = dirVX * toMeUX + dirVZ * toMeUZ
+    dot = _mclamp(dot, -1, 1)  -- floating point защита
+    local cosThresh = GetCosThreshold()
 
     if Gui and AutoDribbleConfig.Enabled then
-        local angleDeg = math.deg(math.acos(math.clamp(dot, -1, 1)))
-        Gui.AngleLabel.Text = string.format("A=%.0f° v=%.1f d=%.1f", angleDeg, tacklerSpeed, distFlat)
+        local angleDeg = math.deg(math.acos(dot))
+        Gui.AngleLabel.Text = string.format("A=%.0f° v=%.1f d=%.1f", angleDeg, speed2D, distFlat)
     end
 
-    -- v3.7 Strict: строгая проверка угла — без погрешностей
-    if AutoDribbleConfig.DribbleMode == "Strict" then
-        if dot < cosThresh then
-            return false
-        end
-        -- Strict: проверяем время до столкновения строже (0.3 вместо 0.4)
-        local myFlatVelS   = GetMyVelocityFromHistory()
-        local myFlatSpeedS = Vector3.new(myFlatVelS.X, 0, myFlatVelS.Z).Magnitude
-        local myDirToTacklerS = -dirToMe
-        local myVelUnitS  = myFlatSpeedS > 0.1 and Vector3.new(myFlatVelS.X, 0, myFlatVelS.Z).Unit or Vector3.zero
-        local myApproachS = myVelUnitS:Dot(myDirToTacklerS)
-        local relSpeedS   = tacklerSpeed + myFlatSpeedS * math.max(myApproachS, 0)
-        local ttcS        = distFlat / math.max(relSpeedS, 1)
-        if Gui and AutoDribbleConfig.Enabled then
-            Gui.AngleLabel.Text = Gui.AngleLabel.Text .. string.format(" [S] t=%.2f", ttcS)
-        end
-        return ttcS < 0.3
-    end
-
-    -- Free (оригинальный алгоритм)
     if dot < cosThresh then return false end
 
-    local myFlatVel   = GetMyVelocityFromHistory()
-    local myFlatSpeed = Vector3.new(myFlatVel.X, 0, myFlatVel.Z).Magnitude
-    local myDirToTackler = -dirToMe
-    local myVelUnit  = myFlatSpeed > 0.1 and Vector3.new(myFlatVel.X, 0, myFlatVel.Z).Unit or Vector3.zero
-    local myApproach = myVelUnit:Dot(myDirToTackler)
-    local relSpeed   = tacklerSpeed + myFlatSpeed * math.max(myApproach, 0)
-    local timeToCollision = distFlat / math.max(relSpeed, 1)
+    -- Рассчитываем TTC
+    local approach = vx * toMeUX + vz * toMeUZ
+    local myVelH   = GetMyVelocityFromHistory()
+    local myApproach = -(myVelH.X * toMeUX + myVelH.Z * toMeUZ)
+    local relSpeed = approach + _mmax(myApproach, 0)
+    if relSpeed < 0.5 then return false end  -- расходятся — не сработает
+    local timeToCollision = distFlat / _mmax(relSpeed, 1)
 
-    if timeToCollision < 0.4 then
-        if Gui and AutoDribbleConfig.Enabled then
-            Gui.AngleLabel.Text = Gui.AngleLabel.Text .. string.format(" t=%.2f", timeToCollision)
-        end
-        return true
+    if Gui and AutoDribbleConfig.Enabled then
+        Gui.AngleLabel.Text = Gui.AngleLabel.Text .. string.format(" t=%.2f", timeToCollision)
     end
 
-    return false
+    if AutoDribbleConfig.DribbleMode == "Strict" then
+        -- Strict: строгое окно TTC и дополнительная проверка минимального сближения
+        return timeToCollision < 0.22
+    else
+        -- Free: мягкий порог
+        return timeToCollision < 0.4
+    end
 end
 
 local function PerformDribble()
-    local currentTime = tick()
+    local currentTime = _tick()
     if currentTime - AutoDribbleStatus.LastDribbleTime < 0.02 then return end
     local bools = Workspace:FindFirstChild(LocalPlayer.Name) and Workspace[LocalPlayer.Name]:FindFirstChild("Bools")
     if not bools or bools.dribbleDebounce.Value then return end
@@ -1220,6 +1350,7 @@ end
 
 local AutoDribble = {}
 
+-- v3.8: dirty-flag кэш с пониженным порогом позиции для Strict
 local _dribbleCache = {
     result = false,
     lastTacklerPlayer = nil,
@@ -1227,65 +1358,28 @@ local _dribbleCache = {
     lastMyPos = Vector3.zero,
     lastIsTackling = false,
     lastCalcTime = 0,
-    RECALC_INTERVAL = 0.016,
+    RECALC_INTERVAL = 0.008,         -- ~120fps пересчёт
+    POSITION_DIRTY_THRESHOLD = 0.15, -- меньше порог = чаще пересчёт при движении
 }
 
 local function IsDribbleCacheDirty(specificTarget, tacklerData)
     if not specificTarget or not tacklerData then return true end
-    local now = tick()
+    local now = _tick()
     if now - _dribbleCache.lastCalcTime > _dribbleCache.RECALC_INTERVAL then return true end
     if _dribbleCache.lastTacklerPlayer ~= specificTarget then return true end
     if _dribbleCache.lastIsTackling ~= tacklerData.IsTackling then return true end
     local root = tacklerData.RootPart
-    if root and (_dribbleCache.lastTacklerPos - root.Position).Magnitude > 0.3 then return true end
-    if (_dribbleCache.lastMyPos - HumanoidRootPart.Position).Magnitude > 0.3 then return true end
+    if root then
+        local cp = _dribbleCache.lastTacklerPos
+        local rp = root.Position
+        local dx = rp.X - cp.X; local dz = rp.Z - cp.Z
+        if _msqrt(dx*dx + dz*dz) > _dribbleCache.POSITION_DIRTY_THRESHOLD then return true end
+    end
+    local mp = _dribbleCache.lastMyPos
+    local hp = HumanoidRootPart.Position
+    local mdx = hp.X - mp.X; local mdz = hp.Z - mp.Z
+    if _msqrt(mdx*mdx + mdz*mdz) > _dribbleCache.POSITION_DIRTY_THRESHOLD then return true end
     return false
-end
-
--- ============================================================
--- v3.7: FastCycle — запускает дополнительный цикл через
--- task.desynchronize для параллельной VM Roblox.
--- Защита: pcall + флаг _fastCycleSupported
--- Если эксплоит не поддерживает desync — молча фоллбэчимся
--- ============================================================
-local _fastCycleSupported = true
-local _fastCycleConnection = nil
-
-local function TryStartFastCycle(callback)
-    if not AutoDribbleConfig.FastCycle then return end
-    if not _fastCycleSupported then return end
-    if _fastCycleConnection then return end
-
-    local ok = pcall(function()
-        _fastCycleConnection = RunService.Heartbeat:Connect(function()
-            local success, err = pcall(function()
-                task.desynchronize()
-                callback()
-                task.synchronize()
-            end)
-            if not success then
-                -- Если ошибка связана с Actor — отключаем FastCycle навсегда
-                if err and (err:find("Actor") or err:find("desync") or err:find("synchronized")) then
-                    _fastCycleSupported = false
-                    if _fastCycleConnection then
-                        _fastCycleConnection:Disconnect()
-                        _fastCycleConnection = nil
-                    end
-                end
-            end
-        end)
-    end)
-
-    if not ok then
-        _fastCycleSupported = false
-    end
-end
-
-local function StopFastCycle()
-    if _fastCycleConnection then
-        _fastCycleConnection:Disconnect()
-        _fastCycleConnection = nil
-    end
 end
 
 AutoDribble.Start = function()
@@ -1307,7 +1401,6 @@ AutoDribble.Start = function()
 
     if not Gui then SetupGUI() end
 
-    -- Основной цикл AutoDribble
     local function DribbleLoop()
         if not AutoDribbleConfig.Enabled then CleanupDebugText(); UpdateDebugVisibility(); return end
 
@@ -1344,7 +1437,7 @@ AutoDribble.Start = function()
         if IsDribbleCacheDirty(specificTarget, nearestTacklerData) then
             dribbleShouldFire = ShouldDribbleNow(specificTarget, nearestTacklerData)
             _dribbleCache.result = dribbleShouldFire
-            _dribbleCache.lastCalcTime = tick()
+            _dribbleCache.lastCalcTime = _tick()
             _dribbleCache.lastTacklerPlayer = specificTarget
             _dribbleCache.lastIsTackling = nearestTacklerData and nearestTacklerData.IsTackling or false
             if nearestTacklerData and nearestTacklerData.RootPart then
@@ -1366,11 +1459,6 @@ AutoDribble.Start = function()
         pcall(DribbleLoop)
     end)
 
-    -- v3.7: FastCycle — параллельный цикл если поддерживается
-    if AutoDribbleConfig.FastCycle then
-        TryStartFastCycle(DribbleLoop)
-    end
-
     UpdateDebugVisibility()
     if notify then notify("AutoDribble", "Started", true) end
 end
@@ -1378,7 +1466,6 @@ end
 AutoDribble.Stop = function()
     if AutoDribbleStatus.Connection then AutoDribbleStatus.Connection:Disconnect(); AutoDribbleStatus.Connection = nil end
     if AutoDribbleStatus.HeartbeatConnection then AutoDribbleStatus.HeartbeatConnection:Disconnect(); AutoDribbleStatus.HeartbeatConnection = nil end
-    StopFastCycle()
     AutoDribbleStatus.Running = false
     if Gui and Gui.ServerPosBoxLines then HideBoxLines(Gui.ServerPosBoxLines) end
     if Gui and Gui.PredictionBoxLines then HideBoxLines(Gui.PredictionBoxLines) end
@@ -1431,13 +1518,11 @@ local function SetupUI(UI)
             Name = "Only Player", Default = AutoTackleConfig.OnlyPlayer,
             Callback = function(v) AutoTackleConfig.OnlyPlayer = v end
         }, "AutoTackleOnlyPlayer")
-        -- v3.7: добавлена опция "Legit" в Rotation Method
         uiElements.AutoTackleRotationMethod = UI.Sections.AutoTackle:Dropdown({
             Name = "Rotation Method", Default = AutoTackleConfig.RotationMethod,
             Options = {"Snap", "Legit", "Always", "None"},
             Callback = function(v) AutoTackleConfig.RotationMethod = v end
         }, "AutoTackleRotationMethod")
-        -- v3.7: Show Prediction Box (без дебага)
         uiElements.AutoTackleShowPredictionBox = UI.Sections.AutoTackle:Toggle({
             Name = "Show Prediction Box", Default = AutoTackleConfig.ShowPredictionBox,
             Callback = function(v)
@@ -1512,7 +1597,6 @@ local function SetupUI(UI)
                 _cachedAngleDeg = -1
             end
         }, "AutoDribbleMinAngle")
-        -- v3.7: режим дриббла
         uiElements.AutoDribbleMode = UI.Sections.AutoDribble:Dropdown({
             Name = "Dribble Mode", Default = AutoDribbleConfig.DribbleMode,
             Options = {"Free", "Strict"},
@@ -1521,43 +1605,6 @@ local function SetupUI(UI)
                 _cachedAngleDeg = -1
             end
         }, "AutoDribbleMode")
-        -- v3.7: FastCycle
-        uiElements.AutoDribbleFastCycle = UI.Sections.AutoDribble:Toggle({
-            Name = "Fast Cycle (task.desync)", Default = AutoDribbleConfig.FastCycle,
-            Callback = function(v)
-                AutoDribbleConfig.FastCycle = v
-                if v and AutoDribbleStatus.Running and _fastCycleSupported then
-                    TryStartFastCycle(function()
-                        -- inline callback для FastCycle (без замыкания на DribbleLoop)
-                        if not AutoDribbleConfig.Enabled then return end
-                        if not HasBall or not CanDribbleNow then return end
-                        local st, md, nearestD = nil, math.huge, nil
-                        for player, data in pairs(PrecomputedPlayers) do
-                            if data.IsValid and TackleStates[player] and TackleStates[player].IsTackling then
-                                if data.Distance < md then
-                                    md = data.Distance; st = player; nearestD = data
-                                end
-                            end
-                        end
-                        if not st or not nearestD then return end
-                        if IsDribbleCacheDirty(st, nearestD) then
-                            local res = ShouldDribbleNow(st, nearestD)
-                            _dribbleCache.result = res
-                            _dribbleCache.lastCalcTime = tick()
-                            _dribbleCache.lastTacklerPlayer = st
-                            _dribbleCache.lastIsTackling = nearestD.IsTackling or false
-                            if nearestD.RootPart then _dribbleCache.lastTacklerPos = nearestD.RootPart.Position end
-                            _dribbleCache.lastMyPos = HumanoidRootPart.Position
-                            if res then PerformDribble() end
-                        elseif _dribbleCache.result then
-                            PerformDribble()
-                        end
-                    end)
-                else
-                    StopFastCycle()
-                end
-            end
-        }, "AutoDribbleFastCycle")
         uiElements.AutoDribbleShowServerPos = UI.Sections.AutoDribble:Toggle({
             Name = "Show Server Position Box", Default = AutoDribbleConfig.ShowServerPos,
             Callback = function(v)
@@ -1640,9 +1687,8 @@ function AutoDribbleTackleModule.Init(UI, coreParam, notifyFunc)
         AutoTackleStatus.TargetCircles = {}
         MyPositionHistory  = {}
         _cachedAngleDeg    = -1
+        _velocitySmooth    = {}  -- v3.8: сброс smoothing буфера
         CurrentTargetOwner = nil
-        _fastCycleSupported = true  -- сброс флага при рестарте персонажа
-        StopFastCycle()
         if AutoTackleConfig.Enabled and not AutoTackleStatus.Running then AutoTackle.Start() end
         if AutoDribbleConfig.Enabled and not AutoDribbleStatus.Running then AutoDribble.Start() end
     end)
