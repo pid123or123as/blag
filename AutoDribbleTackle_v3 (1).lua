@@ -1,12 +1,10 @@
--- [v4.4] AUTO DRIBBLE + AUTO TACKLE
--- Changelog v4.4:
--- [FIX] 3D Box дёрганность: GetBoxCorners использовал cf.RightVector/UpVector/LookVector
---       на AABB CFrame.new(pos) → нестабильно. Теперь жёстко мировые оси (1,0,0 / 0,1,0 / 0,0,1)
--- [FIX] AutoTackle дистанция: CanTackle считал dist до ball.Position (локальная позиция мяча),
---       а не до серверной позиции ownerRoot. Теперь dist считается до предсказанной/серверной позиции owner
--- [FIX] AutoDribble 3D бокс ширина при движении: UpdateServerPosBox использовал GetBodyBoundingBox()
---       (динамический AABB по анимированным частям тела) → раздутый X/Z при беге.
---       Теперь используется фиксированный размер тела (FIXED_BODY_SIZE)
+-- [v4.5] AUTO DRIBBLE + AUTO TACKLE
+-- Changelog v4.5:
+-- [FIX] 3D Box полная переработка:
+--       Высота = динамический замер Head.Top → Foot.Bottom (реальная высота, не bbox по частям)
+--       Ширина = Глубина = фиксированные 2.2 (не меняется при движении/анимации)
+--       DrawBox: только Vector3 pos + size, никаких CFrame/RightVector/UpVector → ноль дрожания
+-- [FIX] AutoTackle CanTackle: дистанция до PredictTargetPosition(ownerRoot) вместо ball.Position
 -- [KEEP] Всё остальное из v4.3
 
 -- ============================================================
@@ -222,107 +220,72 @@ local function GetMyServerCFrame()
 end
 
 -- ============================================================
--- 3D BOX — ПРАВИЛЬНЫЙ РАЗМЕР
+-- [v4.5] 3D BOX РАЗМЕР — замер высоты + фикс ширина/глубина
+--
+-- Высота: ищем Head (макушка) и любую ногу (подошва).
+--   topY    = Head.Position.Y + Head.Size.Y * 0.5
+--   bottomY = min(LeftFoot, RightFoot, LeftLeg, RightLeg ...).Position.Y - part.Size.Y * 0.5
+--   height  = topY - bottomY
+--
+-- Ширина = Глубина = BOX_HALF_W * 2 (фиксированно, не зависит от анимации)
+-- Центр по Y = (topY + bottomY) * 0.5
+-- Центр по XZ = HRP.Position (для бокса цели) или serverCF.Position (для нашего бокса)
 -- ============================================================
-local R15_BODY_PARTS = {
-    HumanoidRootPart = true,
-    UpperTorso       = true,
-    LowerTorso       = true,
-    Head             = true,
-    LeftUpperArm     = true,
-    LeftLowerArm     = true,
-    LeftHand         = true,
-    RightUpperArm    = true,
-    RightLowerArm    = true,
-    RightHand        = true,
-    LeftUpperLeg     = true,
-    LeftLowerLeg     = true,
-    LeftFoot         = true,
-    RightUpperLeg    = true,
-    RightLowerLeg    = true,
-    RightFoot        = true,
-    Torso            = true,
-    ["Left Arm"]     = true,
-    ["Right Arm"]    = true,
-    ["Left Leg"]     = true,
-    ["Right Leg"]    = true,
+local BOX_HALF_W = 1.1  -- ширина = глубина = 2.2 studs
+
+-- Имена частей-ног для поиска нижней точки
+local FOOT_PARTS = {
+    LeftFoot=true, RightFoot=true,
+    LeftLowerLeg=true, RightLowerLeg=true,
+    ["Left Leg"]=true, ["Right Leg"]=true,
 }
 
--- [v4.4 FIX] Фиксированный размер тела — не зависит от анимации/движения
--- Используется для ServerPosBox чтобы бокс не раздувался при беге
-local FIXED_BODY_SIZE = Vector3.new(2.0, 5.6, 1.2)
+-- Возвращает: centerY (мировой Y центра бокса), halfH (полувысота)
+-- hrpPos используется как fallback
+local function MeasurePlayerHeight(character, hrpPos)
+    if not character then
+        return hrpPos.Y + 0.4, 2.8
+    end
+    local topY    =  -math.huge
+    local bottomY =   math.huge
 
--- Высота центра bbox относительно HRP (HRP находится примерно в центре тела)
--- HRP.Y ≈ 2.8 от пола, центр тела (bbox center) ≈ HRP.Y + 0.0 (уже в центре)
-local FIXED_BODY_OFFSET = Vector3.new(0, 0.4, 0)
+    -- ищем голову для topY
+    local head = character:FindFirstChild("Head")
+    if head and head:IsA("BasePart") then
+        topY = head.Position.Y + head.Size.Y * 0.5
+    end
 
--- Динамический AABB — только для PredictionBox (позиция цели, не нашего персонажа)
--- Для движущегося персонажа используем GetBodyBoundingBox только для цели (enemy),
--- т.к. их анимация нас не беспокоит — нам важна только их позиция
-local function GetBodyBoundingBox(character)
-    if not character then return nil, nil end
-
-    local xmin, xmax =  math.huge, -math.huge
-    local ymin, ymax =  math.huge, -math.huge
-    local zmin, zmax =  math.huge, -math.huge
-    local found = false
-
+    -- ищем нижние части для bottomY
     for _, part in ipairs(character:GetChildren()) do
-        if part:IsA("BasePart") and R15_BODY_PARTS[part.Name] then
-            local cf = part.CFrame
-            local sz = part.Size
-            -- AABB по мировым осям
-            local _, _, _,
-                t00, t01, t02,
-                t10, t11, t12,
-                t20, t21, t22 = cf:components()
-            local hx = sz.X * 0.5
-            local hy = sz.Y * 0.5
-            local hz = sz.Z * 0.5
-            local hw = _mabs(hx*t00) + _mabs(hy*t01) + _mabs(hz*t02)
-            local hh = _mabs(hx*t10) + _mabs(hy*t11) + _mabs(hz*t12)
-            local hd = _mabs(hx*t20) + _mabs(hy*t21) + _mabs(hz*t22)
-            local px, py, pz = cf.X, cf.Y, cf.Z
-            if px-hw < xmin then xmin = px-hw end
-            if px+hw > xmax then xmax = px+hw end
-            if py-hh < ymin then ymin = py-hh end
-            if py+hh > ymax then ymax = py+hh end
-            if pz-hd < zmin then zmin = pz-hd end
-            if pz+hd > zmax then zmax = pz+hd end
-            found = true
+        if part:IsA("BasePart") and FOOT_PARTS[part.Name] then
+            local b = part.Position.Y - part.Size.Y * 0.5
+            if b < bottomY then bottomY = b end
         end
     end
 
-    if not found then
-        local hrp = character:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            return hrp.CFrame, Vector3.new(2.0, 5.5, 1.0)
-        end
-        return nil, nil
-    end
+    -- fallback если части не найдены
+    if topY == -math.huge then topY = hrpPos.Y + 2.8 end
+    if bottomY == math.huge then bottomY = hrpPos.Y - 2.8 end
 
-    local cx = (xmin+xmax)*0.5
-    local cy = (ymin+ymax)*0.5
-    local cz = (zmin+zmax)*0.5
-    local sx = xmax-xmin
-    local sy = ymax-ymin
-    local sz2 = zmax-zmin
+    -- защита от инвертированных значений
+    if topY <= bottomY then topY = bottomY + 5.6 end
 
-    return CFrame.new(cx, cy, cz), Vector3.new(sx, sy, sz2)
+    local centerY = (topY + bottomY) * 0.5
+    local halfH   = (topY - bottomY) * 0.5
+    return centerY, halfH
 end
 
 -- ============================================================
--- [v4.4 FIX] 3D BOX DRAWING — стабильные мировые оси
--- Проблема v4.3: GetBoxCorners читал cf.RightVector/UpVector/LookVector
--- Для AABB с CFrame.new(pos) эти векторы = мировые оси, НО при
--- интерполяции/обновлении CFrame между кадрами возникает микро-дрожание
--- т.к. CFrame.new() не гарантирует идеально нулевую ротацию во флоатах.
--- Решение: жёстко прописываем мировые оси (1,0,0 / 0,1,0 / 0,0,-1)
+-- [v4.5] 3D BOX DRAWING — чистый AABB, ноль дрожания
+-- Принимает:
+--   centerX, centerY, centerZ — мировые координаты центра бокса
+--   halfH  — полувысота (из MeasurePlayerHeight)
+-- Ширина и глубина всегда BOX_HALF_W (константа)
 -- ============================================================
 local BOX_EDGES = {
-    {1,2},{2,3},{3,4},{4,1},  -- нижняя грань
-    {5,6},{6,7},{7,8},{8,5},  -- верхняя грань
-    {1,5},{2,6},{3,7},{4,8},  -- вертикали
+    {1,2},{2,3},{3,4},{4,1},
+    {5,6},{6,7},{7,8},{8,5},
+    {1,5},{2,6},{3,7},{4,8},
 }
 
 local function MakeBoxLines(color, thickness)
@@ -337,41 +300,36 @@ local function MakeBoxLines(color, thickness)
     return lines
 end
 
--- [v4.4 FIX] Чистый AABB — жёстко мировые оси, никакого cf.RightVector
--- pos = Vector3 центра бокса, sz = Vector3 размер
-local function GetBoxCorners(pos, sz)
-    local hx = sz.X * 0.5
-    local hy = sz.Y * 0.5
-    local hz = sz.Z * 0.5
-    local ox = pos.X
-    local oy = pos.Y
-    local oz = pos.Z
-    -- Нижняя грань (y - hy), обходим по часовой в XZ плоскости
-    -- Верхняя грань (y + hy)
-    return {
-        _V3new(ox - hx, oy - hy, oz - hz), -- 1: нижний лево-перед
-        _V3new(ox + hx, oy - hy, oz - hz), -- 2: нижний право-перед
-        _V3new(ox + hx, oy - hy, oz + hz), -- 3: нижний право-зад
-        _V3new(ox - hx, oy - hy, oz + hz), -- 4: нижний лево-зад
-        _V3new(ox - hx, oy + hy, oz - hz), -- 5: верхний лево-перед
-        _V3new(ox + hx, oy + hy, oz - hz), -- 6: верхний право-перед
-        _V3new(ox + hx, oy + hy, oz + hz), -- 7: верхний право-зад
-        _V3new(ox - hx, oy + hy, oz + hz), -- 8: верхний лево-зад
-    }
-end
+-- Все координаты вычисляются напрямую из чисел — никаких CFrame, никаких векторных полей
+local function DrawBox(lines, cx, cy, cz, halfH)
+    if not lines then return end
+    local hw = BOX_HALF_W
+    local hy = halfH
 
--- [v4.4] DrawBox принимает pos (Vector3) + sz (Vector3) напрямую
--- Убираем CFrame — нам не нужна ориентация для AABB бокса
-local function DrawBox(lines, pos, sz)
-    if not lines or not pos or not sz then return end
-    local corners = GetBoxCorners(pos, sz)
+    -- 8 углов: нижние 1-4, верхние 5-8
+    -- порядок: лево-перед, право-перед, право-зад, лево-зад
+    local x0, x1 = cx - hw, cx + hw
+    local y0, y1 = cy - hy, cy + hy
+    local z0, z1 = cz - hw, cz + hw
+
+    local corners = {
+        _V3new(x0, y0, z0),
+        _V3new(x1, y0, z0),
+        _V3new(x1, y0, z1),
+        _V3new(x0, y0, z1),
+        _V3new(x0, y1, z0),
+        _V3new(x1, y1, z0),
+        _V3new(x1, y1, z1),
+        _V3new(x0, y1, z1),
+    }
+
     for i, edge in ipairs(BOX_EDGES) do
         local line = lines[i]; if not line then continue end
         local sa, aOn = Camera:WorldToViewportPoint(corners[edge[1]])
         local sb, bOn = Camera:WorldToViewportPoint(corners[edge[2]])
         if aOn and bOn and sa.Z > 0.1 and sb.Z > 0.1 then
-            line.From = Vector2.new(sa.X,sa.Y)
-            line.To   = Vector2.new(sb.X,sb.Y)
+            line.From    = Vector2.new(sa.X, sa.Y)
+            line.To      = Vector2.new(sb.X, sb.Y)
             line.Visible = true
         else
             line.Visible = false
@@ -490,10 +448,8 @@ local function CleanupDebugText()
 end
 
 -- ============================================================
--- [v4.4 FIX] SERVER POS BOX — фиксированный размер тела
--- Проблема: GetBodyBoundingBox() при движении раздувал X/Z
--- т.к. AABB включал анимированные конечности в разных позициях
--- Решение: используем FIXED_BODY_SIZE — постоянный размер
+-- [v4.5] SERVER POS BOX
+-- Ширина/глубина = BOX_HALF_W*2, высота = замер нашего персонажа
 -- ============================================================
 local function UpdateServerPosBox()
     if not Gui or not Gui.ServerPosBoxLines then return end
@@ -503,21 +459,24 @@ local function UpdateServerPosBox()
         return
     end
     local serverCF = GetMyServerCFrame()
-    -- [v4.4] Используем фиксированный offset вместо динамического bbox
-    -- FIXED_BODY_OFFSET компенсирует смещение центра тела от HRP
-    local boxPos = serverCF.Position + FIXED_BODY_OFFSET
-    -- DrawBox теперь принимает Vector3 позицию, а не CFrame
-    DrawBox(Gui.ServerPosBoxLines, boxPos, FIXED_BODY_SIZE)
+    local hrpPos   = HumanoidRootPart.Position
+    -- замеряем высоту нашего персонажа
+    local centerY, halfH = MeasurePlayerHeight(Character, hrpPos)
+    -- смещение centerY от HRP (переносим на серверную позицию)
+    local yOffset  = centerY - hrpPos.Y
+    local sPos     = serverCF.Position
+    DrawBox(Gui.ServerPosBoxLines, sPos.X, sPos.Y + yOffset, sPos.Z, halfH)
     if Gui.ServerPosLabel and DebugConfig.Enabled then
         local delay = _mfloor(AutoTackleStatus.Ping*1.5*1000+0.5)
-        local dv = serverCF.Position - HumanoidRootPart.Position
+        local dv = sPos - hrpPos
         local dist = _msqrt(dv.X*dv.X+dv.Y*dv.Y+dv.Z*dv.Z)
         Gui.ServerPosLabel.Text = string.format("ServerPos: %dms | %.1f st", delay, dist)
     end
 end
 
 -- ============================================================
--- PREDICTION BOX
+-- [v4.5] PREDICTION BOX
+-- Ширина/глубина = BOX_HALF_W*2, высота = замер персонажа цели
 -- ============================================================
 local function UpdatePredictionBox(ownerRoot, player, targetCharacter)
     if not Gui or not Gui.PredictionBoxLines then return end
@@ -527,20 +486,19 @@ local function UpdatePredictionBox(ownerRoot, player, targetCharacter)
     if not ownerRoot or not player or not targetCharacter then
         HideBox(Gui.PredictionBoxLines); return
     end
-    local tCF, tSZ = GetBodyBoundingBox(targetCharacter)
-    if not tCF or not tSZ then HideBox(Gui.PredictionBoxLines); return end
-    -- Смещение центра bbox от HRP цели
-    local offsetFromHRP = tCF.Position - ownerRoot.Position
-    local predictedHRP  = PredictTargetPosition(ownerRoot, player)
-    -- [v4.4] DrawBox теперь принимает Vector3 позицию
-    local boxPos = predictedHRP + offsetFromHRP
-    DrawBox(Gui.PredictionBoxLines, boxPos, tSZ)
+    local hrpPos = ownerRoot.Position
+    -- замеряем высоту цели
+    local centerY, halfH = MeasurePlayerHeight(targetCharacter, hrpPos)
+    local yOffset = centerY - hrpPos.Y
+    -- предсказанная XZ позиция HRP цели
+    local predicted = PredictTargetPosition(ownerRoot, player)
+    DrawBox(Gui.PredictionBoxLines, predicted.X, predicted.Y + yOffset, predicted.Z, halfH)
     if Gui.PredictionLabel and DebugConfig.Enabled then
         local ping  = AutoTackleStatus.Ping
         local vel   = GetPositionBasedVelocity(player)
         local vx,vz = vel.X, vel.Z
         local myPos = HumanoidRootPart.Position
-        local op    = ownerRoot.Position
+        local op    = hrpPos
         local dx=op.X-myPos.X; local dz=op.Z-myPos.Z
         local dist=_msqrt(dx*dx+dz*dz)
         local iT = CalcInterceptTime(
@@ -598,9 +556,6 @@ local function IsPowerShooting(targetPlayer)
     return ps and ps.Value == true
 end
 
--- ============================================================
--- FREEKICK CHECK
--- ============================================================
 local function IsFreeKick()
     local wb = Workspace:FindFirstChild("Bools")
     if not wb then return false end
@@ -700,16 +655,10 @@ local function RotateToTarget(targetPos)
 end
 
 -- ============================================================
--- [v4.4 FIX] CAN TACKLE — дистанция до серверной позиции owner
--- Проблема v4.3: dist считался как расстояние от HRP до ball.Position
--- Это неверно — мяч всегда рядом с владельцем, а MaxDistance должен
--- проверяться относительно реального положения владельца (с учётом пинга)
--- Решение: если есть owner, считаем dist до ownerRoot.Position (серверная)
--- Для случая без owner — оставляем fallback на ball.Position
+-- [v4.5] CAN TACKLE — дистанция до предсказанной позиции owner
 -- ============================================================
 local function CanTackle()
     if IsFreeKick() then return false, nil, nil, nil end
-
     local ball=Workspace:FindFirstChild("ball")
     if not ball or not ball.Parent then return false,nil,nil,nil end
     local hasOwner=ball:FindFirstChild("playerWeld") and ball:FindFirstChild("creator")
@@ -724,30 +673,24 @@ local function CanTackle()
         if wb.APG and wb.APG.Value==LocalPlayer then return false,nil,nil,nil end
         if wb.HPG and wb.HPG.Value==LocalPlayer then return false,nil,nil,nil end
     end
-
-    -- [v4.4 FIX] Считаем дистанцию до серверной позиции owner, а не до мяча
+    -- [v4.5] дистанция до серверной позиции owner, не до мяча
     local myPos = HumanoidRootPart.Position
     local dist
     if owner and owner.Character then
         local ownerRoot = owner.Character:FindFirstChild("HumanoidRootPart")
         if ownerRoot then
-            -- Используем предсказанную (серверную) позицию owner
             local serverOwnerPos = PredictTargetPosition(ownerRoot, owner)
             local bv = myPos - serverOwnerPos
             dist = _msqrt(bv.X*bv.X + bv.Y*bv.Y + bv.Z*bv.Z)
         else
-            -- fallback на мяч если нет HRP
             local bv = myPos - ball.Position
             dist = _msqrt(bv.X*bv.X + bv.Y*bv.Y + bv.Z*bv.Z)
         end
     else
-        -- fallback: нет owner → дистанция до мяча
         local bv = myPos - ball.Position
         dist = _msqrt(bv.X*bv.X + bv.Y*bv.Y + bv.Z*bv.Z)
     end
-
     if dist>AutoTackleConfig.MaxDistance then return false,nil,nil,nil end
-
     if owner and owner.Character then
         local th=owner.Character:FindFirstChild("Humanoid")
         if th and th.HipHeight>=4 then return false,nil,nil,nil end
