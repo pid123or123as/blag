@@ -698,51 +698,90 @@ end
 -- ============================================================
 -- PERFORM TACKLE
 -- ============================================================
+-- ============================================================
+-- SOFT DIS DEBOUNCE
+-- [v4.8] Один вызов SoftDisPlayer на такл, точно как в оригинале
+-- ============================================================
+local SoftDisDebounce = false
+
+-- ============================================================
+-- PERFORM TACKLE
+-- [v4.8] SoftDisPlayer: 1 раз, дебаунс 0.8с, args = (owner, dist_hrp_to_ball, false, ball.Size)
+-- ============================================================
 local function PerformTackle(ball, owner)
-    local myBools=Workspace:FindFirstChild(LocalPlayer.Name)
+    local myBools = Workspace:FindFirstChild(LocalPlayer.Name)
         and Workspace[LocalPlayer.Name]:FindFirstChild("Bools")
     if not myBools or myBools.TackleDebounce.Value or myBools.Tackled.Value
        or (Character:FindFirstChild("Bools") and Character.Bools.Debounce.Value) then return end
-    local ownerRoot=owner and owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
-    local ownerChar=owner and owner.Character
+
+    local ownerRoot  = owner and owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
+    local ownerChar  = owner and owner.Character
     local predictedPos
-    if ownerRoot and owner then predictedPos=PredictTargetPosition(ownerRoot,owner)
-    else predictedPos=ball.Position end
+    if ownerRoot and owner then
+        predictedPos = PredictTargetPosition(ownerRoot, owner)
+    else
+        predictedPos = ball.Position
+    end
+
     RotateToTarget(predictedPos)
-    if ownerRoot and owner then UpdatePredictionBox(ownerRoot,owner,ownerChar) end
+    if ownerRoot and owner then UpdatePredictionBox(ownerRoot, owner, ownerChar) end
+
+    -- firetouchinterest
     if ownerRoot then
-        local fv=HumanoidRootPart.Position-ownerRoot.Position
-        if _msqrt(fv.X*fv.X+fv.Y*fv.Y+fv.Z*fv.Z)<=10 then
-            pcall(function() firetouchinterest(HumanoidRootPart,ownerRoot,0) end)
-            pcall(function() firetouchinterest(HumanoidRootPart,ownerRoot,1) end)
+        local fv = HumanoidRootPart.Position - ownerRoot.Position
+        if _msqrt(fv.X*fv.X + fv.Y*fv.Y + fv.Z*fv.Z) <= 10 then
+            pcall(function() firetouchinterest(HumanoidRootPart, ownerRoot, 0) end)
+            pcall(function() firetouchinterest(HumanoidRootPart, ownerRoot, 1) end)
         end
     end
+
+    -- Основной remote
     pcall(function() ActionRemote:FireServer("TackIe") end)
-    local bv=Instance.new("BodyVelocity")
-    bv.Parent=HumanoidRootPart; bv.Velocity=HumanoidRootPart.CFrame.LookVector*AutoTackleConfig.TackleSpeed
-    bv.MaxForce=_V3new(50000000,0,50000000)
-    local startT=_tick(); local duration=0.65; local rotConn
-    local method=AutoTackleConfig.RotationMethod
-    if method=="Always" and ownerRoot and owner then
-        rotConn=RunService.Heartbeat:Connect(function()
-            if _tick()-startT<duration then RotateToTarget(PredictTargetPosition(ownerRoot,owner))
+
+    -- [v4.8] SoftDisPlayer — 1 раз, с дебаунсом 0.8с
+    -- Аргументы точно как в оригинальном LocalScript:
+    -- (owner, (HRP.Position - ball.Position).Magnitude, false, ball.Size)
+    if not SoftDisDebounce and owner and ball:FindFirstChild("playerWeld") then
+        SoftDisDebounce = true
+        local bvec = HumanoidRootPart.Position - ball.Position
+        local d    = _msqrt(bvec.X*bvec.X + bvec.Y*bvec.Y + bvec.Z*bvec.Z)
+        pcall(function()
+            SoftDisPlayerRemote:FireServer(owner, d, false, ball.Size)
+        end)
+        task.delay(0.3, function()
+            SoftDisDebounce = false
+        end)
+    end
+
+    -- BodyVelocity для рывка
+    local bv = Instance.new("BodyVelocity")
+    bv.Parent    = HumanoidRootPart
+    bv.Velocity  = HumanoidRootPart.CFrame.LookVector * AutoTackleConfig.TackleSpeed
+    bv.MaxForce  = _V3new(50000000, 0, 50000000)
+    local startT   = _tick()
+    local duration = 0.65
+    local rotConn
+    local method   = AutoTackleConfig.RotationMethod
+
+    if method == "Always" and ownerRoot and owner then
+        rotConn = RunService.Heartbeat:Connect(function()
+            if _tick() - startT < duration then
+                RotateToTarget(PredictTargetPosition(ownerRoot, owner))
             else rotConn:Disconnect() end
         end)
-    elseif method=="Legit" and ownerRoot and owner then
-        local locked=HumanoidRootPart.CFrame
-        rotConn=RunService.Heartbeat:Connect(function()
-            if _tick()-startT<duration then
-                HumanoidRootPart.CFrame=CFrame.new(HumanoidRootPart.Position)*(locked-locked.Position)
+    elseif method == "Legit" and ownerRoot and owner then
+        local locked = HumanoidRootPart.CFrame
+        rotConn = RunService.Heartbeat:Connect(function()
+            if _tick() - startT < duration then
+                HumanoidRootPart.CFrame = CFrame.new(HumanoidRootPart.Position) * (locked - locked.Position)
             else rotConn:Disconnect() end
         end)
     end
-    Debris:AddItem(bv,duration)
-    task.delay(duration, function() if rotConn then rotConn:Disconnect() end end)
-    if owner and ball:FindFirstChild("playerWeld") then
-        local bvec=HumanoidRootPart.Position-ball.Position
-        local d=_msqrt(bvec.X*bvec.X+bvec.Y*bvec.Y+bvec.Z*bvec.Z)
-        pcall(function() SoftDisPlayerRemote:FireServer(owner,d,false,ball.Size) end)
-    end
+
+    Debris:AddItem(bv, duration)
+    task.delay(duration, function()
+        if rotConn then rotConn:Disconnect() end
+    end)
 end
 
 -- ============================================================
