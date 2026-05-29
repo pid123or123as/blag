@@ -1,4 +1,4 @@
--- [v50.1] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
+-- [v50.2] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
 local Players = game:GetService("Players")
 print('2')
 local RunService = game:GetService("RunService")
@@ -1048,14 +1048,18 @@ local function GetTarget(dist, gkX, gkY, isAggressive, gkHrp, gkVel, gkIsNPC, gk
                 local spinDrop = 0.10 + 0.18 * hFrac
                 shootLocalY = math.max(Y_BOT_INSET, localY - spinDrop)
             else
-                -- midBand расширен до 200 studs (был 160) — покрывает ~140 где мяч перелетает.
-                local midBand = math.clamp((dist - 85) / 35, 0, 1) * math.clamp((200 - dist) / 65, 0, 1)
+                -- midBand: зона коррекции 85-200 studs (пик ~140). NPC всегда попадает сюда (spinDir=None).
+                local midBand  = math.clamp((dist - 85) / 35, 0, 1) * math.clamp((200 - dist) / 65, 0, 1)
+                -- hFracG: высота цели относительно GoalHeight (а не yRange) — более точная метрика.
+                local hFracG   = localY / math.max(GoalHeight, 1)
                 -- No-spin мяч физически летит выше spin-мяча (сервер применяет Magnus-lift).
-                -- Компенсируем: целимся ниже (одинаково для NPC и игрока).
-                -- Увеличены коэффициенты: на ~140 studs было перелётание.
-                local noSpinDrop = (0.16 + 0.22 * hFrac) * midBand * 1.55
-                local extraFlatDrop = (0.10 + 0.08 * math.clamp(1 - hFrac, 0, 1)) * midBand
-                shootLocalY = math.max(Y_BOT_INSET, localY - noSpinDrop - extraFlatDrop)
+                -- Компенсируем: целимся ниже.
+                local noSpinDrop    = (0.16 + 0.22 * hFracG) * midBand * 1.55
+                local extraFlatDrop = (0.10 + 0.08 * math.clamp(1 - hFracG, 0, 1)) * midBand
+                -- NPC: scoring выбирает более высокие точки → дополнительный drop.
+                -- На ~140 studs NPC-удары стабильно перелетали. +0.45 stud компенсация.
+                local npcDrop = gkIsNPC and (0.45 + 0.35 * hFracG) * math.clamp((dist - 100) / 60, 0, 1) or 0
+                shootLocalY = math.max(Y_BOT_INSET, localY - noSpinDrop - extraFlatDrop - npcDrop)
             end
 
             -- Глубина ворот: для спина увеличиваем умеренно, чтобы сервер принял эффект,
