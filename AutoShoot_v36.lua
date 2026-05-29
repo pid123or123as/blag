@@ -1,4 +1,4 @@
--- [v50.0] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
+-- [v50.1] AUTO SHOOT + AUTO PICKUP — Smart GK-aware, zero manual config
 local Players = game:GetService("Players")
 print('2')
 local RunService = game:GetService("RunService")
@@ -85,6 +85,7 @@ local AutoPickupEnabled    = true
 local AutoPickupDist       = 180
 local AutoPickupSpoofValue = 2.8
 local AutoPickupMaxHeight  = 50       -- Макс. высота мяча относительно HRP (studs) для авто-подбора
+local AutoPickupDelay      = 0.1      -- Задержка между FireServer (сек): 0 = каждый Heartbeat, 1 = раз в секунду
 local AutoPickupToggleKey  = Enum.KeyCode.H
 local AutoPickupStatus     = { Running = false, Connection = nil }
 
@@ -719,8 +720,9 @@ local CurrentPeakPos    = nil
 local CurrentPeakFrac   = 0.40
 local CurrentIsLob      = false
 local CurrentDist       = 0
-local LastShoot = 0
-local CanShoot  = true
+local LastShoot       = 0
+local CanShoot        = true
+local LastShootRedBox = nil
 
 -- CalcLaunchDir: первопорядковая коррекция гравитации + трение.
 --
@@ -889,7 +891,7 @@ local function GetTarget(dist, gkX, gkY, isAggressive, gkHrp, gkVel, gkIsNPC, gk
             -- На ближних и средних сильнее штрафуем слишком верхние цели
             score = score - hFrac * hFrac * math.clamp((85 - dist) / 40, 0, 1) * 3.8
             -- В зоне 100-150 без спина высокие точки часто приходят выше нужного → мягко прижимаем выбор вниз
-            local midNoSpinHighPenalty = hFrac * math.clamp((dist - 95) / 45, 0, 1) * math.clamp((160 - dist) / 60, 0, 1) * 3.2
+            local midNoSpinHighPenalty = hFrac * math.clamp((dist - 85) / 35, 0, 1) * math.clamp((200 - dist) / 65, 0, 1) * 3.8
             if isLobShot and dist > 95 then score = score + 4.0 end
 
             -- Навес: ценен когда GK низко или выходит вперёд
@@ -1046,11 +1048,13 @@ local function GetTarget(dist, gkX, gkY, isAggressive, gkHrp, gkVel, gkIsNPC, gk
                 local spinDrop = 0.10 + 0.18 * hFrac
                 shootLocalY = math.max(Y_BOT_INSET, localY - spinDrop)
             else
-                local midBand = math.clamp((dist - 95) / 40, 0, 1) * math.clamp((160 - dist) / 60, 0, 1)
+                -- midBand расширен до 200 studs (был 160) — покрывает ~140 где мяч перелетает.
+                local midBand = math.clamp((dist - 85) / 35, 0, 1) * math.clamp((200 - dist) / 65, 0, 1)
                 -- No-spin мяч физически летит выше spin-мяча (сервер применяет Magnus-lift).
                 -- Компенсируем: целимся ниже (одинаково для NPC и игрока).
-                local noSpinDrop = (0.12 + 0.18 * hFrac) * midBand * 1.35
-                local extraFlatDrop = (0.07 + 0.06 * math.clamp(1 - hFrac, 0, 1)) * midBand
+                -- Увеличены коэффициенты: на ~140 studs было перелётание.
+                local noSpinDrop = (0.16 + 0.22 * hFrac) * midBand * 1.55
+                local extraFlatDrop = (0.10 + 0.08 * math.clamp(1 - hFrac, 0, 1)) * midBand
                 shootLocalY = math.max(Y_BOT_INSET, localY - noSpinDrop - extraFlatDrop)
             end
 
@@ -1308,7 +1312,7 @@ local function GetTarget(dist, gkX, gkY, isAggressive, gkHrp, gkVel, gkIsNPC, gk
                         power       = FIXED_POWER,
                         speed       = AutoShootBallSpeed,
                         score       = rscore,
-                        gkDist      = rgkDist,
+                        gkDist      = rpgkDist,
                         trajOk      = (rLaunchDir.Y < 0.85),
                         flightTime  = rFlightT,
                         peakPos     = rPeak,
@@ -1344,7 +1348,7 @@ local function CalculateTarget()
 
     if dist > AutoShootMaxDistance then
         TargetPoint = nil; ShootDir = nil; ShootVel = nil
-        CurrentSpin = "None"; CurrentPower = FIXEDPOWER; CurrentType = nil
+        CurrentSpin = "None"; CurrentPower = FIXED_POWER; CurrentType = nil
         AimPoint = nil; PredictedLand = nil
         CurrentFlightTime = 0; CurrentLaunchDir = nil; CurrentSpeed = 0
         CurrentPeakPos = nil; CurrentPeakFrac = 0.40; CurrentIsLob = false
@@ -1673,6 +1677,7 @@ end
 local Notify = function(title, message) print("["..title.."]: "..message) end
 
 local AutoPickup = {}
+local _lastPickupTime = 0
 
 local function SetAutoPickupState(enabled)
     AutoPickupEnabled = enabled
@@ -1696,7 +1701,11 @@ local function AutoPickupTick()
     -- Height check: не поднимаем мяч если он слишком высоко (прыжок, вылет)
     if ball.Position.Y > HumanoidRootPart.Position.Y + AutoPickupMaxHeight then return end
     if (HumanoidRootPart.Position - ball.Position).Magnitude <= AutoPickupDist then
-        pcall(function() PickupRemote:FireServer(AutoPickupSpoofValue) end)
+        local now = tick()
+        if now - _lastPickupTime >= AutoPickupDelay then
+            _lastPickupTime = now
+            pcall(function() PickupRemote:FireServer(AutoPickupSpoofValue) end)
+        end
     end
 end
 
@@ -1936,6 +1945,13 @@ local function SetupUI(UI)
         }, "AutoPickupSpoof")
 
         UI.Sections.AutoPickup:SubLabel({Text = "[💠] Distance sent to server for pickup"})
+
+        uiElements.AutoPickupDelay = UI.Sections.AutoPickup:Slider({
+            Name = "Fire Delay (sec)", Minimum = 0, Maximum = 1,
+            Default = AutoPickupDelay, Precision = 2,
+            Callback = function(v) AutoPickupDelay = v end
+        }, "AutoPickupDelay")
+        UI.Sections.AutoPickup:SubLabel({Text = "[⏱] Delay between FireServer calls (0 = every frame, 0.1 = default)"})
 
         UI.Sections.AutoPickup:Divider()
         uiElements.ShowPickupCircle = UI.Sections.AutoPickup:Toggle({
