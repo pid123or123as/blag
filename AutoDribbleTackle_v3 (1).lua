@@ -73,8 +73,8 @@ local AutoTackleConfig = {
     TackleDistance       = 0,
     TackleSpeed          = 60,
     OnlyPlayer           = true,
-    RotationMethod       = "Snap",
-    DribbleDelayTime     = 0,
+    RotationMethod       = "Legit",
+    DribbleDelayTime     = -0.1,
     EagleEyeMinDelay     = 0.2,
     EagleEyeMaxDelay     = 0.6,
     ManualTackleEnabled  = true,
@@ -1200,7 +1200,7 @@ local function SetupUI(UI)
         S:Toggle({Name="Show Prediction Box",Default=AutoTackleConfig.ShowPredictionBox,
             Callback=function(v) AutoTackleConfig.ShowPredictionBox=v; if not v then HideBox(Gui and Gui.PredictionBoxLines) end; UpdateDebugVisibility() end},"AutoTackleShowPred")
         S:Divider()
-        S:Slider({Name="Dribble Delay",Minimum=0.0,Maximum=2.0,Default=AutoTackleConfig.DribbleDelayTime,Precision=2,Callback=function(v) AutoTackleConfig.DribbleDelayTime=v end},"AutoTackleDribDelay")
+        S:Slider({Name="Dribble Delay",Minimum=-0.2,Maximum=2.0,Default=AutoTackleConfig.DribbleDelayTime,Precision=2,Callback=function(v) AutoTackleConfig.DribbleDelayTime=v end},"AutoTackleDribDelay")
         S:Slider({Name="EagleEye Min Delay",Minimum=0.0,Maximum=2.0,Default=AutoTackleConfig.EagleEyeMinDelay,Precision=2,Callback=function(v) AutoTackleConfig.EagleEyeMinDelay=v end},"AutoTackleEEMin")
         S:Slider({Name="EagleEye Max Delay",Minimum=0.0,Maximum=2.0,Default=AutoTackleConfig.EagleEyeMaxDelay,Precision=2,Callback=function(v) AutoTackleConfig.EagleEyeMaxDelay=v end},"AutoTackleEEMax")
         S:Divider()
