@@ -125,10 +125,8 @@ local _pcRadius       = nil
 local _pcColor        = nil
 local _pcLastCenter   = nil     -- последняя известная позиция (для fade-out)
 local _pcLastFootY    = 0
-local PICKUP_CIRCLE_BASE_ALPHA = 0.18  -- Drawing.Transparency: 0=opaque, 1=invisible. 0.18=slight transparency
-local PICKUP_CIRCLE_FADE_IN_SPEED  = 5.5   -- скорость fade-in (появление)
-local PICKUP_CIRCLE_FADE_OUT_SPEED = 3.5   -- скорость fade-out (исчезновение)
-local PICKUP_CIRCLE_COLOR_SPEED    = 4.0   -- скорость lerp цвета
+local PICKUP_CIRCLE_BASE_ALPHA = 0.35  -- Drawing.Transparency: 0=opaque, 1=invisible. 0.35=нормальная видимость
+local PICKUP_CIRCLE_ANIM_SPEED = 4.5   -- скорость lerp (выше = быстрее)
 
 -- Y-уровень ног: RightFoot/LeftFoot или fallback HRP
 local function GetFeetY()
@@ -189,51 +187,55 @@ end
 local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
     local dt = dt or 0.016
 
-    -- Кешируем последнюю известную позицию (используется при fade-out / Indicate)
+    -- Кешируем позицию только если передана явно
     if centerXZ ~= nil then
         _pcLastCenter = centerXZ
         _pcLastFootY  = footY
     end
 
-    -- Целевой цвет: красный только если Indicate=true И пикап выключен
-    local targetColor = (PickupCircleIndicate and not AutoPickupEnabled)
-        and PICKUP_CIRCLE_DISABLED_COLOR
-        or  PickupCircleColor
+    -- Определяем видимость круга:
+    -- Показываем если ShowPickupCircle=true И:
+    --   (пикап включён) ИЛИ (Indicate=true — круг остаётся красным)
+    local shouldShow = false
+    if ShowPickupCircle then
+        if AutoPickupEnabled then
+            shouldShow = (_pcLastCenter ~= nil)
+        elseif PickupCircleIndicate then
+            shouldShow = (_pcLastCenter ~= nil)
+        end
+        -- Иначе (пикап выкл И Indicate=false) → shouldShow=false → fade out
+    end
 
-    -- shouldShow: true только если ShowPickupCircle И (пикап включён ИЛИ Indicate включён)
-    -- При выключении пикапа + Indicate=false → shouldShow=false → плавный fade-out
-    local shouldShow = ShowPickupCircle
-        and (AutoPickupEnabled or PickupCircleIndicate)
-        and (_pcLastCenter ~= nil)
+    -- Целевой цвет
+    local targetColor
+    if PickupCircleIndicate and not AutoPickupEnabled then
+        targetColor = PICKUP_CIRCLE_DISABLED_COLOR
+    else
+        targetColor = PickupCircleColor
+    end
 
-    -- Раздельные скорости: fade-in быстрее, fade-out плавнее
+    -- Целевая прозрачность и анимация
     local targetAlpha = shouldShow and PICKUP_CIRCLE_BASE_ALPHA or 1.0
-    local animSpeed = (_pcAlpha > targetAlpha)
-        and PICKUP_CIRCLE_FADE_IN_SPEED
-        or  PICKUP_CIRCLE_FADE_OUT_SPEED
+    _pcAlpha = _pcAlpha + (targetAlpha - _pcAlpha) * math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1)
 
-    -- Smoothstep easing для органичного движения
-    local t  = math.min(animSpeed * dt, 1)
-    local ts = t * t * (3 - 2 * t)
-    _pcAlpha = _pcAlpha + (targetAlpha - _pcAlpha) * ts
+    -- Если полностью невидим — скрыть и выйти
+    if _pcAlpha > 0.97 then
+        HidePickupCircle()
+        return
+    end
 
-    -- Если почти полностью невидим — скрываем и выходим
-    if _pcAlpha > 0.97 then HidePickupCircle(); return end
-
-    -- Анимируем радиус
+    -- Радиус
     if _pcRadius == nil then _pcRadius = targetRadius end
-    _pcRadius = _pcRadius + (targetRadius - _pcRadius) * math.min(5.5 * dt, 1)
+    _pcRadius = _pcRadius + (targetRadius - _pcRadius) * math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1)
 
-    -- Анимируем цвет через smoothstep
+    -- Цвет
     if _pcColor == nil then _pcColor = targetColor end
-    local tc  = math.min(PICKUP_CIRCLE_COLOR_SPEED * dt, 1)
-    local tcs = tc * tc * (3 - 2 * tc)
-    _pcColor = _lerpColor(_pcColor, targetColor, tcs)
+    _pcColor = _lerpColor(_pcColor, targetColor, math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1))
 
-    -- Используем кешированную позицию при fade-out
+    -- Позиция
     local drawCenter = centerXZ or _pcLastCenter
     if not drawCenter then HidePickupCircle(); return end
-    local drawFootY  = centerXZ ~= nil and footY or _pcLastFootY
+    local drawFootY = centerXZ ~= nil and footY or _pcLastFootY
     local origin = Vector3.new(drawCenter.X, drawFootY, drawCenter.Z)
 
     local prev2D, prevOk = nil, false
@@ -248,10 +250,10 @@ local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
         if i > 1 then
             local line = PickupCircle[i - 1]
             if prevOk and ok then
-                line.From        = prev2D
-                line.To          = cur
-                line.Color       = _pcColor
-                line.Thickness   = 2.5
+                line.From         = prev2D
+                line.To           = cur
+                line.Color        = _pcColor
+                line.Thickness    = 2.5
                 line.Transparency = _pcAlpha
                 line.Visible      = true
             else
@@ -262,10 +264,10 @@ local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
     end
     local last = PickupCircle[PICKUP_CIRCLE_SEGMENTS]
     if prevOk and firstOk then
-        last.From        = prev2D
-        last.To          = first2D
-        last.Color       = _pcColor
-        last.Thickness   = 2.5
+        last.From         = prev2D
+        last.To           = first2D
+        last.Color        = _pcColor
+        last.Thickness    = 2.5
         last.Transparency = _pcAlpha
         last.Visible      = true
     else
@@ -1752,23 +1754,18 @@ AutoPickup.Stop = function()
         AutoPickupStatus.RenderConnection:Disconnect()
         AutoPickupStatus.RenderConnection = nil
 
-        -- Запускаем анимированный fade-out
+        -- Запускаем fade-out / Indicate loop
+        -- AutoPickupEnabled уже = false к этому моменту (SetAutoPickupState выставляет до Stop)
         local fadeConn; fadeConn = RunService.RenderStepped:Connect(function(dt)
-            if PickupCircleIndicate then
-                -- Indicate включён: круг остаётся (переходит в красный) и следует за игроком
-                local pos   = HumanoidRootPart and HumanoidRootPart.Position or nil
-                local feetY = HumanoidRootPart and GetFeetY() or _pcLastFootY
-                DrawPickupCircle(pos, feetY, AutoPickupDist, dt)
-            else
-                -- Indicate выкл: плавный smoothstep fade-out
-                -- centerXZ=nil → _pcLastCenter не обновляется
-                -- shouldShow=false (AutoPickupEnabled=false И Indicate=false)
-                -- → _pcAlpha плавно нарастает к 1.0
-                DrawPickupCircle(nil, _pcLastFootY, AutoPickupDist, dt)
-                if _pcAlpha >= 0.97 then
-                    HidePickupCircle()
-                    fadeConn:Disconnect()
-                end
+            local pos   = HumanoidRootPart and HumanoidRootPart.Position or nil
+            local feetY = HumanoidRootPart and GetFeetY() or _pcLastFootY
+            -- DrawPickupCircle сам разберётся: если Indicate=true — держит красный,
+            -- если Indicate=false — уходит в fade-out (shouldShow=false)
+            DrawPickupCircle(pos, feetY, AutoPickupDist, dt)
+            -- Останавливаем fadeConn только когда круг полностью невидим
+            -- (Indicate=false → _pcAlpha вырастет до >0.97 → HidePickupCircle уже вызван)
+            if not PickupCircleIndicate and _pcAlpha > 0.97 then
+                fadeConn:Disconnect()
             end
         end)
     end
@@ -1985,6 +1982,11 @@ local function SetupUI(UI)
             Name = "Show Pickup Circle", Default = ShowPickupCircle,
             Callback = function(v)
                 ShowPickupCircle = v
+                if not v then
+                    -- Немедленно скрыть все линии и сбросить alpha
+                    HidePickupCircle()
+                    _pcAlpha = 1.0
+                end
             end
         }, "ShowPickupCircle")
 
