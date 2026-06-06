@@ -126,7 +126,7 @@ local _pcColor        = nil
 local _pcLastCenter   = nil     -- последняя известная позиция (для fade-out)
 local _pcLastFootY    = 0
 local PICKUP_CIRCLE_BASE_ALPHA = 0.35  -- Drawing.Transparency: 0=opaque, 1=invisible. 0.35=нормальная видимость
-local PICKUP_CIRCLE_ANIM_SPEED = 4.5   -- скорость lerp (выше = быстрее)
+local PICKUP_CIRCLE_ANIM_SPEED = 2.2   -- скорость lerp fade (2.2 = ~0.5с плавное затухание)
 
 -- Y-уровень ног: RightFoot/LeftFoot или fallback HRP
 local function GetFeetY()
@@ -193,30 +193,21 @@ local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
         _pcLastFootY  = footY
     end
 
-    -- Определяем видимость круга:
-    -- Показываем если ShowPickupCircle=true И:
-    --   (пикап включён) ИЛИ (Indicate=true — круг остаётся красным)
+    -- Показываем круг если:
+    --   ShowPickupCircle=true И (пикап включён ИЛИ Indicate=true)
     local shouldShow = false
     if ShowPickupCircle then
-        if AutoPickupEnabled then
-            shouldShow = (_pcLastCenter ~= nil)
-        elseif PickupCircleIndicate then
+        if AutoPickupEnabled or PickupCircleIndicate then
             shouldShow = (_pcLastCenter ~= nil)
         end
-        -- Иначе (пикап выкл И Indicate=false) → shouldShow=false → fade out
     end
 
-    -- Целевой цвет
-    local targetColor
-    if PickupCircleIndicate and not AutoPickupEnabled then
-        targetColor = PICKUP_CIRCLE_DISABLED_COLOR
-    else
-        targetColor = PickupCircleColor
-    end
-
-    -- Целевая прозрачность и анимация
+    -- Целевая прозрачность
     local targetAlpha = shouldShow and PICKUP_CIRCLE_BASE_ALPHA or 1.0
-    _pcAlpha = _pcAlpha + (targetAlpha - _pcAlpha) * math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1)
+
+    -- Раздельные скорости: появление чуть быстрее, затухание плавнее
+    local speed = (targetAlpha < _pcAlpha) and 3.0 or PICKUP_CIRCLE_ANIM_SPEED
+    _pcAlpha = _pcAlpha + (targetAlpha - _pcAlpha) * math.min(speed * dt, 1)
 
     -- Если полностью невидим — скрыть и выйти
     if _pcAlpha > 0.97 then
@@ -224,15 +215,21 @@ local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
         return
     end
 
-    -- Радиус
+    -- Радиус (всегда анимируем плавно)
     if _pcRadius == nil then _pcRadius = targetRadius end
     _pcRadius = _pcRadius + (targetRadius - _pcRadius) * math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1)
 
-    -- Цвет
-    if _pcColor == nil then _pcColor = targetColor end
-    _pcColor = _lerpColor(_pcColor, targetColor, math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1))
+    -- Цвет: обновляем ТОЛЬКО когда круг видим (shouldShow=true)
+    -- При fade-out цвет остаётся прежним — меняется только прозрачность
+    if _pcColor == nil then _pcColor = PickupCircleColor end
+    if shouldShow then
+        local targetColor = (PickupCircleIndicate and not AutoPickupEnabled)
+            and PICKUP_CIRCLE_DISABLED_COLOR
+            or  PickupCircleColor
+        _pcColor = _lerpColor(_pcColor, targetColor, math.min(3.0 * dt, 1))
+    end
 
-    -- Позиция
+    -- Позиция для рендера
     local drawCenter = centerXZ or _pcLastCenter
     if not drawCenter then HidePickupCircle(); return end
     local drawFootY = centerXZ ~= nil and footY or _pcLastFootY
