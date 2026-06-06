@@ -119,13 +119,13 @@ local PICKUP_CIRCLE_SEGMENTS = 28
 
 -- Состояние анимации круга
 -- Drawing.Transparency: 0 = полностью непрозрачный, 1 = полностью невидимый
--- _pcAlpha хранит ТЕКУЩЕЕ Drawing.Transparency: старт 1.0 (невидим), fade in → BASE_ALPHA
+-- _pcAlpha: текущая Drawing.Transparency. 1.0=невидим, 0.0=непрозрачный. Старт=1.0, fade-in→BASE_ALPHA(0.05), fade-out→1.0
 local _pcAlpha        = 1.0     -- начинаем невидимым; lerp к BASE_ALPHA при показе
 local _pcRadius       = nil
 local _pcColor        = nil
 local _pcLastCenter   = nil     -- последняя известная позиция (для fade-out)
 local _pcLastFootY    = 0
-local PICKUP_CIRCLE_BASE_ALPHA = 0.35  -- Drawing.Transparency: 0=opaque, 1=invisible. 0.35=нормальная видимость
+local PICKUP_CIRCLE_BASE_ALPHA = 0.05  -- Drawing.Transparency: 0=непрозрачный, 1=невидимый. 0.05=почти непрозрачный (яркий)
 local PICKUP_CIRCLE_ANIM_SPEED = 2.2   -- скорость lerp fade (2.2 = ~0.5с плавное затухание)
 
 -- Y-уровень ног: RightFoot/LeftFoot или fallback HRP
