@@ -119,14 +119,14 @@ local PICKUP_CIRCLE_SEGMENTS = 28
 
 -- Состояние анимации круга
 -- Drawing.Transparency: 0 = полностью непрозрачный, 1 = полностью невидимый
--- _pcAlpha: текущая Drawing.Transparency. 1.0=невидим, 0.0=непрозрачный. Старт=1.0, fade-in→BASE_ALPHA(0.05), fade-out→1.0
+-- _pcAlpha хранит ТЕКУЩЕЕ Drawing.Transparency: старт 1.0 (невидим), fade in → BASE_ALPHA
 local _pcAlpha        = 1.0     -- начинаем невидимым; lerp к BASE_ALPHA при показе
 local _pcRadius       = nil
 local _pcColor        = nil
 local _pcLastCenter   = nil     -- последняя известная позиция (для fade-out)
 local _pcLastFootY    = 0
-local PICKUP_CIRCLE_BASE_ALPHA = 0.05  -- Drawing.Transparency: 0=непрозрачный, 1=невидимый. 0.05=почти непрозрачный (яркий)
-local PICKUP_CIRCLE_ANIM_SPEED = 2.2   -- скорость lerp fade (2.2 = ~0.5с плавное затухание)
+local PICKUP_CIRCLE_BASE_ALPHA = 0.0   -- Drawing.Transparency: 0=непрозрачный(яркий), 1=невидимый
+local PICKUP_CIRCLE_ANIM_SPEED = 2.5   -- скорость lerp fade (2.5 ≈ 0.4с плавное затухание)
 
 -- Y-уровень ног: RightFoot/LeftFoot или fallback HRP
 local function GetFeetY()
@@ -187,52 +187,40 @@ end
 local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
     local dt = dt or 0.016
 
-    -- Кешируем позицию только если передана явно
     if centerXZ ~= nil then
         _pcLastCenter = centerXZ
         _pcLastFootY  = footY
     end
 
-    -- Показываем круг если:
-    --   ShowPickupCircle=true И (пикап включён ИЛИ Indicate=true)
-    local shouldShow = false
-    if ShowPickupCircle then
-        if AutoPickupEnabled or PickupCircleIndicate then
-            shouldShow = (_pcLastCenter ~= nil)
-        end
-    end
+    -- Показываем если ShowPickupCircle И (пикап включён ИЛИ Indicate=true)
+    local shouldShow = ShowPickupCircle
+        and (AutoPickupEnabled or PickupCircleIndicate)
+        and (_pcLastCenter ~= nil)
 
-    -- Целевая прозрачность
+    -- Transparency: 0.0=яркий/видимый, 1.0=невидимый
     local targetAlpha = shouldShow and PICKUP_CIRCLE_BASE_ALPHA or 1.0
 
-    -- Раздельные скорости: появление чуть быстрее, затухание плавнее
-    local speed = (targetAlpha < _pcAlpha) and 3.0 or PICKUP_CIRCLE_ANIM_SPEED
+    -- Появление чуть быстрее, затухание плавнее
+    local speed = (targetAlpha < _pcAlpha) and 4.0 or PICKUP_CIRCLE_ANIM_SPEED
     _pcAlpha = _pcAlpha + (targetAlpha - _pcAlpha) * math.min(speed * dt, 1)
 
-    -- Если полностью невидим — скрыть и выйти
-    if _pcAlpha > 0.97 then
-        HidePickupCircle()
-        return
-    end
+    if _pcAlpha > 0.97 then HidePickupCircle(); return end
 
-    -- Радиус (всегда анимируем плавно)
     if _pcRadius == nil then _pcRadius = targetRadius end
     _pcRadius = _pcRadius + (targetRadius - _pcRadius) * math.min(PICKUP_CIRCLE_ANIM_SPEED * dt, 1)
 
-    -- Цвет: обновляем ТОЛЬКО когда круг видим (shouldShow=true)
-    -- При fade-out цвет остаётся прежним — меняется только прозрачность
+    -- Цвет меняем только пока круг активно показывается (не во время fade-out)
     if _pcColor == nil then _pcColor = PickupCircleColor end
     if shouldShow then
         local targetColor = (PickupCircleIndicate and not AutoPickupEnabled)
             and PICKUP_CIRCLE_DISABLED_COLOR
             or  PickupCircleColor
-        _pcColor = _lerpColor(_pcColor, targetColor, math.min(3.0 * dt, 1))
+        _pcColor = _lerpColor(_pcColor, targetColor, math.min(4.0 * dt, 1))
     end
 
-    -- Позиция для рендера
     local drawCenter = centerXZ or _pcLastCenter
     if not drawCenter then HidePickupCircle(); return end
-    local drawFootY = centerXZ ~= nil and footY or _pcLastFootY
+    local drawFootY  = centerXZ ~= nil and footY or _pcLastFootY
     local origin = Vector3.new(drawCenter.X, drawFootY, drawCenter.Z)
 
     local prev2D, prevOk = nil, false
@@ -247,12 +235,12 @@ local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
         if i > 1 then
             local line = PickupCircle[i - 1]
             if prevOk and ok then
-                line.From         = prev2D
-                line.To           = cur
-                line.Color        = _pcColor
-                line.Thickness    = 2.5
+                line.From        = prev2D
+                line.To          = cur
+                line.Color       = _pcColor
+                line.Thickness   = 2.5
                 line.Transparency = _pcAlpha
-                line.Visible      = true
+                line.Visible     = true
             else
                 line.Visible = false
             end
@@ -261,17 +249,16 @@ local function DrawPickupCircle(centerXZ, footY, targetRadius, dt)
     end
     local last = PickupCircle[PICKUP_CIRCLE_SEGMENTS]
     if prevOk and firstOk then
-        last.From         = prev2D
-        last.To           = first2D
-        last.Color        = _pcColor
-        last.Thickness    = 2.5
+        last.From        = prev2D
+        last.To          = first2D
+        last.Color       = _pcColor
+        last.Thickness   = 2.5
         last.Transparency = _pcAlpha
-        last.Visible      = true
+        last.Visible     = true
     else
         last.Visible = false
     end
 end
-
 -- ============================================================
 -- GUI
 -- ============================================================
@@ -1727,6 +1714,11 @@ end
 
 AutoPickup.Start = function()
     if AutoPickupStatus.Running then return end
+    -- Убиваем fadeConn от предыдущего Stop чтобы не было блика
+    if AutoPickupStatus.FadeConn then
+        AutoPickupStatus.FadeConn:Disconnect()
+        AutoPickupStatus.FadeConn = nil
+    end
     AutoPickupStatus.Running = true
     -- Инициализируем линии круга при каждом старте пикапа
     InitializePickupCircle()
@@ -1743,29 +1735,32 @@ AutoPickup.Start = function()
     end)
 end
 AutoPickup.Stop = function()
-    if AutoPickupStatus.Connection then
-        AutoPickupStatus.Connection:Disconnect()
-        AutoPickupStatus.Connection = nil
-    end
+    if AutoPickupStatus.Connection then AutoPickupStatus.Connection:Disconnect(); AutoPickupStatus.Connection = nil end
     if AutoPickupStatus.RenderConnection then
         AutoPickupStatus.RenderConnection:Disconnect()
         AutoPickupStatus.RenderConnection = nil
-
-        -- Запускаем fade-out / Indicate loop
-        -- AutoPickupEnabled уже = false к этому моменту (SetAutoPickupState выставляет до Stop)
-        local fadeConn; fadeConn = RunService.RenderStepped:Connect(function(dt)
+    end
+    -- Убиваем старый fadeConn если остался от предыдущего Stop
+    if AutoPickupStatus.FadeConn then
+        AutoPickupStatus.FadeConn:Disconnect()
+        AutoPickupStatus.FadeConn = nil
+    end
+    -- Запускаем fade-out: RenderStepped тикает пока круг не исчезнет
+    AutoPickupStatus.FadeConn = RunService.RenderStepped:Connect(function(dt)
+        if PickupCircleIndicate then
+            -- Indicate включён: круг остаётся (красным), следует за игроком
             local pos   = HumanoidRootPart and HumanoidRootPart.Position or nil
             local feetY = HumanoidRootPart and GetFeetY() or _pcLastFootY
-            -- DrawPickupCircle сам разберётся: если Indicate=true — держит красный,
-            -- если Indicate=false — уходит в fade-out (shouldShow=false)
             DrawPickupCircle(pos, feetY, AutoPickupDist, dt)
-            -- Останавливаем fadeConn только когда круг полностью невидим
-            -- (Indicate=false → _pcAlpha вырастет до >0.97 → HidePickupCircle уже вызван)
-            if not PickupCircleIndicate and _pcAlpha > 0.97 then
-                fadeConn:Disconnect()
+        else
+            -- Indicate выкл: плавное затухание, потом стоп
+            DrawPickupCircle(nil, _pcLastFootY, AutoPickupDist, dt)
+            if _pcAlpha > 0.97 then
+                AutoPickupStatus.FadeConn:Disconnect()
+                AutoPickupStatus.FadeConn = nil
             end
-        end)
-    end
+        end
+    end)
     AutoPickupStatus.Running = false
 end
 
@@ -1979,11 +1974,6 @@ local function SetupUI(UI)
             Name = "Show Pickup Circle", Default = ShowPickupCircle,
             Callback = function(v)
                 ShowPickupCircle = v
-                if not v then
-                    -- Немедленно скрыть все линии и сбросить alpha
-                    HidePickupCircle()
-                    _pcAlpha = 1.0
-                end
             end
         }, "ShowPickupCircle")
 
